@@ -1,0 +1,18 @@
+# 凭证与本地环境
+.env.local
+.env
+.venv/
+
+# 运行日志与临时文件
+*.log
+nohup.out
+__pycache__/
+*.pyc
+
+# 用户提供的音色素材（个人材料，默认不入库；Docker 构建时另行拷入）
+assets/liangzi/ref.wav
+assets/liangzi/ref.txt
+
+# macOS / 测试缓存
+.DS_Store
+.pytest_cache/

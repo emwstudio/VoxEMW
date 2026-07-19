@@ -1,0 +1,14 @@
+livekit-agents>=1.0
+livekit-plugins-openai>=1.0
+livekit-plugins-silero>=1.0
+voxcpm
+# vllm 不装在 agent venv：agent 需要 transformers git 新版（Qwen3-ASR），
+# 而 vllm 0.11.x 钉死 transformers<5；且 PyPI 新 vllm 只出 cu13 轮子，
+# CUDA 12.9 驱动的宿主机跑不了。vLLM 用独立 venv（scripts/runpod_setup.sh 建）
+torch>=2.5.0
+transformers @ git+https://github.com/huggingface/transformers.git
+accelerate
+soundfile
+numpy
+python-dotenv
+pytest
