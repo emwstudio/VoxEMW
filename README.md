@@ -3,6 +3,11 @@
 单卡 24GB GPU 全链路本地推理，与「大胃袋良子」实时语音唠嗑：
 STT + LLM + TTS（音色克隆）三个开源模型同卡共存，LiveKit Cloud 做实时传输。
 
+## 相关链接
+
+- 3090 显卡镜像（Runpod）：https://runpod.io?ref=r82lgade
+- Kimi-K3 大模型：https://kimi-bot.com/activities/zh-cn/viral-referral/share?scenario=invite&from=share_poster&invitation_code=JJ5FSQ
+
 ## 架构
 
 ```
