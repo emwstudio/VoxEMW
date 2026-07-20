@@ -97,7 +97,12 @@ class VoxCPM2TTS(tts.TTS):
 
         from voxcpm import VoxCPM
 
-        self._model = VoxCPM.from_pretrained(self._model_id, load_denoiser=False)
+        # optimize=True 会用 reduce-overhead 模式的 torch.compile（CUDA Graph
+        # 私有池），随对话轮次持续吃显存（实测进程 8.4GB 涨到 14GB，24GB 卡
+        # 被挤到 TTS 合成 OOM 失语）。关掉换稳定，代价是生成略慢。
+        self._model = VoxCPM.from_pretrained(
+            self._model_id, load_denoiser=False, optimize=False
+        )
 
         model_sr = self._model.tts_model.sample_rate
         if model_sr != self.sample_rate:

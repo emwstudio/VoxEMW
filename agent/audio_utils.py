@@ -30,9 +30,9 @@ def _trim_unstable_head(
     sample_rate: int,
     *,
     window_ms: int = 20,
-    rms_threshold: float = 0.03,
+    rms_threshold: float = 0.02,
     min_consecutive: int = 3,
-    pre_roll_ms: int = 20,
+    pre_roll_ms: int = 60,
     fade_in_ms: int = 8,
 ) -> np.ndarray:
     """Trim the low-energy unstable murmur at the start of a synthesis stream.
@@ -45,6 +45,9 @@ def _trim_unstable_head(
     ``pre_roll_ms`` earlier and gets a short ``fade_in_ms`` raised-cosine
     ramp so the cut neither keeps murmur nor clicks. If nothing qualifies
     (a genuinely quiet utterance), return the input unchanged.
+
+    阈值和 pre-roll 刻意保守：中文音节常以低能量擦音/送气音开头
+    （s/sh/f/h/q/x/c），切得太狠会吃掉首字声母，听起来像首字卡顿。
     """
     samples = np.asarray(audio, dtype=np.float32)
     win = max(1, int(sample_rate * window_ms / 1000))
