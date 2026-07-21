@@ -23,10 +23,10 @@ from livekit.agents import (
 )
 
 if __package__:
-    from .audio_utils import _trim_unstable_head, float_to_int16_bytes
+    from .audio_utils import float_to_int16_bytes, tame_head_harshness
     from .text_utils import DEFAULT_MAX_CHARS, split_text_for_tts
 else:
-    from audio_utils import _trim_unstable_head, float_to_int16_bytes
+    from audio_utils import float_to_int16_bytes, tame_head_harshness
     from text_utils import DEFAULT_MAX_CHARS, split_text_for_tts
 
 logger = logging.getLogger(__name__)
@@ -165,8 +165,6 @@ class ChunkedStream(tts.ChunkedStream):
                 self._tts._ensure_loaded()
                 model = self._tts._model
                 first = True
-                head: list = []
-                head_len = 0
                 for text_chunk in split_text_for_tts(
                     self._input_text, max_chars=self._tts._max_chars
                 ):
@@ -184,26 +182,27 @@ class ChunkedStream(tts.ChunkedStream):
                             break
                         chunk = np.asarray(audio_chunk, dtype=np.float32)
                         if first:
-                            # VoxCPM2 streams ~160 ms of low-energy unstable
-                            # murmur before the voice starts (the "tremor" on
-                            # the first syllables). Buffer the head of the
-                            # utterance, then skip to the onset of real speech.
-                            head.append(chunk)
-                            head_len += chunk.size
-                            if head_len < int(0.4 * self._tts.sample_rate) and len(head) < 4:
-                                continue
-                            chunk = _trim_unstable_head(
-                                np.concatenate(head), self._tts.sample_rate
-                            )
                             first = False
-                            if chunk.size == 0:
-                                continue
+                            # 不裁开头：模型原生头部（静音/轻颤音）本身就是自然的
+                            # 领唱段，裁剪反而暴露对端解码器热身抖动（"电台信号
+                            # 不稳"）。只做两件小事：软化起音段高频毛刺（"电
+                            # 颤音"），前垫 250ms 静音让传输先热身。
+                            chunk = tame_head_harshness(chunk, self._tts.sample_rate)
+                            chunk = np.concatenate(
+                                [np.zeros(int(0.25 * self._tts.sample_rate), dtype=np.float32), chunk]
+                            )
                         pcm = float_to_int16_bytes(chunk)
                         if pcm:
                             loop.call_soon_threadsafe(queue.put_nowait, pcm)
             except Exception as e:  # propagate to the async consumer
                 loop.call_soon_threadsafe(queue.put_nowait, e)
             finally:
+                if not stop.is_set():
+                    # 后垫 250ms 静音：句尾不硬断，减少帧流饥饿感
+                    tail = float_to_int16_bytes(
+                        np.zeros(int(0.25 * self._tts.sample_rate), dtype=np.float32)
+                    )
+                    loop.call_soon_threadsafe(queue.put_nowait, tail)
                 loop.call_soon_threadsafe(queue.put_nowait, done)
 
         producer = loop.run_in_executor(None, _produce)
