@@ -30,6 +30,7 @@ GPU Pod（RTX 3090 24GB）
 - **LLM**：Qwen3-8B-AWQ（vLLM 独立 venv，与 agent 的 transformers 5.x 隔离）
 - **TTS**：openbmb/VoxCPM2（Ultimate Cloning 音色克隆，流式输出）
 - **会话模型**：prewarm 常驻热进程 + 文件锁保证全机一套 STT+TTS + 负载闸门，单会话串行；挂断后进程回收，~30s 重建待命
+- **双唠模式**：峰哥×良子同卡相声——同一 vLLM 两份 system prompt 轮流问答、同一 VoxCPM2 按角色切音色，文本接力不走音频环路，**零新增显存**；dispatch metadata `duet` 分流，详见 `agent/duet.py`
 - **实测**（RTX 3090）：进房 ~5s，端到端接话 ~1.5–2.5s，显存 ~20G / 24G。详见 `docs/设计方案与性能数据.md`
 
 ## 部署（Runpod）
@@ -57,7 +58,7 @@ cp .env.example .env.local   # 填同一份 LiveKit 凭证，并加 AGENT_NAME=l
 pnpm install && pnpm dev     # 生产：pnpm build && pnpm start
 ```
 
-浏览器开 `localhost:3000`，点「开始唠嗑」即可（需要 agent 已在 pod 上运行）。
+浏览器开 `localhost:3000`：绿键「开始唠嗑」跟良子打电话；琥珀键「听良子和峰哥唠嗑」围观两人说相声（需要 agent 已在 pod 上运行）。
 
 ## 本地开发（macOS，无 GPU）
 
@@ -70,15 +71,15 @@ python3 -m venv .venv && .venv/bin/pip install pytest numpy
 
 ## 目录
 
-- `agent/` — LiveKit Agents 入口 + STT/TTS 插件 + 纯逻辑工具
-- `frontend/` — Web 对话页面（通话式 UI + Aura 星云可视化）
+- `agent/` — LiveKit Agents 入口 + STT/TTS 插件 + 纯逻辑工具 + `duet.py`（峰哥×良子双唠引擎）
+- `frontend/` — Web 对话页面（通话式 UI + Aura 星云可视化，单唠/双唠双模式）
 - `tests/` — 纯逻辑单测（不 import torch/transformers/livekit）
 - `scripts/` — pod 一键部署 / 容器入口
-- `assets/liangzi/` — 音色克隆素材（自行提供，不入库）
-- `skills/liangzi-perspective/` — 良子人设调研蒸馏（huashu-nuwa）
+- `assets/liangzi/`、`assets/fengge/` — 音色克隆素材（自行提供，不入库）
+- `skills/liangzi-perspective/`、`skills/fengge-perspective/` — 人设调研蒸馏（huashu-nuwa）
 - `docs/` — 设计方案与实测数据
 
 ## 合规
 
 音色克隆仅限本人授权或娱乐用途，禁止用于冒充、诈骗或误导性内容；AI 生成内容需明确标注。
-「良子」为真实网红，商业化使用前请确认肖像/声音授权。
+「良子」「峰哥亡命天涯」均为真实网红，商业化使用前请确认肖像/声音授权。

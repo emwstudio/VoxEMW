@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { AccessToken, type AccessTokenOptions, type VideoGrant } from 'livekit-server-sdk';
-import { RoomConfiguration } from '@livekit/protocol';
+import { RoomAgentDispatch, RoomConfiguration } from '@livekit/protocol';
 
 type ConnectionDetails = {
   serverUrl: string;
@@ -41,13 +41,20 @@ export async function POST(req: Request) {
       ? RoomConfiguration.fromJson(body.room_config, { ignoreUnknownFields: true })
       : new RoomConfiguration();
 
+    // 单 trio 模式（良子×峰哥×老铁三方连麦）：恒定给 dispatch 打 metadata="trio"
+    const agentName = roomConfig.agents[0]?.agentName ?? process.env.AGENT_NAME ?? 'liangzi-agent';
+    roomConfig.agents = [new RoomAgentDispatch({ agentName, metadata: 'trio' })];
+
+    // 页面手动输入的辩题 → 写进参与者 token 的 metadata，agent 引擎据此开题
+    const topic = (new URL(req.url).searchParams.get('topic') ?? '').slice(0, 200).trim();
+
     // Generate participant token
     const participantName = 'user';
     const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
     const roomName = `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
 
     const participantToken = await createParticipantToken(
-      { identity: participantIdentity, name: participantName },
+      { identity: participantIdentity, name: participantName, metadata: topic },
       roomName,
       roomConfig
     );

@@ -174,6 +174,23 @@ async def liangzi_session(ctx: agents.JobContext) -> None:
     if models is None:
         # 冷进程兜底：现场加载（约 1 分钟，可能错过 Cloud 的进房超时）
         models = await asyncio.to_thread(_build_models)
+
+    # 双唠/三方分流：dispatch metadata == "duet" → 峰哥×良子相声（纯围观），
+    # == "trio" → 峰哥×良子×老铁三方连麦（用户可插话）；否则单唠语音管线
+    job_metadata = (getattr(ctx.job, "metadata", "") or "").strip()
+    if job_metadata in ("duet", "trio"):
+        if __package__:
+            from .duet import run_duet
+            from .trio import run_trio
+        else:
+            from duet import run_duet
+            from trio import run_trio
+        if job_metadata == "trio":
+            await run_trio(ctx, models)
+        else:
+            await run_duet(ctx, models)
+        return
+
     vad = models["vad"]
 
     session = AgentSession(

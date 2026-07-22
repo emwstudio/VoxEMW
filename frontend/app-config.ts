@@ -46,7 +46,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
   accent: '#002cf2',
   logoDark: '/lk-logo-dark.svg',
   accentDark: '#1fd5f9',
-  startButtonText: '开始唠嗑',
+  startButtonText: '开始解惑',
 
   // audio visualization: aura 星云（shader 能量场，暗色下用 #1fd5f9）
   audioVisualizerType: 'aura',

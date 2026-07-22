@@ -1,14 +1,13 @@
 'use client';
 
-import { useTheme } from 'next-themes';
 import { AnimatePresence, motion } from 'motion/react';
 import { useSessionContext } from '@livekit/components-react';
 import type { AppConfig } from '@/app-config';
-import { CallSessionView } from '@/components/app/call-session-view';
+import { DuetSessionView } from '@/components/app/duet-session-view';
 import { WelcomeView } from '@/components/app/welcome-view';
 
 const MotionWelcomeView = motion.create(WelcomeView);
-const MotionSessionView = motion.create(CallSessionView);
+const MotionSessionView = motion.create(DuetSessionView);
 
 const VIEW_MOTION_PROPS = {
   variants: {
@@ -30,35 +29,31 @@ const VIEW_MOTION_PROPS = {
 
 interface ViewControllerProps {
   appConfig: AppConfig;
+  topic: string;
+  onStartCall: (topic: string) => void;
 }
 
-export function ViewController({ appConfig }: ViewControllerProps) {
-  const { isConnected, start } = useSessionContext();
-  const { resolvedTheme } = useTheme();
+export function ViewController({ appConfig, topic, onStartCall }: ViewControllerProps) {
+  const { isConnected } = useSessionContext();
 
   return (
     <AnimatePresence mode="wait">
-      {/* Welcome view */}
+      {/* Welcome view：单 trio 模式（良子×峰哥×老铁） */}
       {!isConnected && (
         <MotionWelcomeView
           key="welcome"
           {...VIEW_MOTION_PROPS}
           startButtonText={appConfig.startButtonText}
-          onStartCall={start}
+          onStartCall={onStartCall}
         />
       )}
-      {/* Session view */}
+      {/* Trio session view */}
       {isConnected && (
         <MotionSessionView
-          key="session-view"
+          key="session-trio"
           {...VIEW_MOTION_PROPS}
-          supportsChatInput={appConfig.supportsChatInput}
-          audioVisualizerColor={
-            resolvedTheme === 'dark'
-              ? appConfig.audioVisualizerColorDark
-              : appConfig.audioVisualizerColor
-          }
-          audioVisualizerColorShift={appConfig.audioVisualizerColorShift}
+          interactive
+          topic={topic}
           className="fixed inset-0"
         />
       )}
