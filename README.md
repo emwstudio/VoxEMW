@@ -3,11 +3,6 @@
 单卡 24GB GPU 全链路本地推理，与「良子」「峰哥」实时语音唠嗑解惑：
 STT + LLM + TTS（音色克隆）三个开源模型同卡共存，LiveKit Cloud 做实时传输。
 
-## 相关链接
-
-- 3090 显卡镜像（Runpod）：https://runpod.io?ref=r82lgade
-- Kimi-K3 大模型：https://kimi-bot.com/activities/zh-cn/viral-referral/share?scenario=invite&from=share_poster&invitation_code=JJ5FSQ
-
 ## 架构
 
 ```
@@ -83,3 +78,8 @@ python3 -m venv .venv && .venv/bin/pip install pytest numpy
 
 音色克隆仅限本人授权或娱乐用途，禁止用于冒充、诈骗或误导性内容；AI 生成内容需明确标注。
 「良子」「峰哥亡命天涯」均为真实网红，商业化使用前请确认肖像/声音授权。
+
+## 相关链接
+
+- 3090 显卡镜像（Runpod）：https://runpod.io?ref=r82lgade
+- Kimi-K3 大模型：https://kimi-bot.com/activities/zh-cn/viral-referral/share?scenario=invite&from=share_poster&invitation_code=JJ5FSQ
