@@ -1,0 +1,40 @@
+# 斗地主语音局配置 —— AutoDL RTX 4090D（24GB）
+#
+# 与聊天管线（configs/autodl-4090.yaml）互斥：启动前先停 s2s_pipeline。
+# 用法：python -m doudizhu.server --config configs/doudizhu.yaml
+# （scripts/start_game.sh 已封装：停聊天管线 + 环境变量 + nohup）
+
+server:
+  host: 0.0.0.0
+  port: 8766
+
+# 牌局：fixed_landlord 固定地主（跳过叫地主）。你永远地主，
+# 良子和峰哥永远农民联手怼你；注释掉这行恢复轮流叫地主
+game:
+  fixed_landlord: you
+
+# STT：与聊天管线同一个 Qwen3-ASR
+stt:
+  model_name: Qwen/Qwen3-ASR-1.7B-hf
+  device: cuda
+  torch_dtype: bfloat16
+  language: Chinese
+
+# TTS：与聊天管线同一个 VoxCPM2；音色取 personas/<id>.md frontmatter 的
+# ref_wav/ref_text（良子/峰哥各一个 Ultimate Cloning prompt cache）
+tts:
+  model_name: openbmb/VoxCPM2
+  device: cuda                    # 别写 cuda:0——官方 optimize() 只认字符串 "cuda"
+  cfg_value: 2.0
+  inference_timesteps: 10
+  optimize: true                  # torch.compile：启动慢几分钟，RTF 0.43 vs 1.0
+
+# LLM：bot 出牌大脑 + 嘴炮（出牌决策 JSON 不合法会自动回退内置策略）
+llm:
+  base_url: https://api.deepseek.com/v1
+  model: deepseek-v4-flash
+  api_key_env: DEEPSEEK_API_KEY   # 从 .env.local 读；LLM_API_KEY 兜底
+
+# VAD 切句（你说话多久没声算说完）
+vad:
+  min_silence_ms: 600

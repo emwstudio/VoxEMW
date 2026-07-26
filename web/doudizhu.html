@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VoxEMW 斗地主语音局</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", sans-serif; background: #1a5f3f; color: #eee;
+         min-height: 100vh; display: flex; flex-direction: column; }
+  #topbar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: #134a30; }
+  #topbar h1 { font-size: 18px; }
+  #status { font-size: 13px; padding: 3px 10px; border-radius: 10px; background: #555; }
+  #status.connected { background: #2e7d32; }
+  #status.connecting { background: #f9a825; color: #222; }
+  #status.disconnected { background: #c62828; }
+  button { cursor: pointer; border: none; border-radius: 6px; padding: 8px 18px; font-size: 15px;
+           background: #ffd54f; color: #333; font-weight: 600; }
+  button:disabled { background: #777; color: #bbb; cursor: not-allowed; }
+  button.ghost { background: #2e7d32; color: #eee; }
+
+  #table { flex: 1; display: flex; flex-direction: column; padding: 8px 16px; gap: 6px; }
+  .bots-row { display: flex; justify-content: space-between; }
+  .bot-area { width: 30%; background: rgba(0,0,0,.25); border-radius: 10px; padding: 8px 12px; }
+  .bot-area.active { outline: 2px solid #ffd54f; }
+  .bot-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .bot-name { font-weight: 700; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 8px; background: #666; }
+  .badge.landlord { background: #c62828; }
+  .badge.farmer { background: #1565c0; }
+  .count { margin-left: auto; font-size: 13px; color: #ccc; }
+  .speaking { font-size: 12px; color: #ffd54f; min-height: 16px; }
+  /* bot 手牌背面：小蓝牌叠放成一扇，张数随出牌递减 */
+  .backs { display: flex; min-height: 34px; margin: 4px 0 2px; }
+  .backs .card-back { width: 22px; height: 32px; border-radius: 4px; margin-left: -13px;
+        background: repeating-linear-gradient(45deg, #3949ab, #3949ab 3px, #303f9f 3px, #303f9f 6px);
+        border: 1px solid #5c6bc0; box-shadow: 0 1px 2px rgba(0,0,0,.4); }
+  .backs .card-back:first-child { margin-left: 0; }
+  .card-back { background: #3949ab; color: #9fa8da; }
+  .bottom-cards { display: inline-flex; gap: 2px; margin-left: 4px; vertical-align: middle; }
+  .bottom-cards .card { width: 26px; height: 36px; font-size: 10px; border-radius: 4px; }
+  .bottom-cards .card.joker { font-size: 8px; }
+
+  #center { flex: 1; display: flex; flex-direction: column; justify-content: center;
+           align-items: center; text-align: center; padding: 4px 0; gap: 4px; }
+  #turn-banner { min-height: 34px; font-size: 22px; font-weight: 800; color: #ffd54f;
+        text-shadow: 0 1px 4px rgba(0,0,0,.5); }
+  #turn-banner.show { animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .4; } }
+  #finish-banner { display: none; font-size: 44px; font-weight: 900; color: #ffd54f;
+        letter-spacing: 4px; text-shadow: 0 2px 10px rgba(0,0,0,.7);
+        background: rgba(0,0,0,.45); padding: 14px 40px; border-radius: 14px;
+        border: 2px solid #ffd54f; }
+  #finish-banner.show { display: block; animation: pop .4s ease-out; }
+  @keyframes pop { 0% { transform: scale(.6); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+  #trick { display: flex; flex-direction: column; align-items: center; gap: 8px;
+        justify-content: center; min-height: 150px; }
+  #trick-name { font-size: 17px; font-weight: 700; color: #ffd54f; min-height: 22px;
+        text-shadow: 0 1px 3px rgba(0,0,0,.5); }
+  #trick-cards { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center;
+        align-items: center; min-height: 92px; max-width: 720px; }
+  #trick-cards .card { width: 64px; height: 88px; font-size: 24px; border-radius: 8px; }
+  #trick-cards .card.joker { font-size: 17px; }
+  #trick-cards .ttext { font-size: 26px; font-weight: 800; color: #eee;
+        text-shadow: 0 1px 4px rgba(0,0,0,.5); }
+  /* 出牌飞入动画：--fx/--fy 由 JS 算出（出牌者位置 -> 桌面中央的位移），
+     牌从出牌者手边飞到桌中央并放大，模拟把牌甩上桌的动作 */
+  @keyframes fly-in {
+    from { transform: translate(var(--fx, 0), var(--fy, 0)) scale(.55); opacity: .3; }
+    60%  { opacity: 1; }
+    to   { transform: translate(0, 0) scale(1); opacity: 1; }
+  }
+  #trick-cards.fly { animation: fly-in .45s ease-out; }
+  #meta { font-size: 12px; color: #a5d6a7; margin-top: 2px; }
+
+  .card { display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+          width: 44px; height: 60px; background: #fff; color: #222; border-radius: 6px;
+          font-weight: 700; font-size: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.4);
+          user-select: none; }
+  .card.red { color: #c62828; }
+  .card.joker { font-size: 13px; }
+  .card.small { width: 34px; height: 46px; font-size: 13px; }
+  #my-hand .card { cursor: pointer; transition: transform .1s; }
+  #my-hand .card.selected { transform: translateY(-14px); outline: 2px solid #ffd54f; }
+  .card-back { background: #3949ab; color: #9fa8da; }
+
+  #my-area { background: rgba(0,0,0,.3); border-radius: 10px; padding: 10px 12px; }
+  #my-area.active { outline: 2px solid #ffd54f; }
+  #my-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  #actions { margin-left: auto; display: flex; gap: 8px; }
+  #my-hand { display: flex; flex-wrap: wrap; gap: 4px; min-height: 74px; }
+</style>
+</head>
+<body>
+  <div id="topbar">
+    <h1>🃏 VoxEMW 斗地主语音局</h1>
+    <span id="status" class="disconnected">未连接</span>
+    <button id="connect-btn">上桌</button>
+    <button id="new-game-btn" class="ghost" disabled>再来一局</button>
+  </div>
+
+  <div id="table">
+    <div class="bots-row">
+      <div class="bot-area" id="area-liangzi">
+        <div class="bot-head">
+          <span class="bot-name">良子</span><span class="badge" id="role-liangzi"></span>
+          <span class="bottom-cards" id="bottom-liangzi"></span>
+          <span class="count" id="count-liangzi"></span>
+        </div>
+        <div class="backs" id="backs-liangzi"></div>
+        <div class="speaking" id="speaking-liangzi"></div>
+      </div>
+      <div class="bot-area" id="area-fengge">
+        <div class="bot-head">
+          <span class="bot-name">峰哥</span><span class="badge" id="role-fengge"></span>
+          <span class="bottom-cards" id="bottom-fengge"></span>
+          <span class="count" id="count-fengge"></span>
+        </div>
+        <div class="backs" id="backs-fengge"></div>
+        <div class="speaking" id="speaking-fengge"></div>
+      </div>
+    </div>
+
+    <div id="center">
+      <div id="turn-banner"></div>
+      <div id="finish-banner"></div>
+      <div id="trick">
+        <div id="trick-name"></div>
+        <div id="trick-cards"></div>
+      </div>
+      <div id="meta"></div>
+    </div>
+
+    <div id="my-area">
+      <div id="my-head">
+        <span class="bot-name">你</span><span class="badge" id="role-you"></span>
+        <span class="bottom-cards" id="bottom-you"></span>
+        <span class="count" id="count-you"></span>
+        <div id="actions">
+          <button id="bid-yes-btn" style="display:none">叫地主</button>
+          <button id="bid-no-btn" style="display:none">不叫</button>
+          <button id="play-btn" disabled>出牌</button>
+          <button id="pass-btn" class="ghost" disabled>不要</button>
+        </div>
+      </div>
+      <div id="my-hand"></div>
+    </div>
+  </div>
+
+  <script src="doudizhu.js?v=20260726e"></script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VoxEMW · 搭积木语音助手</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>VoxEMW</h1>
+      <p class="subtitle">搭积木语音助手 · speech-to-speech realtime</p>
+    </header>
+
+    <section class="controls">
+      <label class="field">
+        <span>角色</span>
+        <select id="persona-select" disabled>
+          <option>加载中…</option>
+        </select>
+      </label>
+      <button id="connect-btn" class="primary">连接</button>
+      <span id="status" class="status disconnected">未连接</span>
+    </section>
+
+    <p class="hint">
+      连接后自动申请麦克风，直接说话即可（服务端 VAD 自动判停，可随时打断）。
+      换角色即时生效（只换说话方式）；<strong>音色跟随服务启动配置，页面切换不改变音色</strong>。
+    </p>
+
+    <section id="log" class="log" aria-live="polite"></section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

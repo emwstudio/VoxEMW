@@ -1,0 +1,150 @@
+# VoxEMW 搭积木配置 —— AutoDL RTX 4090D（24GB）
+#
+# 六段积木：vad（语音检测）/ stt（语音转文字）/ llm（对话模型）/
+#           tts（文字转语音）/ persona（人设，客户端注入）/ server（服务参数）
+#
+# 用法：
+#   python launch.py --config configs/autodl-4090.yaml
+#   S2S_CONFIG=configs/autodl-4090.yaml python launch.py
+#
+# 每段可换的 backend 见各段注释；某段的可用参数见 voxemw/backends.py 注册表
+# （flag 逐一对应 vendor/speech-to-speech 的 arguments_classes）。
+
+# ---------------------------------------------------------------------------
+# VAD：语音活动检测。目前上游只有 silero 一种实现，只能调参不能换。
+# ---------------------------------------------------------------------------
+vad:
+  backend: silero
+  # 判停静音时长：上游默认 64ms 太灵，稍微停顿就被切断；600ms 接近正常对话节奏
+  # （试过 900ms，等待感偏强，回退 600；pipeline 的 speculative reopen 会接住误断）
+  min_silence_ms: 600
+  # 以下均为可选调参（默认值即上游默认，写出来仅作示例）：
+  # thresh: 0.6             # 检测阈值，越大越严格
+  # min_speech_ms: 384      # 最短有效语音
+  # speech_pad_ms: 500      # 段前保留音频
+  # 前端 session.update 也可热调 turn_detection.silence_duration_ms（见 web/app.js）
+
+# ---------------------------------------------------------------------------
+# STT：语音转文字。
+#   可选 backend：
+#     qwen3asr       自定义（patch 注册），Qwen3-ASR transformers 本地推理，中文首选
+#     whisper        上游内置（distil-whisper 等，HF transformers）
+#     faster-whisper 上游内置（CTranslate2，英文性价比高）
+#     parakeet-tdt   上游内置（NVIDIA parakeet-tdt-0.6b-v3，欧洲语言）
+#     paraformer     上游内置（FunASR paraformer-zh，中文轻量）
+#   换法：改 backend 名 + 该 backend 的参数（参数名见 voxemw/backends.py）。
+# ---------------------------------------------------------------------------
+stt:
+  backend: qwen3asr
+  model_name: Qwen/Qwen3-ASR-1.7B-hf   # 24GB 显存紧张可降 Qwen/Qwen3-ASR-0.6B-hf
+  device: cuda
+  torch_dtype: bfloat16
+  language: Chinese                     # 语言提示，跳过自动语种检测
+  gen_max_new_tokens: 256
+
+# ---------------------------------------------------------------------------
+# LLM：对话模型。
+#   可选 backend：
+#     chat-completions  OpenAI 兼容 /v1/chat/completions（DeepSeek / vLLM / Ollama…）
+#     responses-api     OpenAI 兼容 /v1/responses
+#     transformers      本地 transformers 推理（model_name 填 HF id，加 device/torch_dtype）
+#
+#   换本地 vLLM 的例子（先自行起 vllm serve，再改本段）：
+#     backend: chat-completions
+#     model_name: Qwen/Qwen3-4B-Instruct-2507
+#     base_url: http://127.0.0.1:8000/v1
+#     api_key_env: VLLM_API_KEY        # vllm 默认不校验，export VLLM_API_KEY=EMPTY 即可
+#     stream: true
+#
+#   换本地 transformers 的例子（模型与 STT/TTS 同卡，注意显存）：
+#     backend: transformers
+#     model_name: Qwen/Qwen3-4B-Instruct-2507
+#     device: cuda
+#     torch_dtype: bfloat16
+# ---------------------------------------------------------------------------
+llm:
+  backend: chat-completions
+  model_name: deepseek-v4-flash
+  base_url: https://api.deepseek.com/v1
+  api_key_env: DEEPSEEK_API_KEY    # 从环境变量读 key（launch.py 会加载 .env.local），缺失即报错
+  # 非流式：整段生成完一次性送 TTS，语调/ prosody 更自然（流式逐句合成会丢上下文语调）；
+  # 代价是首音延迟变高（要等整段 LLM 出完），且整段须在 handler 的 20s 请求超时内返回
+  stream: false
+  # DeepSeek 关 thinking 由 patch 在 extra_body 里自动处理（thinking.type=disabled）；
+  # 不要配 reasoning_effort: none——DeepSeek 只认 high/low/medium/max/xhigh，none 会 400
+  chat_size: 30                    # 多轮历史上限（服务端 Chat 对象维护）
+  # stream_batch_sentences: 1      # 逐句送 TTS，降低首音延迟（默认 3 句一批）
+
+# ---------------------------------------------------------------------------
+# TTS：文字转语音。
+#   可选 backend：
+#     voxcpm      自定义（patch 注册），openbmb/VoxCPM2：Ultimate Cloning 音色克隆
+#                 （ref_audio 同时作续写 prompt + 克隆 reference，配 ref_text 台词）
+#                 + 流式输出（边生成边播，首音延迟低）；48kHz 输出重采样到 16kHz
+#     omnivoice   自定义（patch 注册），k2-fsa/OmniVoice 音色克隆（备选，断句偏硬）
+#     qwen3       上游内置 Qwen3-TTS（CustomVoice 选 speaker，或 ref_audio 克隆）
+#     kokoro      上游内置 Kokoro-82M（轻量英文）
+#     pocket      上游内置 Pocket TTS（kyutai，可 CPU）
+#     chatTTS     上游内置 chatTTS
+#     facebookMMS 上游内置 facebook/mms-tts-*
+#
+#   音色热切换：voices 映射里的每个音色（key = 人设 id）启动时预编码 prompt
+#   cache，前端切换人设时经 session.update 的 audio.output.voice 即时换音色，
+#   无需重启。ref_audio/ref_text 是默认音色（未指定 voice 或 voice 未命中时用）。
+#   新增音色才需要重启服务（启动时统一构建 cache）。
+# ---------------------------------------------------------------------------
+tts:
+  backend: voxcpm
+  model_name: openbmb/VoxCPM2
+  device: cuda                           # 别写 cuda:0——官方 optimize() 只认字符串 "cuda"，否则 torch.compile 被禁用
+  ref_audio: assets/liangzi/ref.wav    # 默认音色：10-30s 清晰单人声；支持指向 assets/<角色>/
+  ref_text: assets/liangzi/ref.txt     # 参考音频的逐字台词（Ultimate Cloning 必需）；指向 txt 文件路径，launch.py 会读文件内容传给 CLI
+  voices:                              # 可热切换音色：key = 人设 id（与 personas/<id>.md 对应）
+    liangzi:
+      ref_audio: assets/liangzi/ref.wav
+      ref_text: assets/liangzi/ref.txt
+    fengge:
+      ref_audio: assets/fengge/ref.wav
+      ref_text: assets/fengge/ref.txt
+  sample_rate: 16000                   # 管线全程 16kHz，勿改
+  blocksize: 512
+  cfg_value: 2.0                       # 官方推荐值；越大越贴近参考音色，过高会僵硬
+  inference_timesteps: 10              # 扩散步数，官方推荐 10；调低更快更糙
+  optimize: true                       # torch.compile：启动慢一两分钟，但 RTF 从 ~1.0（边生成边播没余量）降到 ~0.3-0.5
+  # load_denoiser: true                # 参考音频有底噪再开（额外下 ModelScope 降噪模型）
+  #
+  # 换回 OmniVoice 的存档配置（断句不如 VoxCPM 自然，仅留档）：
+  #   backend: omnivoice
+  #   model_name: k2-fsa/OmniVoice
+  #   device: cuda:0
+  #   dtype: float16
+  #   ref_audio/ref_text/voices: 同上
+  #   prompt_cache_dir: /root/autodl-tmp/omnivoice_prompts
+  #   sample_rate: 16000
+  #   blocksize: 512
+  #   language: Chinese
+
+# ---------------------------------------------------------------------------
+# 人设：realtime 模式下 --init_chat_prompt 不生效，人设 instructions 由
+# Web 客户端在连接后用 session.update 注入（web/app.js 读 web/personas.json，
+# 由 scripts/build_personas.py 从 personas/*.md 生成）。
+# 这里的 file 仅作启动期健全检查（launch.py 会确认文件存在）。
+# ---------------------------------------------------------------------------
+persona:
+  file: personas/liangzi.md
+
+# ---------------------------------------------------------------------------
+# 服务参数。
+#   python: 运行管线的解释器（相对仓库根）。默认找 .venv/bin/python，
+#           其次 vendor/speech-to-speech/.venv/bin/python。
+# ---------------------------------------------------------------------------
+server:
+  mode: realtime          # realtime = ws://<host>:<ws_port>/v1/realtime（OpenAI Realtime 协议）
+  ws_host: 0.0.0.0
+  ws_port: 8765
+  log_level: info
+  # 说话中每 0.5s 送一块中间音频给 STT 做实时预览（上游默认开）。我们的前端只展示
+  # 最终转写，开着只会让 STT 反复转写片段、浪费 GPU；关掉后 STT 只处理完整语音段
+  enable_live_transcription: false
+  # num_pipelines: 1      # 并发会话数 = 隔离管线数；每多一条多一份模型显存，24GB 保持 1
+  # python: .venv/bin/python

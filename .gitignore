@@ -13,6 +13,9 @@ __pycache__/
 assets/liangzi/ref.wav
 assets/liangzi/ref.txt
 
+# 上游 vendored 仓库（speech-to-speech，以 patches/ 为准重建）
+vendor/
+
 # macOS / 测试缓存
 .DS_Store
 .pytest_cache/
