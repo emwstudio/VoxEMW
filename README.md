@@ -1,192 +1,133 @@
-# VoxEMW —— 搭积木语音助手
+# VoxEMW —— 峰哥反指提示器（峰哥说啥我反着来）
 
-基于 [huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech) 管线的
-实时语音对话助手：你对着麦克风说话，助手用指定角色的口吻和音色实时语音回复。
+定时巡检峰哥微博动态 → **DeepSeek** 以突发主播人设逐条生成「峰哥说啥我反着来」播报稿 →
+**VoxCPM2** 用峰哥本人的声音语音播报 → 警报样式 Web 页按时间线展示。
+支持语音提问：对着页面麦克风问「峰哥今天说长鑫了吗」，几秒内语音答复。
 
-每个环节都是可替换的「积木」：VAD / STT / LLM / TTS / 人设，全部在一份 YAML
-里声明，`launch.py` 渲染成 speech-to-speech 的 CLI 参数启动。默认组合：
-Qwen3-ASR（STT）+ DeepSeek API（LLM）+ VoxCPM2 音色克隆（TTS）+ 网红人设
-（大胃袋良子 / 峰哥亡命天涯），部署目标 AutoDL 单卡 RTX 4090D。
+按「五块积木」组织，每块在 `configs/alerter.yaml` 里声明、可替换：
+
+| 积木 | 默认实现 | 运行位置 |
+|------|---------|---------|
+| VAD | `webspeech`（浏览器 Web Speech API 端点检测） | web/ 页面 |
+| STT | `webspeech`（浏览器语音识别，zh-CN） | web/ 页面 |
+| LLM | `deepseek`（写播报稿 + 存档语义选号） | 服务端（AutoDL） |
+| TTS | `voxcpm2`（峰哥音色克隆） | 服务端（AutoDL） |
+| 人设 | `file`（`personas/newsanchor.md`，蒸馏的突发主播人设） | 服务端 |
 
 ## 架构
 
 ```
-浏览器（web/ 无构建静态页）
-  │  麦克风 16kHz PCM ──► ws://<host>:8765/v1/realtime（OpenAI Realtime 协议）
-  │                      连接后客户端发 session.update 注入人设 instructions
-  ▼
-GPU 实例（AutoDL RTX 4090D）
-  launch.py ── 读 configs/autodl-4090.yaml ──► 渲染 argv ──► exec speech-to-speech
-  └─ speech-to-speech 管线（vendor/，打 patches/register-handlers.patch）
-       mic ─► silero VAD ─► Qwen3-ASR-1.7B（STT，自定义后端）
-       文本 ─► DeepSeek API（LLM，chat-completions，多轮历史服务端维护）
-       语音 ◄── openbmb/VoxCPM2（TTS，自定义后端，Ultimate Cloning + 流式输出）
-  python3 -m http.server 8000 --directory web   （静态页 + personas.json）
+Kimi Code 会话 cron（本机，每 5 分钟）──Kimi WebBridge 操作浏览器──> 峰哥微博
+   │  POST /api/briefing {posts:[{time,text}]}（主页 ≤2 条时自动补实时搜索，防限流隐藏）
+   ▼
+voxemw.server（AutoDL，aiohttp 单端口 :8000，SSH 隧道到本机）
+   ├─ briefing.py  当天过滤 + 正文指纹去重 + 存档 + 人设 prompt + 选号器（纯逻辑）
+   ├─ tts.py       VoxCPM2 峰哥音色 → wav（单线程池，torch.compile 约束）
+   └─ data/        posts_archive.json（当天动态存档+播报稿）+ seen_posts.json（去重指纹）
+   ▲ 轮询 /api/alerts、/api/posts/today、POST /api/ask
+web/ 警报页（无构建）：微博时间线（播报稿+原文引文+▶播放）、语音答复弹窗、
+   播放中卡片警戒条纹+⚠ALERT+🚨闪烁（禁连播）
 ```
 
-- **管线全程 16kHz**；服务端 VAD 判停，支持打断（barge-in）
-- **人设注入**：realtime 模式下 `--init_chat_prompt` 不生效，人设 instructions 由
-  Web 客户端连接后用 `session.update` 注入（服务端深合并，LLM 每轮读取包装为
-  system message）；多轮历史由服务端 Chat 对象维护（`chat_size`，默认 30）
-- **音色热切换**：`tts.voices` 里的每个音色（key = 人设 id）启动时预编码
-  prompt cache，前端切人设时经 `session.update` 的 `audio.output.voice`
-  即时换音色，无需重启
-- **自定义后端**：`--stt qwen3asr` / `--tts voxcpm`（另有备选 `--tts omnivoice`），由
-  `patches/register-handlers.patch`（唯一事实源）注册进 vendor 管线；
-  `extensions/` 是 handler 的人类可读副本
+三条链路：
 
-## 五块积木
+- **定时短报**：每 5 分钟巡检 → 新动态逐条生成播报稿（不重复播报，重启不丢）→
+  进时间线 + 自动播报最新一条
+- **语音问答**：页面麦克风 → webspeech 转文字 → `POST /api/ask` → 服务端用 LLM
+  在当天存档里语义选相关动态（错字/近义/「最新一条」都行）→ 约 8 秒出语音，
+  答复走右上角弹窗（不进时间线）；存档为空才回退 agent 轮询（2 分钟 cron）
+- **时间线**：刷新页面 = 当天全部动态按发布时间倒序列出（静默不出声），
+  每条 ▶ 点播播报稿
 
-| 积木 | 默认 | 可换（注册表见 `voxemw/backends.py`） |
-|------|------|--------------------------------------|
-| VAD | silero | 上游仅此一种，只能调参 |
-| STT | qwen3asr（Qwen3-ASR-1.7B，自定义） | whisper / faster-whisper / parakeet-tdt / paraformer |
-| LLM | chat-completions（DeepSeek API） | responses-api / transformers（本地） |
-| TTS | voxcpm（openbmb/VoxCPM2，自定义，Ultimate Cloning + 流式） | omnivoice / qwen3 / kokoro / pocket / chatTTS / facebookMMS |
-| 人设 | personas/liangzi.md | personas/*.md 任意增删 |
+## 快速开始
 
-## 快速开始（AutoDL）
+### 前置（本机，一次性）
+
+1. 装 Kimi WebBridge 守护进程：
+   `curl -fsSL https://cdn.kimi.com/webbridge/install.sh | bash`
+2. Chrome/Edge 装「Kimi WebBridge」扩展，图标显示 Connected，浏览器登录微博
+3. 向 Kimi Code 要两个定时任务（会话内 cron，关会话即停）：
+   5 分钟巡检 + 2 分钟语音指令兜底，采集流程见 `skills/fengge-alerter/SKILL.md`
+
+### 服务端（AutoDL）
 
 1. 开实例：RTX 4090D（24GB），镜像选 **Miniconda**，系统盘 ≥ 50GB
-2. 同步仓库到实例（如 `/root/voxemw`），并放入音色素材
-   `assets/<角色>/ref.wav` + `ref.txt`（10–30s 清晰单人声 + 逐字台词；
-   默认配置需要 `assets/liangzi/` 和 `assets/fengge/` 两份）
+2. 同步仓库到实例。音色默认用峰哥本人素材 `assets/fengge/ref.wav` + `ref.txt`
+   （仓库自带）；换音色在 `configs/alerter.yaml` 的 `voices` 加同名条目
 3. `cp .env.example .env.local`，填入 `DEEPSEEK_API_KEY`
-4. `bash scripts/autodl_setup.sh`（幂等：conda py312 → venv → torch 2.8 cu128 →
-   打 patch → 装 speech-to-speech + voxcpm → 生成 personas.json →
-   hf-mirror 下载模型到数据盘 → nohup 起服务）
-5. 本机开 SSH 隧道（AutoDL 不开公网端口）：
+4. `bash scripts/autodl_setup.sh`（幂等：conda → venv → torch → voxcpm →
+   hf-mirror 下载 VoxCPM2 → nohup 起服务）
+5. 本机开 SSH 隧道：`ssh -CNg -L 8000:127.0.0.1:8000 root@<主机> -p <端口>`
+6. 浏览器开 `http://localhost:8000`
 
-   ```bash
-   ssh -CNg -L 8000:127.0.0.1:8000 -L 8765:127.0.0.1:8765 root@<实例主机> -p <SSH端口>
-   ```
+排障：`tail -f logs/alerter.log`；改配置/换音色后
+`pkill -f voxemw.server` 再重跑 `scripts/autodl_setup.sh`。
+SSH 网关抽风时的备用通道：实例 JupyterLab（AutoPanel 的 `/jupyter/` 路径）——
+`scripts/_jupyter_term_run.py '<命令>' <超时秒>` 经网页终端 websocket 执行命令。
 
-6. 浏览器打开 `http://localhost:8000`，选角色 → 连接 → 说话
+## API
 
-排障：`tail -f logs/s2s.log`；改配置后 `pkill -f speech_to_speech` 再重跑
-`scripts/autodl_setup.sh`（切换已有音色不用重启，新增音色/改配置才需要）。
+- `GET  /api/blocks` — 五积木声明（不下发任何密钥）
+- `POST /api/briefing` `{posts:[{time,text}], query?, task_id?}` —
+  定时流程：逐条新动态生成播报稿+告警，全旧返回 `{"skipped":"no_new_posts"}`；
+  语音查询：围绕 query 生成答复；当天无相关内容也有兜底答复并核销任务
+- `GET  /api/posts/today` — 当天存档（按发布时间倒序，含播报稿），时间线数据源
+- `POST /api/backfill` — 给存档里缺播报稿的当天动态补生成（迁移用，不产生告警）
+- `GET  /api/alerts?since=<id>` / `GET /api/alerts/<id>/audio` — 告警与 wav
+- `POST /api/ask` `{query}` — 语音提问（服务端快路径直接答；存档为空才入队
+  等 agent，见 `GET /api/tasks/pending`）
+- `GET  /api/voices`、`POST /api/tts` — 调试（时间线 ▶ 按钮也用它）
 
-也可用配套 skill（`~/.agents/skills/autodl`）通过官方 API 开/关/释放实例、保存镜像。
+错误统一 `{"error": "..."}`（400 参数 / 502 LLM / 500 TTS / 503 无音频）。
 
-## 斗地主模式
+## 采集与去重规则（血泪教训，已固化进 skill）
 
-在聊天管线同一套语音积木上，还有一个「语音斗地主」：你 + 良子/峰哥两个人机
-一桌打牌，你出牌用鼠标点牌，bot 的出牌决策和台词走 DeepSeek（非法决策由
-引擎校验、带错误重试一次、内置策略兜底）。
-
-- **固定地主**：`configs/doudizhu.yaml` 里 `game.fixed_landlord: you`——你永远
-  地主，良子/峰哥永远农民，抱团怼你（敌我铁律写在 prompt 里：农民之间只捧不损）
-- **对话由出牌驱动**：当前版本默认关麦（`web/doudizhu.js` 顶部
-  `MIC_ENABLED = false`），bot 台词完全跟着出牌轮替走——点评上一家 + 报自己
-  的牌；想恢复语音插话/口令，改回 `true` 即可（服务端 STT/VAD 链路一直保留）
-- **台词机制**：每句必带经典口头禅（池子按人设建，一局内不重复，开新局重置）；
-  先报动作再接话（不要必以「不要」开头、出牌先报牌名，服务端 `_normalize_say`
-  硬兜底）；剩牌数由服务端按引擎真值校正（`_correct_count_claims`，模型说错
-  直接改对）
-- **节奏与反馈**：bot 说完话牌才落桌（带飞入动画）→ 下一家高亮；音效分三种
-  （出牌「啪」/ 不要低嘟 / 轮到你双嘀）；完局弹大字横幅「本局结束 · 地主/农民赢」
-
-与聊天管线**互斥**（24G 显存装不下两份 STT+TTS）。开局：
-`bash scripts/start_game.sh`（会先停聊天管线，再起 `doudizhu/server.py`，
-日志在 `logs/game.log`）。
-
-SSH 隧道在原有基础上**加 8766 端口**：
-
-```bash
-ssh -CNg -L 8000:127.0.0.1:8000 -L 8765:127.0.0.1:8765 -L 8766:127.0.0.1:8766 root@<实例主机> -p <SSH端口>
-```
-
-浏览器打开 `http://localhost:8000/doudizhu.html`（静态页由同一个
-`http.server 8000` 提供），点「上桌」开局。前端改了要硬刷新
-（`doudizhu.html` 里脚本带版本号防缓存）。
-回聊天模式：`pkill -f "doudizhu.serve[r]"`，再按老方式起 `launch.py`
-
-代码在 `doudizhu/`（纯逻辑 `cards/engine/heuristic` + bot/chat 层 + voice/server
-接入层），配置 `configs/doudizhu.yaml`，纯逻辑单测 `tests/test_doudizhu.py`，
-实例侧无头整局验证脚本 `scripts/e2e_doudizhu_test.py`。
+- 指纹 = 正文 sha1：时间标签漂移（N分钟前→N小时前）不影响去重
+- 采集时结尾互动计数（转发/评论/赞、转发微博内嵌的统计行）必须循环剥干净，
+  否则计数上涨会被当成新动态重复播报
+- 微博会限流隐藏峰哥部分动态（主页不可见、搜索可见）：主页抓到 ≤2 条时
+  必须补实时搜索（s.weibo.com/realtime）按作者过滤合并
+- 正文原文原样提交，任何二次加工都会污染指纹
 
 ## 换积木
 
-编辑 `configs/autodl-4090.yaml` 对应段的 `backend` 和参数（每段注释里写了可选
-backend 和换法示例，如 LLM 换本地 vLLM / 本地 transformers）。参数名 → CLI flag
-的映射以 `voxemw/backends.py` 注册表为准，flag 逐一核对自 vendor 的
-`arguments_classes/`。渲染结果可先干跑确认：
-
-```bash
-python launch.py --config configs/autodl-4090.yaml --dry-run
-```
-
-改完重启服务生效（`pkill -f speech_to_speech && python launch.py`）。
-
-## 加角色
-
-1. 造人设：可用 huashu-nuwa skill 蒸馏（「蒸馏XX」→ 生成思维框架 SKILL.md），
-   或手写
-2. 在 `personas/` 新建 `<id>.md`：YAML frontmatter（`name` 显示名、
-   `ref_wav`、`ref_text` 音色素材路径）+ 人设正文（作为 instructions 全文注入）。
-   参照 `personas/liangzi.md`
-3. `python scripts/build_personas.py` 重新生成 `web/personas.json`
-4. 刷新页面，角色下拉里就有了
-
-**音色热切换**：人设热切换会同时换 instructions（说话方式）和音色——前端
-`session.update` 把 `audio.output.voice` 设为人设 id，服务端 VoxCPM handler
-按名字选用 `tts.voices` 里预编码的 prompt cache（Ultimate Cloning：参考音频
-同时作续写 prompt + 克隆 reference，配 ref.txt 逐字台词）。给新角色配音色：
-
-1. 音色素材放到 `assets/<id>/ref.wav` + `ref.txt`
-2. 在 `configs/autodl-4090.yaml` 的 `tts.voices` 加同名 key（key 必须 = persona id）：
-
-   ```yaml
-   tts:
-     ref_audio: assets/liangzi/ref.wav   # 默认音色（voice 未命中时用）
-     ref_text: assets/liangzi/ref.txt
-     voices:
-       liangzi: { ref_audio: assets/liangzi/ref.wav, ref_text: assets/liangzi/ref.txt }
-       fengge:  { ref_audio: assets/fengge/ref.wav,  ref_text: assets/fengge/ref.txt }
-   ```
-
-3. 重启服务一次（新音色只在启动时预编码；之后页面里随时切，不用再重启）
-
-`tts.ref_audio/ref_text` 仍是默认音色；voice 名在 `voices` 里没匹配到时回退到它。
+- **换音色**：素材放 `assets/<id>/ref.wav` + `ref.txt`，`voices` 加同名条目，重启
+- **换人设**：改 `blocks.persona.path` 指向别的 prompt 文件
+- **换 LLM/TTS/VAD/STT 实现**：改 `blocks` 对应段的 `impl`（VAD/STT 目前只有
+  webspeech 一种实现，留了扩展位）
 
 ## 本地开发（macOS，无 GPU）
 
-本机只写代码 + 跑纯逻辑单测（不 import torch/transformers）：
-
 ```bash
-python3 -m venv .venv && .venv/bin/python -m pip install pytest pyyaml
+python3 -m venv .venv && .venv/bin/python -m pip install pytest pyyaml numpy aiohttp
 .venv/bin/python -m pytest tests/ -v
+.venv/bin/python -m voxemw.server --no-tts   # 音频接口 503，其余全可用
 ```
-
-`launch.py --dry-run` 也可在本机验证配置渲染（需 `DEEPSEEK_API_KEY` 占位）。
 
 ## 目录
 
-- `configs/` — 积木配置（YAML，六段：vad/stt/llm/tts/persona/server）
-- `voxemw/backends.py` — 后端注册表（YAML 参数名 → CLI flag）
-- `launch.py` — 启动器：读 YAML → 渲染 argv → exec speech-to-speech
-- `personas/` — 人设积木（frontmatter + 正文）；源素材在 `skills/`
-- `scripts/build_personas.py` — personas/*.md → web/personas.json
+- `configs/alerter.yaml` — 唯一配置（五积木 blocks + alerter + voices + server）
+- `voxemw/` — `config.py`（YAML+.env+人设文件加载）、`llm.py`（DeepSeek 客户端）、
+  `briefing.py`（过滤/去重/存档/prompt/选号纯逻辑）、`tts.py`（VoxCPM2 封装）、
+  `server.py`（aiohttp）
+- `personas/newsanchor.md` — 突发主持人设（LLM system prompt）
+- `skills/newsanchor-perspective/` — 蒸馏的主持人设 skill 完整版（含选音色指南）
+- `skills/fengge-alerter/` — Agent 侧微博采集 playbook（cron 用，含防限流/清洗规则）
+- `web/` — 警报样式静态页（时间线 + 答复弹窗 + 播放警报动效）
 - `scripts/autodl_setup.sh` — AutoDL 一键部署（幂等）
-- `scripts/start_game.sh` — 停聊天管线、起斗地主服务
-- `scripts/smoke_doudizhu_*.py` / `e2e_doudizhu_test.py` — 本地假 LLM 冒烟 / 实例整局验证
-- `web/` — 无构建静态前端（realtime ws 客户端 + 角色切换；`doudizhu.html/js` 牌桌 UI）
-- `doudizhu/` — 语音斗地主（纯逻辑引擎 + DeepSeek bot + 语音接入层）
-- `vendor/speech-to-speech/` — 上游管线（pinned commit，`patches/` 打补丁）
-- `patches/register-handlers.patch` — 自定义后端注册（唯一事实源）
-- `extensions/` — 自定义 handler 的人类可读副本
-- `assets/` — 音色克隆素材（自行提供，不入库）
-- `tests/` — 纯逻辑单测
+- `scripts/_jupyter_term_run.py` — Jupyter 网页终端命令执行器（SSH 备用通道）
+- `assets/` — 音色克隆素材（默认 `fengge/`，仓库自带；素材本身不入库）
+- `data/` — 运行时存档与去重指纹（不入库）
+- `tests/` — 纯逻辑单测（不 import torch，本机可跑）
 
 ## 合规
 
-音色克隆素材由使用者本人提供，仅限娱乐演示；AI 生成内容需标注，不得用于
-冒充、欺诈。人设均为基于公开言论的娱乐扮演，非本人观点；涉及健康/心理等
-真实求助请以专业渠道为准。
+反指短报是**娱乐内容，不构成任何建议**；据此操作盈亏自负。
+音色克隆素材由使用者本人提供；AI 生成内容需标注，不得用于冒充、欺诈。
+微博内容版权归原博主，采集仅用于个人提醒，不要二次分发。
 
 ## 相关链接
 
-- 上游管线：https://github.com/huggingface/speech-to-speech
 - VoxCPM2：https://huggingface.co/openbmb/VoxCPM2
-- OmniVoice（备选 TTS）：https://huggingface.co/k2-fsa/OmniVoice
-- Qwen3-ASR：https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf
+- DeepSeek API：https://platform.deepseek.com
+- Kimi WebBridge：https://www.kimi.com/zh-cn/features/webbridge

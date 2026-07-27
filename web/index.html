@@ -3,35 +3,71 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VoxEMW · 搭积木语音助手</title>
-  <link rel="stylesheet" href="style.css" />
+  <title>峰哥说啥我反着来</title>
+  <link rel="stylesheet" href="style.css?v=10" />
 </head>
 <body>
+  <!-- 顶部突发横幅 -->
+  <div class="breaking-banner">
+    <span class="breaking-flash">⚠ 注意 BREAKING ⚠</span>
+  </div>
+
+  <!-- 语音答复弹窗提醒栏（不进时间线） -->
+  <div id="answer-bar" class="answer-bar hidden">
+    <div class="answer-head">
+      <span class="answer-tag">语音答复</span>
+      <span id="answer-query" class="answer-query"></span>
+      <button id="answer-replay" class="replay-btn">🔊 重播</button>
+      <button id="answer-close" class="answer-close">✕</button>
+    </div>
+    <p id="answer-text" class="answer-text"></p>
+  </div>
+
   <main class="app">
-    <header>
-      <h1>VoxEMW</h1>
-      <p class="subtitle">搭积木语音助手 · speech-to-speech realtime</p>
+    <header class="masthead">
+      <div class="siren"><div class="siren-light"></div></div>
+      <div>
+        <h1>峰哥说啥我反着来</h1>
+        <p class="subtitle">峰哥看好/唱衰什么，就提示要反着来</p>
+      </div>
+      <div class="siren"><div class="siren-light"></div></div>
     </header>
 
-    <section class="controls">
-      <label class="field">
-        <span>角色</span>
-        <select id="persona-select" disabled>
-          <option>加载中…</option>
-        </select>
-      </label>
-      <button id="connect-btn" class="primary">连接</button>
-      <span id="status" class="status disconnected">未连接</span>
+    <!-- 语音查询 -->
+    <section class="panel ask-panel">
+      <button id="mic-btn" class="mic-btn" disabled title="加载中…">🎤</button>
+      <div class="ask-input-wrap">
+        <input id="ask-input" type="text" placeholder="语音不可用，直接输入查询词，例：峰哥怎么看比特币" />
+        <button id="ask-send-btn" class="primary">发送</button>
+      </div>
+      <p id="ask-status" class="ask-status"></p>
     </section>
 
-    <p class="hint">
-      连接后自动申请麦克风，直接说话即可（服务端 VAD 自动判停，可随时打断）。
-      换角色即时生效（只换说话方式）；<strong>音色跟随服务启动配置，页面切换不改变音色</strong>。
-    </p>
+    <!-- 微博时间线：今天截至现在的动态，每条带播放按钮 -->
+    <section class="panel timeline-panel">
+      <h2 class="panel-title">今日动态时间线</h2>
+      <div id="timeline" class="timeline">
+        <p class="alerts-empty" id="timeline-empty">加载中…</p>
+      </div>
+    </section>
 
-    <section id="log" class="log" aria-live="polite"></section>
+    <!-- 调试折叠区：手动 TTS 试听 -->
+    <details class="debug">
+      <summary>调试 · 手动 TTS 试听</summary>
+      <div class="debug-body">
+        <label class="field">
+          <span>音色</span>
+          <select id="voice-select"><option>加载中…</option></select>
+        </label>
+        <textarea id="tts-text" rows="3" placeholder="输入要试听的文本"></textarea>
+        <button id="tts-btn" class="primary">合成试听</button>
+        <div id="tts-audio-area" class="audio-area"></div>
+      </div>
+    </details>
+
+    <p id="status" class="status" role="status"></p>
   </main>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

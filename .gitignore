@@ -9,15 +9,15 @@ nohup.out
 __pycache__/
 *.pyc
 
-# 用户提供的音色素材（个人材料，默认不入库；Docker 构建时另行拷入）
+# 运行时状态（博文指纹去重持久化）
+data/
+
+# 用户提供的音色素材（个人材料，不入库）
 assets/liangzi/ref.wav
 assets/liangzi/ref.txt
-
-# 上游 vendored 仓库（speech-to-speech，以 patches/ 为准重建）
-vendor/
+assets/fengge/ref.wav
+assets/fengge/ref.txt
 
 # macOS / 测试缓存
 .DS_Store
 .pytest_cache/
-assets/fengge/ref.wav
-assets/fengge/ref.txt
