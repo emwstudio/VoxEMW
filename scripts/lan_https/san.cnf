@@ -1,0 +1,6 @@
+[req]
+distinguished_name = dn
+req_extensions = ext
+[dn]
+[ext]
+subjectAltName = IP:192.168.2.4,IP:127.0.0.1,DNS:localhost

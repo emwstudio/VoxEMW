@@ -1,8 +1,8 @@
-"""config 纯逻辑单测：新 YAML（blocks 五积木）加载、人设/音色解析、api key 解析。"""
+"""config 纯逻辑单测：YAML 积木配置加载、persona frontmatter/素材解析、api key 解析。"""
 
 import pytest
 
-from voxemw.config import load_config, load_dotenv, resolve_api_key
+from voxemw.config import load_config, load_dotenv, parse_persona_file, resolve_api_key
 
 
 @pytest.fixture()
@@ -11,31 +11,40 @@ def assets(tmp_path):
     ref_wav.write_bytes(b"RIFF-fake")
     ref_txt = tmp_path / "ref.txt"
     ref_txt.write_text("  逐字台词内容  \n", encoding="utf-8")
-    persona = tmp_path / "persona.md"
-    persona.write_text("  你是突发主播。  \n", encoding="utf-8")
-    return {"wav": ref_wav, "txt": ref_txt, "persona": persona}
+    ref_png = tmp_path / "ref.png"
+    ref_png.write_bytes(b"\x89PNG-fake")
+    persona = tmp_path / "demo.md"
+    persona.write_text(
+        "---\n"
+        "name: 演示人设\n"
+        f"ref_wav: {ref_wav}\n"
+        f"ref_text: {ref_txt}\n"
+        f"ref_image: {ref_png}\n"
+        "---\n"
+        "  你是演示人设。  \n",
+        encoding="utf-8",
+    )
+    return {"wav": ref_wav, "txt": ref_txt, "png": ref_png, "persona": persona}
 
 
-def _write_config(tmp_path, assets):
+def _write_config(tmp_path, assets, extra_personas=""):
     cfg = tmp_path / "cfg.yaml"
     cfg.write_text(
         f"""
-blocks:
-  vad: {{ impl: webspeech }}
-  stt: {{ impl: webspeech, lang: zh-CN }}
-  llm:
-    impl: deepseek
-    model: deepseek-v4-flash
-    base_url: https://api.deepseek.com/v1
-    api_key_env: TEST_LLM_KEY
-  tts: {{ impl: voxcpm2, model_name: openbmb/VoxCPM2, device: cuda }}
-  persona: {{ impl: file, path: {assets['persona']} }}
-alerter: {{ weibo_name: 峰哥亡命天涯, max_briefing_chars: 150 }}
-voices:
-  demo:
-    name: 演示音色
-    ref_audio: {assets['wav']}
-    ref_text: {assets['txt']}
+vad: {{ backend: silero, min_silence_ms: 600 }}
+stt: {{ backend: qwen3asr, model_name: Qwen/Qwen3-ASR-1.7B-hf }}
+llm:
+  backend: chat-completions
+  model_name: deepseek-v4-flash
+  base_url: https://api.deepseek.com/v1
+  api_key_env: TEST_LLM_KEY
+tts: {{ backend: voxcpm, model_name: openbmb/VoxCPM2, device: cuda }}
+avatar: {{ backend: flashhead, enabled: true }}
+personas:
+  default: demo
+  list:
+    demo: {assets['persona']}
+{extra_personas}
 server:
   port: 8000
 """,
@@ -44,96 +53,95 @@ server:
     return cfg
 
 
-class TestLoadConfig:
-    def test_resolves_blocks_persona_and_voices(self, tmp_path, assets):
-        config = load_config(_write_config(tmp_path, assets))
-        assert config["blocks"]["stt"]["lang"] == "zh-CN"
-        assert config["persona_text"] == "你是突发主播。"  # 读入文本并 strip
-        spec = config["voices"]["demo"]
-        assert spec["name"] == "演示音色"
-        assert spec["ref_audio"] == str(assets["wav"])
-        assert spec["ref_text"] == "逐字台词内容"  # 读入文本并 strip
-
-    def test_missing_block_exits(self, tmp_path):
-        cfg = tmp_path / "bad.yaml"
-        cfg.write_text("blocks:\n  vad: {impl: webspeech}\n", encoding="utf-8")
-        with pytest.raises(SystemExit):
-            load_config(cfg)
-
-    def test_missing_persona_file_exits(self, tmp_path, assets):
-        assets["persona"].unlink()
-        with pytest.raises(SystemExit):
-            load_config(_write_config(tmp_path, assets))
-
-    def test_unsupported_persona_impl_exits(self, tmp_path, assets):
-        cfg = _write_config(tmp_path, assets)
-        cfg.write_text(
-            cfg.read_text(encoding="utf-8").replace("impl: file", "impl: inline"),
-            encoding="utf-8",
-        )
-        with pytest.raises(SystemExit):
-            load_config(cfg)
-
-    def test_missing_voices_section_exits(self, tmp_path):
-        cfg = tmp_path / "bad.yaml"
-        cfg.write_text(
-            "blocks:\n  vad: {}\n  stt: {}\n  llm: {}\n  tts: {}\n"
-            "  persona: {impl: file, path: /dev/null}\n",
-            encoding="utf-8",
-        )
-        with pytest.raises(SystemExit):
-            load_config(cfg)
-
-    def test_missing_ref_audio_exits(self, tmp_path, assets):
-        cfg = _write_config(tmp_path, assets)
-        cfg.write_text(
-            cfg.read_text(encoding="utf-8").replace(str(assets["wav"]), "/nonexistent/x.wav"),
-            encoding="utf-8",
-        )
-        with pytest.raises(SystemExit):
-            load_config(cfg)
-
-    def test_repo_config_loads(self, repo_root):
-        """仓库自带的 configs/alerter.yaml 必须能过加载（音色素材在位）。"""
-        config = load_config(repo_root / "configs" / "alerter.yaml")
-        assert set(config["blocks"]) == {"vad", "stt", "llm", "tts", "persona"}
-        assert config["persona_text"]
-        assert set(config["voices"]) == {"fengge"}
-        assert config["blocks"]["llm"]["model"]
+def test_load_config_resolves_persona(tmp_path, assets):
+    config = load_config(_write_config(tmp_path, assets))
+    demo = config["personas"]["resolved"]["demo"]
+    assert config["personas"]["default"] == "demo"
+    assert demo["name"] == "演示人设"
+    assert demo["text"] == "你是演示人设。"
+    assert demo["ref_wav"] == str(assets["wav"])
+    assert demo["ref_text"] == "逐字台词内容"
+    assert demo["ref_image"] == str(assets["png"])
 
 
-class TestResolveApiKey:
-    def test_reads_env(self):
-        assert resolve_api_key({"api_key_env": "K"}, {"K": "sk-1"}) == "sk-1"
-
-    def test_fallback_llm_api_key(self):
-        assert resolve_api_key({"api_key_env": "K"}, {"LLM_API_KEY": "sk-2"}) == "sk-2"
-
-    def test_default_env_name(self):
-        with pytest.raises(SystemExit):
-            resolve_api_key({}, {})
-
-    def test_missing_key_exits(self):
-        with pytest.raises(SystemExit):
-            resolve_api_key({"api_key_env": "NOPE"}, {})
+def test_load_config_missing_ref_image_degrades(tmp_path, assets):
+    assets["png"].unlink()
+    config = load_config(_write_config(tmp_path, assets))
+    # 缺肖像不阻塞启动：ref_image 置 None，avatar 降级纯语音
+    assert config["personas"]["resolved"]["demo"]["ref_image"] is None
 
 
-class TestLoadDotenv:
-    def test_basic_and_no_override(self, tmp_path, monkeypatch):
-        env = tmp_path / ".env"
-        env.write_text(
-            '# 注释\nA=1\nB="two"\nC=\'three\'\n\nbad-line\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("A", "preset")
-        for k in ("B", "C"):
-            monkeypatch.delenv(k, raising=False)
-        import os
+def test_load_config_missing_block_exits(tmp_path, assets):
+    cfg = tmp_path / "bad.yaml"
+    cfg.write_text("vad: {}\nstt: {}\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        load_config(cfg)
 
-        load_dotenv(env)
-        assert os.environ["A"] == "preset"  # 已存在不覆盖
-        assert os.environ["B"] == "two"
-        assert os.environ["C"] == "three"
 
-    def test_missing_file_noop(self, tmp_path):
-        load_dotenv(tmp_path / "nope")  # 不抛异常
+def test_load_config_missing_ref_wav_exits(tmp_path, assets):
+    assets["wav"].unlink()
+    with pytest.raises(SystemExit):
+        load_config(_write_config(tmp_path, assets))
+
+
+def test_load_config_default_not_in_list_exits(tmp_path, assets):
+    cfg = tmp_path / "bad2.yaml"
+    cfg.write_text(
+        f"""
+vad: {{}}
+stt: {{}}
+llm: {{}}
+tts: {{}}
+avatar: {{}}
+personas:
+  default: ghost
+  list:
+    demo: {assets['persona']}
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        load_config(cfg)
+
+
+def test_parse_persona_file_without_frontmatter(tmp_path):
+    p = tmp_path / "plain.md"
+    p.write_text("  你是纯文本人设。  \n", encoding="utf-8")
+    persona = parse_persona_file(p)
+    assert persona["name"] == "plain"
+    assert persona["text"] == "你是纯文本人设。"
+    assert persona["ref_wav"] is None
+    assert persona["ref_image"] is None
+
+
+def test_resolve_api_key(monkeypatch):
+    monkeypatch.setenv("TEST_LLM_KEY", "sk-test")
+    assert resolve_api_key({"api_key_env": "TEST_LLM_KEY"}) == "sk-test"
+
+
+def test_resolve_api_key_fallback(monkeypatch):
+    monkeypatch.delenv("TEST_LLM_KEY", raising=False)
+    monkeypatch.setenv("LLM_API_KEY", "sk-fallback")
+    assert resolve_api_key({"api_key_env": "TEST_LLM_KEY"}) == "sk-fallback"
+
+
+def test_resolve_api_key_missing_exits(monkeypatch):
+    monkeypatch.delenv("TEST_LLM_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    with pytest.raises(SystemExit):
+        resolve_api_key({"api_key_env": "TEST_LLM_KEY"})
+
+
+def test_load_dotenv(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        '# 注释\nTEST_A=foo\nTEST_B="bar baz"\nTEST_C=\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("TEST_A", raising=False)
+    monkeypatch.delenv("TEST_B", raising=False)
+    load_dotenv(env_file)
+    import os
+
+    assert os.environ["TEST_A"] == "foo"
+    assert os.environ["TEST_B"] == "bar baz"

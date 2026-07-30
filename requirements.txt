@@ -1,0 +1,20 @@
+# VoxEMW 数字人实时语音助手 —— GPU 服务器依赖（AutoDL 4090D）
+#
+# torch/torchaudio 需先单独安装 cu128 wheel，flash_attn 与 ffmpeg 另装，
+# 见 scripts/autodl_setup.sh（本文件只管 pip 常规依赖）。
+
+# 语音管线主体（pip 依赖，运行时注册自定义积木；版本对齐上游 656099a）
+speech-to-speech==0.2.11
+
+# 自定义积木依赖
+voxcpm                  # TTS：openbmb/VoxCPM2
+transformers            # STT：Qwen/Qwen3-ASR-1.7B-hf
+
+# 编排与服务
+aiohttp                 # orchestrator（Web 静态页 + ws）
+websockets              # orchestrator → s2s / avatar service 的 ws 客户端
+
+# 基础
+numpy
+scipy                   # TTS 重采样（resample_poly）
+pyyaml
