@@ -14,7 +14,8 @@
 "use strict";
 
 const SAMPLE_RATE = 16000;
-const FRAME_TYPE_JPEG = 0x01;
+const FRAME_TYPE_JPEG = 0x01;       // 下行：数字人视频帧
+const FRAME_TYPE_USER_JPEG = 0x02;  // 上行：用户摄像头截帧（打分环节）
 
 const els = {
   status: document.getElementById("status"),
@@ -22,6 +23,9 @@ const els = {
   still: document.getElementById("avatar-still"),
   avatarWrap: document.querySelector(".avatar-wrap"),
   fallback: document.getElementById("avatar-fallback"),
+  avatarLabel: document.getElementById("avatar-label"),
+  camWrap: document.getElementById("cam-wrap"),
+  userCam: document.getElementById("user-cam"),
   personaBar: document.getElementById("persona-bar"),
   transcript: document.getElementById("transcript"),
   micBtn: document.getElementById("mic-btn"),
@@ -29,11 +33,18 @@ const els = {
 
 let ws = null;
 let mic = null;
+let camStream = null;
 let player = null;
 let personas = [];
 let currentPersona = null;
 let avatarOn = false;
 let assistantLine = null; // 正在流式累积的助手文本行
+
+// 截帧打分：persona 说出暗号（vision.trigger）→ 截一帧摄像头发给 orchestrator
+let visionOn = false;
+let visionTrigger = "让我好好看看你";
+let visionCooldownUntil = 0;
+let responseText = ""; // 当前 response 已累积的助手文本（暗号在这里面找）
 
 // ---------------------------------------------------------------------------
 // PCM 编解码
@@ -89,16 +100,27 @@ function playPCM(int16) {
   const src = p.ctx.createBufferSource();
   src.buffer = buf;
   src.connect(p.ctx.destination);
-  const start = Math.max(p.ctx.currentTime + (avatarOn ? AVATAR_AUDIO_DELAY : 0.02), p.nextStartTime);
+  const prevEnd = p.nextStartTime;  // 本 delta 排程前的音频链尾（= 上一段回复的播放结束点）
+  const start = Math.max(p.ctx.currentTime + (avatarOn ? AVATAR_AUDIO_DELAY : 0.02), prevEnd);
   src.start(start);
   p.nextStartTime = start + buf.duration;
   if (needVideoBase) {
-    // 本 response 首个音频 delta:记录它在 ctx 时间轴上的起点作为视频对齐基准。
-    // 同时清空队列:里面滞留的是上一回复的"闭嘴尾帧"(句尾零填充生成),
-    // 不清掉会被当作本回复的开头播出,嘴型整体慢 ~1s
-    responseAudioBase = start;
-    videoFrameIdx = 0;
-    frameQueue.length = 0;
+    if (prevEnd - p.ctx.currentTime < 0.3) {
+      // 常规：上一段回复已播完。本 response 首个音频 delta:记录它在 ctx 时间轴上的
+      // 起点作为视频对齐基准。同时清空队列:里面滞留的是上一回复的"闭嘴尾帧"
+      // (句尾零填充生成),不清掉会被当作本回复的开头播出,嘴型整体慢 ~1s
+      responseAudioBase = start;
+      videoFrameIdx = 0;
+      frameQueue.length = 0;
+    } else {
+      // 注入式连续回复（垫场→打分）：生成远快于播放，新回复 delta 到达时上一段
+      // 还在播。此时绝不能重锚+清队——上一段的真帧被扔掉、数字人又不会补发，
+      // 视频就会半路定格（音频还在放）。音频链是连续的，帧按到达顺序从属同一
+      // 时钟即可；只砍掉旧回复的"闭嘴尾帧"（零填充生成，对应播放中不存在的静音段）
+      const oldTotalFrames = Math.floor((prevEnd - responseAudioBase) * 25);
+      const keep = Math.max(0, oldTotalFrames - videoFrameIdx);
+      if (frameQueue.length > keep) frameQueue.length = keep;
+    }
     needVideoBase = false;
   }
 }
@@ -158,6 +180,61 @@ function stopMic() {
   mic.stream.getTracks().forEach((t) => t.stop());
   mic.ctx.close();
   mic = null;
+}
+
+// ---------------------------------------------------------------------------
+// 摄像头（左侧画面 + 打分截帧）
+// ---------------------------------------------------------------------------
+
+async function startCamera() {
+  camStream = await navigator.mediaDevices.getUserMedia({ video: true });
+  els.userCam.srcObject = camStream;
+  els.camWrap.classList.add("live");
+}
+
+function stopCamera() {
+  if (!camStream) return;
+  camStream.getTracks().forEach((t) => t.stop());
+  camStream = null;
+  els.userCam.srcObject = null;
+  els.camWrap.classList.remove("live");
+}
+
+// 截一帧（与显示一致做镜像），缩放到最长边 640，0x02 + JPEG 发给 orchestrator
+function sendCameraSnapshot() {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !camStream) return;
+  const video = els.userCam;
+  const w = video.videoWidth, h = video.videoHeight;
+  if (!w || !h) return;
+  visionBusy = true;  // 直到 vox.vision scored/error/off 才恢复暗号检测
+  const scale = Math.min(1, 640 / Math.max(w, h));
+  const c = document.createElement("canvas");
+  c.width = Math.round(w * scale);
+  c.height = Math.round(h * scale);
+  const cx = c.getContext("2d");
+  cx.translate(c.width, 0);
+  cx.scale(-1, 1);
+  cx.drawImage(video, 0, 0, c.width, c.height);
+  const b64 = c.toDataURL("image/jpeg", 0.8).split(",")[1];
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length + 1);
+  bytes[0] = FRAME_TYPE_USER_JPEG;
+  for (let i = 0; i < bin.length; i++) bytes[i + 1] = bin.charCodeAt(i);
+  ws.send(bytes.buffer);
+}
+
+// 助手本轮文本里出现暗号 → 延迟 1.2s（留摆姿势时间）截帧；10s 冷却防连发。
+// visionBusy 期间（垫场+打分回复）不再检测——打分回复里可能又提到暗号句式，
+// 不挡住会无限循环打分
+let visionBusy = false;
+
+function maybeSnapshot() {
+  if (!visionOn || !camStream || visionBusy) return;
+  if (!responseText.includes(visionTrigger)) return;
+  const now = performance.now();
+  if (now < visionCooldownUntil) return;
+  visionCooldownUntil = now + 10000;
+  setTimeout(sendCameraSnapshot, 1200);
 }
 
 // ---------------------------------------------------------------------------
@@ -308,24 +385,36 @@ const realtimeHandlers = {
     frameQueue.length = 0;  // 视频帧队列一并清空，嘴型跟着归位
     needVideoBase = true;
     assistantLine = null;
+    responseText = "";
   },
   "conversation.item.input_audio_transcription.completed"(event) {
     const text = (event.transcript || "").trim();
     if (text) addLine("user", "你:", text);
   },
   "response.output_audio_transcript.delta"(event) {
-    if (event.delta) appendAssistantDelta(event.delta);
+    if (event.delta) {
+      appendAssistantDelta(event.delta);
+      responseText += event.delta;
+    }
   },
   "response.output_text.delta"(event) {
-    if (event.delta) appendAssistantDelta(event.delta);
+    if (event.delta) {
+      appendAssistantDelta(event.delta);
+      responseText += event.delta;
+    }
   },
   "response.output_audio_transcript.done"(event) {
     // 音频模式下上游不发 delta,只在 done 里带整段文本——必须在这里显示
-    if (event.transcript) appendAssistantDelta(event.transcript);
+    if (event.transcript) {
+      appendAssistantDelta(event.transcript);
+      responseText += event.transcript;
+    }
     assistantLine = null;
+    maybeSnapshot();
   },
   "response.output_text.done"() {
     assistantLine = null;
+    maybeSnapshot();
   },
   "response.output_audio.delta"(event) {
     if (event.delta) playPCM(int16FromBase64(event.delta));
@@ -336,6 +425,8 @@ const realtimeHandlers = {
   "response.done"() {
     assistantLine = null;
     needVideoBase = true;  // 下一个音频 delta 开启新 response,重设视频对齐基准
+    maybeSnapshot();
+    responseText = "";
   },
   error(event) {
     addLine("sys", "", `⚠ ${(event.error && event.error.message) || "未知错误"}`);
@@ -357,6 +448,20 @@ function handleTextMessage(data) {
     showStill(currentPersona);
     return;
   }
+  if (event.type === "vox.vision") {
+    if (event.state === "scored" || event.state === "error" || event.state === "off") {
+      visionBusy = false;
+    }
+    const msg = {
+      scoring: "📷 峰哥打分中…（麦克风暂闭，插话不会打断他）",
+      scored: "📷 打分完毕，麦克风恢复",
+      busy: "📷 上一张还没看完，别急",
+      error: "📷 没看清，换个光线再让他评",
+      off: "📷 打分功能未启用（服务器缺 KIMI_API_KEY）",
+    }[event.state];
+    if (msg) addLine("sys", "", msg);
+    return;
+  }
   const handler = realtimeHandlers[event.type];
   if (handler) handler(event);
 }
@@ -371,6 +476,8 @@ function setStatus(text, cls) {
 }
 
 function updatePersonaBar() {
+  // 只有一个人设时隐藏切换条（chip 标签没意义）；多个人设自动恢复
+  els.personaBar.style.display = personas.length > 1 ? "" : "none";
   els.personaBar.innerHTML = "";
   for (const p of personas) {
     const chip = document.createElement("button");
@@ -379,6 +486,8 @@ function updatePersonaBar() {
     chip.onclick = () => switchPersona(p.id);
     els.personaBar.appendChild(chip);
   }
+  const cur = personas.find((p) => p.id === currentPersona);
+  if (cur) els.avatarLabel.textContent = cur.label || cur.name;
 }
 
 function switchPersona(id) {
@@ -425,6 +534,8 @@ async function init() {
   personas = data.list;
   currentPersona = data.default;
   avatarOn = data.avatar === "on";
+  visionOn = data.vision === "on";
+  if (data.trigger) visionTrigger = data.trigger;
   els.fallback.classList.toggle("hidden", avatarOn);
   updatePersonaBar();
   showStill(currentPersona);
@@ -434,6 +545,7 @@ async function init() {
 els.micBtn.onclick = async () => {
   if (mic) {
     stopMic();
+    stopCamera();
     els.micBtn.textContent = "🎙 开始对话";
     els.micBtn.classList.remove("live");
     setStatus("已连接（麦克风关）", "");
@@ -446,6 +558,13 @@ els.micBtn.onclick = async () => {
     setStatus("聆听中", "live");
   } catch (e) {
     addLine("sys", "", `⚠ 麦克风不可用: ${e.message}`);
+    return;
+  }
+  try {
+    await startCamera();
+  } catch (e) {
+    // 摄像头被拒只降级：左侧显示占位，语音对话不受影响
+    addLine("sys", "", `⚠ 摄像头不可用（纯语音继续）: ${e.message}`);
   }
 };
 

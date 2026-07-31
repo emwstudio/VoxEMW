@@ -23,7 +23,7 @@ body {
 }
 
 .stage {
-  width: min(640px, 100vw);
+  width: min(1080px, 100vw);
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -40,6 +40,17 @@ body {
 .status.live { color: var(--live); }
 .status.warn { color: var(--warn); }
 
+/* 通话双栏：左你的摄像头，右数字人；窄屏竖排 */
+.call-view {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 720px) {
+  .call-view { grid-template-columns: 1fr; }
+}
+
+.cam-wrap,
 .avatar-wrap {
   position: relative;
   width: 100%;
@@ -48,6 +59,34 @@ body {
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
+}
+.cam-wrap video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1); /* 镜像，符合自拍直觉 */
+}
+.cam-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+.cam-wrap.live .cam-fallback { display: none; }
+.pane-label {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text);
+  background: rgba(13, 17, 23, 0.6);
 }
 .avatar-wrap img,
 .avatar-wrap canvas {

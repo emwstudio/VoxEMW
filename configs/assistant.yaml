@@ -87,6 +87,20 @@ avatar:
   host: 127.0.0.1
 
 # ---------------------------------------------------------------------------
+# Vision：外貌描述（可选积木，缺 key/整段删除即关闭，不影响语音链路）。
+# 场景：LLM 是纯文本看不见用户。persona 说出暗号（trigger）→ 前端截一帧摄像头
+# → orchestrator 调 Kimi 多模态拿客观描述 → 注入对话让 persona 锐评。
+# Kimi 视觉只收 base64 图片（不收公网 URL），key 在 platform.moonshot.cn 申请。
+# ---------------------------------------------------------------------------
+vision:
+  backend: kimi                        # OpenAI 兼容多模态接口
+  model_name: kimi-k3
+  base_url: https://api.moonshot.cn/v1 # AutoDL 国内直连；海外用 https://api.kimi.com/v1
+  api_key_env: KIMI_API_KEY
+  max_tokens: 600   # kimi-k3 是 thinking 模型，reasoning 会吃掉配额，多给余量
+  trigger: 让我好好看看你               # 暗号短语：persona 原句说出，前端检测后截帧
+
+# ---------------------------------------------------------------------------
 # 人设注册表：key = persona id（前端切换、TTS 音色名都用它），
 # value = 女娲蒸馏产物。每个文件的 frontmatter 声明三件套：
 #   name（显示名）/ ref_wav（音色参考音）/ ref_text（逐字台词）/ ref_image（数字人肖像）

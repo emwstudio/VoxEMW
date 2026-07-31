@@ -49,9 +49,9 @@ def _resolve_path(value: str) -> Path:
 def parse_persona_file(path: Path) -> dict:
     """解析 personas/<id>.md：frontmatter（name/ref_wav/ref_text/ref_image）+ 正文。
 
-    返回 {name, text, ref_wav, ref_text, ref_image}；无 frontmatter 时 name 用文件名、
-    素材字段为 None（由调用方决定缺素材是否报错）。ref_text 此处仍是文件路径，
-    读文件内容替换发生在 load_config 里。
+    返回 {name, label, text, ref_wav, ref_text, ref_image}；无 frontmatter 时 name 用文件名、
+    素材字段为 None（由调用方决定缺素材是否报错）。label 为界面短名（角标用），
+    缺省回退 name。ref_text 此处仍是文件路径，读文件内容替换发生在 load_config 里。
     """
     raw = path.read_text(encoding="utf-8")
     meta: dict = {}
@@ -65,8 +65,10 @@ def parse_persona_file(path: Path) -> dict:
             if not isinstance(meta, dict):
                 sys.exit(f"ERROR: {path} frontmatter 不是键值对")
             body = raw[end + 4 :]
+    name = str(meta.get("name") or path.stem)
     return {
-        "name": str(meta.get("name") or path.stem),
+        "name": name,
+        "label": str(meta.get("label") or name),
         "text": body.strip(),
         "ref_wav": meta.get("ref_wav"),
         "ref_text": meta.get("ref_text"),

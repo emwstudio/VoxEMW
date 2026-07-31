@@ -18,10 +18,18 @@
       <span id="status" class="status">未连接</span>
     </header>
 
-    <section class="avatar-wrap">
-      <img id="avatar-still" alt="数字人肖像" />
-      <canvas id="avatar-canvas" width="512" height="512"></canvas>
-      <div id="avatar-fallback" class="avatar-fallback hidden">纯语音模式（数字人未就绪）</div>
+    <section class="call-view">
+      <div class="cam-wrap" id="cam-wrap">
+        <video id="user-cam" autoplay muted playsinline></video>
+        <div id="cam-fallback" class="cam-fallback">摄像头未开启</div>
+        <span class="pane-label">你</span>
+      </div>
+      <div class="avatar-wrap">
+        <img id="avatar-still" alt="数字人肖像" />
+        <canvas id="avatar-canvas" width="512" height="512"></canvas>
+        <div id="avatar-fallback" class="avatar-fallback hidden">纯语音模式（数字人未就绪）</div>
+        <span class="pane-label" id="avatar-label">峰哥</span>
+      </div>
     </section>
 
     <nav id="persona-bar" class="persona-bar" aria-label="人设切换"></nav>
@@ -33,6 +41,6 @@
       <p class="hint">开始后直接说话即可，随时可以打断她/他。</p>
     </footer>
   </main>
-  <script src="/static/assistant.js?v=20260730b"></script>
+  <script src="/static/assistant.js?v=20260801a"></script>
 </body>
 </html>

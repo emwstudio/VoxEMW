@@ -13,18 +13,36 @@
 ## 架构
 
 ```
-浏览器（web/，麦克风 + 视频画面）
+浏览器（web/，麦克风 + 摄像头画面 + 数字人画面）
    │  ws :8000（Realtime 事件 + 自定义 vox.persona + 二进制 JPEG 帧）
    ▼
 orchestrator（voxemw/avatar/orchestrator.py，CPU）
    ├─→ s2s 语音管线（voxemw/pipeline/launch.py，:8765 内部）
    │     VAD silero → STT Qwen3-ASR-1.7B → LLM DeepSeek API → TTS VoxCPM2（克隆音色）
-   └─→ avatar 数字人服务（voxemw/avatar/service.py，:8767 内部，可缺席）
-         FlashHead Lite + wav2vec2：TTS 音频 delta → 口型同步 JPEG 帧流
+   ├─→ avatar 数字人服务（voxemw/avatar/service.py，:8767 内部，可缺席）
+   │     FlashHead Lite + wav2vec2：TTS 音频 delta → 口型同步 JPEG 帧流
+   └─→ vision 外貌描述（voxemw/vision.py → Kimi K3 多模态 API，可缺席）
+         摄像头截帧 → 客观描述 → 注入 s2s 对话让 persona 锐评
 ```
 
 三进程同卡（RTX 4090D 24GB）：orchestrator 把 TTS 音频 delta 双写——一路回浏览器
-播放，一路喂数字人驱动口型。数字人缺席（未启动/缺肖像）自动降级纯语音模式。
+播放，一路喂数字人驱动口型。数字人缺席（未启动/缺肖像）自动降级纯语音模式；
+vision 缺席（缺 KIMI_API_KEY）只关截帧打分，语音对话不受影响。
+
+## 截帧打分（视频通话玩法）
+
+页面左栏是用户摄像头（随「开始对话」开启，可拒绝降级纯语音），右栏数字人。
+对峰哥说「给我的脸打几分」，他会说暗号「摆好姿势，让我好好看看你」——前端
+检测暗号后自动截一帧发给 orchestrator，Kimi K3 生成外貌客观描述，注入对话后
+峰哥先描绘他「看到」的外表细节，再按人设十分制锐评。链路：语音 LLM（DeepSeek）
+纯文本无视觉，视觉只走这一跳。
+
+等待 Kimi 描述的几秒空白由「垫场」填掉：orchestrator 收到截帧后先注入一条
+系统旁白让峰哥自由发挥（别动/调侃两句），描述返回后再注入打分指令。注入是
+乐观发送 + 被拒重试（VAD 回复不发 response.created，无法预判回复是否在播；
+response.create 被拒时等当前回复 response.done 自动重发）。从截帧到打分回复
+说完期间，orchestrator 直接丢弃上行麦克风音频——用户插话不会打断峰哥打分
+（前端有「麦克风暂闭」提示）。
 
 ## 六块积木（configs/assistant.yaml）
 
@@ -37,11 +55,14 @@ orchestrator（voxemw/avatar/orchestrator.py，CPU）
 | avatar | `Soul-AILab/SoulX-FlashHead-1_3B` Lite | 独立进程，96FPS@4090 能力，推 25fps |
 | persona | `personas/<id>.md` | 女娲蒸馏产物；frontmatter 绑定音色三件套（见下） |
 
+另有一块可选的 `vision` 积木（`voxemw/vision.py`）：Kimi K3 多模态 API，
+给「截帧打分」提供外貌描述；不配 key 自动关闭，见上文「截帧打分」。
+
 换积木改 yaml 对应段；每个 persona 的三件套：
 
 ```
 personas/fengge.md          # 人设正文（system prompt）+ frontmatter:
-                            #   name / ref_wav / ref_text / ref_image
+                            #   name / ref_wav / ref_text / ref_image（label 界面短名，可选）
 assets/fengge/ref.wav       # 音色参考音（10-30s 清晰单人声）
 assets/fengge/ref.txt       # 参考音逐字台词（Ultimate Cloning 必需）
 assets/fengge/ref.png       # 数字人肖像（512×512 附近最佳）
@@ -55,7 +76,7 @@ TTS 音色（audio.output.voice，启动时全员预编码 prompt cache）、数
 
 ```bash
 # 1. rsync 仓库到实例后
-cp .env.example .env.local   # 填入 DEEPSEEK_API_KEY
+cp .env.example .env.local   # 填入 DEEPSEEK_API_KEY（必填）；KIMI_API_KEY（可选，截帧打分用）
 bash scripts/autodl_setup.sh # 幂等：双 venv + 模型下载 + 启动三进程
 
 # 2. 本机 SSH 隧道（AutoDL 默认不开公网）
@@ -121,15 +142,16 @@ GPU 进程（pipeline/avatar）只能在服务器跑；orchestrator 逻辑可本
 
 ## 目录
 
-- `configs/assistant.yaml` — 唯一配置（六积木 + personas 注册表 + server）
+- `configs/assistant.yaml` — 唯一配置（六积木 + vision + personas 注册表 + server）
 - `voxemw/config.py` — YAML + .env + persona frontmatter/素材解析（纯逻辑）
 - `voxemw/pipeline/` — s2s 集成：`args.py`（配置→argv 纯逻辑）、
   `stt_qwen3asr.py` / `tts_voxcpm.py`（自定义积木）、`launch.py`（启动器）
 - `voxemw/avatar/` — `service.py`（FlashHead 数字人服务）、
-  `orchestrator.py`（浏览器入口 + 双写编排）
+  `orchestrator.py`（浏览器入口 + 双写编排 + 截帧注入）
+- `voxemw/vision.py` — Kimi K3 多模态外貌描述（截帧打分，可缺席）
 - `personas/` — 女娲蒸馏的语音人设（frontmatter 绑定音色/形象）
 - `skills/` — 女娲造人 skill 包（思维框架 + 研究笔记 + 选音色指南）
-- `web/` — 数字人聊天页（无构建，AudioWorklet + canvas）
+- `web/` — 视频通话聊天页（无构建：左栏摄像头 + 右栏数字人，AudioWorklet + canvas）
 - `scripts/autodl_setup.sh` / `start_assistant.sh` / `smoke_pipeline.py` /
   `lan_https/`（局域网 HTTPS 反代）
 - `assets/` — 音色/形象素材（个人材料，不入库）
@@ -147,3 +169,4 @@ GPU 进程（pipeline/avatar）只能在服务器跑；orchestrator 逻辑可本
 - VoxCPM2：https://huggingface.co/openbmb/VoxCPM2
 - Qwen3-ASR：https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf
 - DeepSeek API：https://platform.deepseek.com
+- Kimi API（截帧打分的视觉模型）：https://platform.moonshot.cn
