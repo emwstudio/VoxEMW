@@ -88,9 +88,13 @@ function ensurePlayer() {
 // 口型同步模型:TTS 以 ~2x 实时速度流式送音频,播放链会积压(实测 3-4s),
 // 各自计时必然漂移 → 视频帧节奏从属于音频播放时钟:音频播到第几秒就放第几帧。
 // AVATAR_AUDIO_DELAY 保留基础延迟,保证音频播放位置始终落后于视频供帧点,
-// 视频始终有帧可放(avatar 攒满 0.96s chunk + ~0.45s 生成 ≈ 0.9s 固有延迟)。
-// 实测 1.0s 效果最佳(0.8s 偶发供帧不足)
-const AVATAR_AUDIO_DELAY = 1.0;
+// 视频始终有帧可放(avatar 攒满 0.96s chunk + 生成 ≈ 固有延迟)。
+// SDPA 时代实测 1.0s 最佳(0.8s 偶发供帧不足);flash_attn 后生成提速,
+// 实测 0.8s 最佳。可用 ?adelay=N 覆盖(?debug=1 看帧队列深度,经常见底就调回去)
+const AVATAR_AUDIO_DELAY = (() => {
+  const v = parseFloat(new URLSearchParams(location.search).get("adelay"));
+  return Number.isFinite(v) && v >= 0 ? v : 0.8;
+})();
 
 function playPCM(int16) {
   const p = ensurePlayer();

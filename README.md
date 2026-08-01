@@ -87,8 +87,15 @@ ssh -CNg -L 8000:127.0.0.1:8000 root@<实例主机> -p <SSH端口>
 双 venv 隔离（依赖互相冲突，不可合装）：
 
 - `.venv`（py312 + torch 2.8）：s2s 管线（transformers 5.13 / Qwen3-ASR / VoxCPM2）+ orchestrator
-- `.venv-avatar`（py310 + torch 2.7.1）：FlashHead（transformers==4.57.3 / xformers / SDPA；
-  flash_attn 预编译 wheel 需 glibc≥2.32，AutoDL 老镜像 2.31 不可用，实测 SDPA 已够 2× 实时）
+- `.venv-avatar`（py310 + torch 2.7.1）：FlashHead（transformers==4.57.3 / xformers / flash_attn）
+  flash_attn 说明：AutoDL 老镜像（Ubuntu 20.04，glibc 2.31）装不了官方预编译 wheel
+  （需 glibc≥2.32），已成功源码编译 `flash_attn==2.8.0.post2`（FlashHead 官方钉版；
+  注意 xformers 只接受 ≤2.8.0，2.8.3 会导致 xformers import 失败）。编译路径：
+  NVIDIA runfile 装 CUDA 12.8 到 /root/cuda-12.8（系统自带 11.6 太老），
+  `FLASH_ATTENTION_FORCE_BUILD=TRUE` 强制源码（setup.py 默认会偷下预编译 wheel）。
+  嫌编译麻烦可直接用仓库 Releases 里的编译产物（artifacts-flashattn，
+  glibc 2.31 专用，解包到 .venv-avatar/lib/python3.10/site-packages/ 即可）。
+  无 flash_attn 时自动回退 SDPA（也够 2× 实时，编译仅为锦上添花）
 
 部署脚本已内置国内网络与兼容性处理（幂等，可重复执行）：阿里云 PyPI 镜像、
 ModelScope 模型源（~13MB/s）、GitHub 学术加速、两个空 stub wheel
@@ -107,8 +114,9 @@ tail -f logs/{pipeline,avatar,orchestrator}.log                 # 排障
 合计 ~18/24GB——`server.num_pipelines` 务必保持 1，否则对话峰值会 OOM。
 
 音画对齐（web/assistant.js）：数字人攒满 0.96s 音频才出帧，画面天然晚 ~0.9s；
-前端把音频延迟 1.0s 播放、视频帧按序从属于音频播放时钟（vlag=0），实测偏移 <0.1s。
-`?debug=1` 显示同步角标；`?vlag=N` 可调视频滞后帧。
+前端把音频延迟 0.8s 播放（SDPA 时代 1.0s，flash_attn 后实测最优）、视频帧按序
+从属于音频播放时钟（vlag=0），实测偏移 <0.1s。`?debug=1` 显示同步角标；
+`?vlag=N` 调视频滞后帧；`?adelay=N` 调音频基础延迟。
 
 ## 女娲蒸馏（造新人设）
 
