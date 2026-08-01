@@ -48,9 +48,9 @@ response.create 被拒时等当前回复 response.done 自动重发）。从截�
 
 | 积木 | 选型 | 说明 |
 |---|---|---|
-| vad | silero-vad | s2s 内置，判停 600ms |
+| vad | silero-vad | s2s 内置，判停 500ms（speculative reopen 兜误断） |
 | stt | `Qwen/Qwen3-ASR-1.7B-hf` | 自定义积木 `voxemw.pipeline.stt_qwen3asr`，中文本地推理 |
-| llm | DeepSeek `deepseek-v4-flash` | s2s 内置 chat-completions；关 thinking 由 launch 注入 |
+| llm | DeepSeek `deepseek-v4-flash` | s2s 内置 chat-completions；流式逐句送 TTS（长回复首音 ~2s vs 整段 3-5s）；关 thinking 由 launch 注入 |
 | tts | `openbmb/VoxCPM2` | 自定义积木 `voxemw.pipeline.tts_voxcpm`，Ultimate Cloning + 流式 |
 | avatar | `Soul-AILab/SoulX-FlashHead-1_3B` Lite | 独立进程，96FPS@4090 能力，推 25fps |
 | persona | `personas/<id>.md` | 女娲蒸馏产物；frontmatter 绑定音色三件套（见下） |

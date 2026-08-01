@@ -90,7 +90,8 @@ def test_render_s2s_argv_streaming_llm():
     config["llm"]["stream_batch_sentences"] = 1
     pairs = _pairs(render_s2s_argv(config, env={"TEST_LLM_KEY": "sk"}))
     assert pairs["--responses_api_stream"] == "true"
-    assert pairs["--responses_api_stream_batch_sentences"] == "1"
+    # 基类字段（LanguageModelBaseArguments）CLI 名不带前缀，与 --chat_size 同理
+    assert pairs["--stream_batch_sentences"] == "1"
 
 
 def test_render_s2s_argv_transformers_llm():
