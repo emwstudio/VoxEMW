@@ -5,7 +5,7 @@
 
 - 不 vendor、不打源码补丁：pip 包 speech-to-speech 作依赖，启动时在进程内
   monkeypatch 两个工厂函数（get_stt_handler/get_tts_handler）注册自定义积木
-  （qwen3asr STT、voxcpm TTS），再复刻上游 main() 的启动流程。
+  （qwen3asr/sensevoice STT、voxcpm TTS），再复刻上游 main() 的启动流程。
 - stt/tts 不在上游 CLI 的 Literal 选项里：先让 parse_arguments() 用默认值通过
   校验，之后直接改写 module_kwargs.stt/tts（Literal 只是类型注解，运行期不查）。
 - DeepSeek 关 thinking：上游 disable_thinking 发的是 vLLM 风格
@@ -39,11 +39,14 @@ def _install_custom_handlers(config: dict) -> None:
     orig_get_tts = s2s.get_tts_handler
 
     def get_stt_handler(module_kwargs, stop_event, queue_in, queue_out, speculative_turns, *kwargs):
-        if module_kwargs.stt != "qwen3asr":
+        stt_cls = None
+        if module_kwargs.stt == "qwen3asr":
+            from voxemw.pipeline.stt_qwen3asr import Qwen3ASRSTTHandler as stt_cls
+        elif module_kwargs.stt == "sensevoice":
+            from voxemw.pipeline.stt_sensevoice import SenseVoiceSTTHandler as stt_cls
+        if stt_cls is None:
             return orig_get_stt(module_kwargs, stop_event, queue_in, queue_out, speculative_turns, *kwargs)
-        from voxemw.pipeline.stt_qwen3asr import Qwen3ASRSTTHandler
-
-        handler = Qwen3ASRSTTHandler(
+        handler = stt_cls(
             stop_event,
             queue_in=queue_in,
             queue_out=queue_out,

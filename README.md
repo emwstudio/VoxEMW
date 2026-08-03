@@ -18,7 +18,7 @@
    ▼
 orchestrator（voxemw/avatar/orchestrator.py，CPU）
    ├─→ s2s 语音管线（voxemw/pipeline/launch.py，:8765 内部）
-   │     VAD silero → STT Qwen3-ASR-1.7B → LLM DeepSeek API → TTS VoxCPM2（克隆音色）
+   │     VAD silero → STT SenseVoiceSmall → LLM DeepSeek API → TTS VoxCPM2（克隆音色）
    ├─→ avatar 数字人服务（voxemw/avatar/service.py，:8767 内部，可缺席）
    │     FlashHead Lite + wav2vec2：TTS 音频 delta → 口型同步 JPEG 帧流
    └─→ vision 外貌描述（voxemw/vision.py → Kimi K3 多模态 API，可缺席）
@@ -28,6 +28,28 @@ orchestrator（voxemw/avatar/orchestrator.py，CPU）
 三进程同卡（RTX 4090D 24GB）：orchestrator 把 TTS 音频 delta 双写——一路回浏览器
 播放，一路喂数字人驱动口型。数字人缺席（未启动/缺肖像）自动降级纯语音模式；
 vision 缺席（缺 KIMI_API_KEY）只关截帧打分，语音对话不受影响。
+单用户单会话：新浏览器连接自动顶掉旧会话（换网络产生的僵尸会话即时释放，
+无需等超时）。
+
+## 延迟（单卡 4090D 实测，你说完 → 听到第一声 ≈ 2.9s）
+
+| 环节 | 耗时 | 说明 |
+|---|---|---|
+| VAD 判停 | ~0.5s | `min_silence_ms: 500` |
+| STT | ~0.1s | SenseVoiceSmall 非自回归（自 Qwen3-ASR 的 0.75s 优化而来） |
+| LLM 首句 | ~1.4s | DeepSeek v4-flash 流式逐句（首 token 0.65 + 解码 0.3 + 管线 0.45） |
+| TTS 首音 | ~0.1s | VoxCPM 流式 TTFA |
+| 唇同步缓冲 | 0.8s | FlashHead 0.96s 窗口 + 生成成本的物理地板（音画时钟解耦设计） |
+
+## 数字人常驻微动
+
+没有语音时（你说话中/峰哥思考中/说完待机），avatar 服务以静音持续驱动
+FlashHead 生成 25fps 画面——模型训练数据自带静音段，产出自然的眨眼、
+轻摇头（嘴闭合）。下行帧带 1 字节 tag（idle/speech）：speech 帧进前端
+唇同步队列（从属于音频播放时钟），idle 帧直接上屏。说话期间 orchestrator
+下发 speech_active 禁止 idle 生成（防句间停顿插入 idle 帧卡画面）；
+idle 生成按 0.96s 实时节奏节流（防洪水挤占供帧）。`avatar.idle_motion: false`
+可回退闲时定格。
 
 ## 截帧打分（视频通话玩法）
 
@@ -49,7 +71,7 @@ response.create 被拒时等当前回复 response.done 自动重发）。从截�
 | 积木 | 选型 | 说明 |
 |---|---|---|
 | vad | silero-vad | s2s 内置，判停 500ms（speculative reopen 兜误断） |
-| stt | `Qwen/Qwen3-ASR-1.7B-hf` | 自定义积木 `voxemw.pipeline.stt_qwen3asr`，中文本地推理 |
+| stt | `iic/SenseVoiceSmall` | 自定义积木 `voxemw.pipeline.stt_sensevoice`，FunASR 非自回归本地推理（4s 音频 0.06s）；`qwen3asr` 备选（多语种） |
 | llm | DeepSeek `deepseek-v4-flash` | s2s 内置 chat-completions；流式逐句送 TTS（长回复首音 ~2s vs 整段 3-5s）；关 thinking 由 launch 注入 |
 | tts | `openbmb/VoxCPM2` | 自定义积木 `voxemw.pipeline.tts_voxcpm`，Ultimate Cloning + 流式 |
 | avatar | `Soul-AILab/SoulX-FlashHead-1_3B` Lite | 独立进程，96FPS@4090 能力，推 25fps |
@@ -57,6 +79,9 @@ response.create 被拒时等当前回复 response.done 自动重发）。从截�
 
 另有一块可选的 `vision` 积木（`voxemw/vision.py`）：Kimi K3 多模态 API，
 给「截帧打分」提供外貌描述；不配 key 自动关闭，见上文「截帧打分」。
+另有 `filler` 积木（默认关）：转写完成即播预渲染口头禅垫音盖 LLM 首句空白，
+按 SenseVoice 情绪标签分组选词（代码与机制保留，实测衔接自然度不足已停用，
+`filler.enabled: true` 可复活）。
 
 换积木改 yaml 对应段；每个 persona 的三件套：
 
@@ -116,7 +141,8 @@ tail -f logs/{pipeline,avatar,orchestrator}.log                 # 排障
 音画对齐（web/assistant.js）：数字人攒满 0.96s 音频才出帧，画面天然晚 ~0.9s；
 前端把音频延迟 0.8s 播放（SDPA 时代 1.0s，flash_attn 后实测最优）、视频帧按序
 从属于音频播放时钟（vlag=0），实测偏移 <0.1s。`?debug=1` 显示同步角标；
-`?vlag=N` 调视频滞后帧；`?adelay=N` 调音频基础延迟。
+`?vlag=N` 调视频滞后帧；`?adelay=N` 调音频基础延迟；
+`?solo=1` 单栏模式（隐藏摄像头画面、数字人居中，demo 录制用）。
 
 ## 女娲蒸馏（造新人设）
 
@@ -150,13 +176,14 @@ GPU 进程（pipeline/avatar）只能在服务器跑；orchestrator 逻辑可本
 
 ## 目录
 
-- `configs/assistant.yaml` — 唯一配置（六积木 + vision + personas 注册表 + server）
+- `configs/assistant.yaml` — 唯一配置（六积木 + vision + filler + personas 注册表 + server）
 - `voxemw/config.py` — YAML + .env + persona frontmatter/素材解析（纯逻辑）
 - `voxemw/pipeline/` — s2s 集成：`args.py`（配置→argv 纯逻辑）、
-  `stt_qwen3asr.py` / `tts_voxcpm.py`（自定义积木）、`launch.py`（启动器）
-- `voxemw/avatar/` — `service.py`（FlashHead 数字人服务）、
-  `orchestrator.py`（浏览器入口 + 双写编排 + 截帧注入）
+  `stt_sensevoice.py` / `stt_qwen3asr.py` / `tts_voxcpm.py`（自定义积木）、`launch.py`（启动器）
+- `voxemw/avatar/` — `service.py`（FlashHead 数字人服务：唇同步 + 常驻微动）、
+  `orchestrator.py`（浏览器入口 + 双写编排 + 截帧注入 + 单会话顶掉）
 - `voxemw/vision.py` — Kimi K3 多模态外貌描述（截帧打分，可缺席）
+- `docs/upgrade-regression.md` — 上游 speech-to-speech 升级五阶段回归方案
 - `personas/` — 女娲蒸馏的语音人设（frontmatter 绑定音色/形象）
 - `skills/` — 女娲造人 skill 包（思维框架 + 研究笔记 + 选音色指南）
 - `web/` — 视频通话聊天页（无构建：左栏摄像头 + 右栏数字人，AudioWorklet + canvas）
@@ -175,6 +202,6 @@ GPU 进程（pipeline/avatar）只能在服务器跑；orchestrator 逻辑可本
 - speech-to-speech：https://github.com/huggingface/speech-to-speech
 - SoulX-FlashHead：https://github.com/Soul-AILab/SoulX-FlashHead
 - VoxCPM2：https://huggingface.co/openbmb/VoxCPM2
-- Qwen3-ASR：https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf
+- SenseVoice（STT）：https://github.com/modelscope/FunASR
 - DeepSeek API：https://platform.deepseek.com
 - Kimi API（截帧打分的视觉模型）：https://platform.moonshot.cn

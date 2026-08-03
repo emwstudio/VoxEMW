@@ -8,8 +8,14 @@
     {"type": "audio", "pcm": "<base64 int16 16k mono>"}   喂音频
     {"type": "reset"}                                       utterance 边界/打断：清缓冲、运动上下文归位
     {"type": "set_image", "path": "<服务器本地路径>"}       切换 persona 肖像（同机路径直传）
+    {"type": "speech_active", "on": true|false}             助手说话期间禁 idle 生成
+                                                            （句间停顿 pending 排空时若插入 idle 帧，
+                                                            前端直画会与唇同步队列打架 → 卡帧）
+    {"type": "idle_mode", "mode": "listening"|"thinking"|"calm"}
+                                                            待机驱动的音频来源（见下）
   出：
-    二进制帧：JPEG 图片（一帧一条）
+    二进制帧：tag(1B) + JPEG 图片（一帧一条）。tag：0x00=idle（静音驱动的待机微动，
+              前端直接画）；0x01=speech（真实音频驱动，前端进口型同步队列）
     JSON 文本帧：{"type": "ready"} / {"type": "error", "message": ...}
 
 实现要点（对齐 SoulX-FlashHead gradio_app_streaming.py 的 producer 模式）：
@@ -17,8 +23,17 @@
   音频上下文为 8s 零填充环形缓冲，wav2vec2 每 chunk 重提一次（成本恒定）。
 -  utterance 结束/打断：reset → 清输入缓冲 + pipeline.reset_person_name()
   （运动上下文归位到参考图，下一句从头起）。
-- 欠载策略：没有足量真实音频时不生成（浏览器端显示静态肖像/保持末帧）；
-  句尾不足一 chunk 的尾巴零填充补齐生成，让嘴型自然闭合。
+- 欠载策略：idle_motion 开（默认）且非说话期间（speech_active=false）：没有真实音频时
+  按 idle_mode 循环播放 persona 的嘟囔音频（assets/<id>/murmur_thinking.wav /
+  murmur_listening.wav，TTS 预合成的非语音沉吟/附和，缺失或 calm 模式回退纯静音）
+  持续生成（帧标 idle，前端绕过口型队列直接画）；说话期间禁 idle 生成
+  （防止句间停顿插入 idle 帧卡画面）。idle_motion 关则回退旧行为——没音频不生成
+  （浏览器端显示静态肖像/保持末帧）。
+  句尾不足一 chunk 的尾巴零填充补齐生成（标 speech），让嘴型自然闭合。
+  注：实测（2026-08-02，4090D）FlashHead 对合成气息/低吟/节拍几乎无响应（帧间差
+  与纯静音持平 ~1.1），官方答复 idle 动作幅度是训练数据属性、无推理期旋钮
+  （SoulX-FlashHead issue #4）；但 TTS 合成的真实感嘟囔有效（峰值 3.6-4.2，
+  真实语音 1.87），嘴唇微张呈沉吟/附和感，故用之驱动倾听/思考。
 - torch.compile 首次 chunk 编译很慢，启动时用静音跑 2-3 个 chunk 预热。
 """
 
@@ -58,11 +73,31 @@ MOTION_FRAMES_NUM = 9                                   # (2-1)*8+1（Lite VAE �
 CHUNK_SAMPLES = (FRAME_NUM - MOTION_FRAMES_NUM) * SAMPLE_RATE // TGT_FPS  # 15360 = 0.96s
 WARMUP_CHUNKS = 2
 
+# 下行帧 tag（见模块 docstring 协议）
+FRAME_TAG_IDLE = 0x00    # 静音/嘟囔驱动的待机微动
+FRAME_TAG_SPEECH = 0x01  # 真实音频驱动（含句尾零填充闭嘴帧）
+
+IDLE_MODES = ("listening", "thinking", "calm")
+
+
+def _load_wav_f32(path: Path):
+    """读 16kHz mono s16 wav → float32（stdlib wave，无额外依赖）。"""
+    import wave
+
+    import numpy as np
+
+    with wave.open(str(path), "rb") as w:
+        if w.getframerate() != SAMPLE_RATE or w.getnchannels() != 1:
+            raise ValueError(f"{path} 需为 16kHz mono wav")
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+    return pcm.astype(np.float32) / 32768.0
+
 
 class AvatarEngine:
     """FlashHead 推理引擎：所有 pipeline 调用都序列化在 inference 线程里。"""
 
-    def __init__(self, model_dir: str, wav2vec_dir: str, image_path: str, seed: int = 9999):
+    def __init__(self, model_dir: str, wav2vec_dir: str, image_path: str, seed: int = 9999,
+                 idle_motion: bool = True, murmur_gains: dict | None = None):
         import numpy as np  # noqa: F401
         from flash_head.inference import (
             get_base_data,
@@ -83,6 +118,8 @@ class AvatarEngine:
         )
         self.seed = seed
         self.image_path = image_path
+        self.idle_motion = idle_motion  # 无真实音频时持续生成（待机微动）
+        self._murmur_gains = murmur_gains or {"thinking": 0.5, "listening": 0.3}
         get_base_data(self.pipeline, cond_image_path_or_dir=image_path,
                       base_seed=seed, use_face_crop=False)
         self._new_audio_dq()
@@ -94,7 +131,28 @@ class AvatarEngine:
         self._closed = False
         self._reset_motion = False
         self._pending_image = None
+        self._speech_active = False   # 助手说话期间禁 idle 生成（orchestrator 下发）
+        self._idle_mode = "calm"      # listening | thinking | calm（orchestrator 下发）
+        self._idle_offset = 0         # 嘟囔循环的播放相位（采样点），跨 chunk 连续
+        self._murmurs: dict = {}
+        self._load_murmurs(image_path)
         self.on_frames = None  # 单客户端设计：ws 连接建立时接管帧流
+
+    def _load_murmurs(self, image_path: str) -> None:
+        """按 persona 肖像所在目录加载嘟囔音频（murmur_thinking/listening.wav，
+        缺失则该模式回退纯静音）。增益在加载时一次到位。"""
+        self._murmurs = {}
+        asset_dir = Path(image_path).parent
+        for mode, gain in self._murmur_gains.items():
+            if not gain:
+                continue  # 增益 0 = 禁用该模式嘟囔（回退纯静音）
+            wav = asset_dir / f"murmur_{mode}.wav"
+            if wav.is_file():
+                try:
+                    self._murmurs[mode] = _load_wav_f32(wav) * gain
+                    logger.info("加载嘟囔驱动: %s (gain=%.2f)", wav, gain)
+                except Exception as e:
+                    logger.warning("嘟囔音频加载失败 %s: %s", wav, e)
 
     def _new_audio_dq(self):
         self.audio_dq = deque([0.0] * (SAMPLE_RATE * CACHE_SECONDS),
@@ -123,6 +181,15 @@ class AvatarEngine:
             self._pending_image = image_path
             self._cond.notify()
 
+    def set_speech_active(self, on: bool) -> None:
+        with self._cond:
+            self._speech_active = on
+            self._cond.notify()
+
+    def set_idle_mode(self, mode: str) -> None:
+        with self._cond:
+            self._idle_mode = mode if mode in IDLE_MODES else "calm"
+
     def close(self) -> None:
         with self._cond:
             self._closed = True
@@ -130,25 +197,57 @@ class AvatarEngine:
 
     # ── 消费侧（inference 线程）──
 
+    def _idle_audio(self):
+        """当前 idle_mode 的驱动音频一 chunk：嘟囔循环（无缝回绕）或纯静音。"""
+        import numpy as np
+
+        sig = self._murmurs.get(self._idle_mode)
+        if sig is None or len(sig) == 0:
+            return np.zeros(CHUNK_SAMPLES, dtype=np.float32)
+        start = self._idle_offset % len(sig)
+        end = start + CHUNK_SAMPLES
+        self._idle_offset = (self._idle_offset + CHUNK_SAMPLES) % len(sig)
+        if end <= len(sig):
+            return sig[start:end]
+        return np.concatenate([sig[start:], sig[:end - len(sig)]])
+
     def run_inference_loop(self, on_frames) -> None:
         """阻塞循环：凑满一 chunk 真实音频才生成；0.5s 无新音频且缓冲有残留
-        → 零填充补齐最后一 chunk（句尾嘴型自然闭合）。
-        on_frames(frames_uint8: np.ndarray (24,512,512,3)) 每 chunk 回调一次。"""
+        → 零填充补齐最后一 chunk（句尾嘴型自然闭合，标 speech）；
+        idle_motion 开且缓冲全空 → 取 idle_mode 驱动音频一 chunk（标 idle），
+        **按 0.96s 实时节奏节流**——不节流时 GPU 以 3-4x 速度狂产 idle 帧，
+        洪水挤占与 speech 帧共用的发送队列/浏览器解码，说话帧被拖到音频结束之后。
+        节流等待走 cond（真音频/reset 到达即时唤醒抢占）。
+        on_frames(frames_uint8: np.ndarray (24,512,512,3), is_idle: bool) 每 chunk 回调一次。"""
+        import time as _time
+
         import numpy as np
         from flash_head.inference import get_audio_embedding, run_pipeline
 
+        CHUNK_SECONDS = CHUNK_SAMPLES / SAMPLE_RATE  # 0.96s
+        last_idle_at = 0.0
         while True:
             with self._cond:
                 while not self._closed and len(self._pending) < CHUNK_SAMPLES:
+                    if self.idle_motion and not self._speech_active and len(self._pending) == 0:
+                        wait = last_idle_at + CHUNK_SECONDS - _time.monotonic()
+                        if wait > 0:
+                            self._cond.wait(timeout=wait)
+                            continue  # 唤醒/超时后重查 pending（真音频优先）
+                        break  # 待机：嘟囔/静音驱动微动（说话期间禁止，防卡帧）
                     notified = self._cond.wait(timeout=0.5)
                     if not notified and len(self._pending) > 0:
                         break  # 静默超时：句尾尾巴零填充生成
                 if self._closed:
                     return
+                is_idle = len(self._pending) == 0
                 chunk = self._pending[:CHUNK_SAMPLES]
                 self._pending = self._pending[CHUNK_SAMPLES:]
-                if len(chunk) < CHUNK_SAMPLES:
-                    chunk = np.pad(chunk, (0, CHUNK_SAMPLES - len(chunk)))
+                if is_idle:
+                    chunk = self._idle_audio()
+                    last_idle_at = _time.monotonic()
+                elif len(chunk) < CHUNK_SAMPLES:
+                    chunk = np.pad(chunk, (0, CHUNK_SAMPLES - len(chunk)))  # 句尾闭嘴
                 if self._reset_motion:
                     self._new_audio_dq()
                     self.pipeline.reset_person_name()
@@ -160,6 +259,7 @@ class AvatarEngine:
                     get_base_data(self.pipeline, cond_image_path_or_dir=self._pending_image,
                                   base_seed=self.seed, use_face_crop=False)
                     self._new_audio_dq()
+                    self._load_murmurs(self._pending_image)
                     self._pending_image = None
             self.audio_dq.extend(chunk.tolist())
             emb = get_audio_embedding(
@@ -167,7 +267,7 @@ class AvatarEngine:
             )
             video = run_pipeline(self.pipeline, emb)
             frames = video[MOTION_FRAMES_NUM:].cpu().numpy().astype("uint8")
-            on_frames(frames)
+            on_frames(frames, is_idle)
 
     def warmup(self, on_frames) -> None:
         import numpy as np
@@ -204,21 +304,22 @@ async def _serve(ws, engine: AvatarEngine, jpeg_quality: int) -> None:
     out_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=TGT_FPS * 4)
     raw_queue: _queue.Queue = _queue.Queue(maxsize=TGT_FPS * 2)
 
-    def on_frames(frames) -> None:
+    def on_frames(frames, is_idle: bool) -> None:
         # 推理线程只入队原始帧（满则丢最旧）；JPEG 编码在专用线程，
         # 避免每 chunk 24 帧的编码耗时（q92 约 0.2-0.3s）阻塞下一 chunk 生成
+        tag = FRAME_TAG_IDLE if is_idle else FRAME_TAG_SPEECH
         for frame in frames:
             if raw_queue.full():
                 try:
                     raw_queue.get_nowait()
                 except _queue.Empty:
                     pass
-            raw_queue.put_nowait(frame)
+            raw_queue.put_nowait((frame, tag))
 
     def _encoder() -> None:
         while True:
-            frame = raw_queue.get()
-            data = _encode_jpeg(frame, jpeg_quality)
+            frame, tag = raw_queue.get()
+            data = bytes([tag]) + _encode_jpeg(frame, jpeg_quality)
             loop.call_soon_threadsafe(_offer, data)
 
     def _offer(data: bytes) -> None:
@@ -256,6 +357,10 @@ async def _serve(ws, engine: AvatarEngine, jpeg_quality: int) -> None:
                 engine.reset()
             elif etype == "set_image":
                 engine.set_image(event["path"])
+            elif etype == "speech_active":
+                engine.set_speech_active(bool(event.get("on")))
+            elif etype == "idle_mode":
+                engine.set_idle_mode(str(event.get("mode", "calm")))
     finally:
         send_task.cancel()
         engine.on_frames = None
@@ -291,16 +396,22 @@ def main() -> None:
     jpeg_quality = int(avatar.get("jpeg_quality", 80))
     host = str(avatar.get("host", "127.0.0.1"))
     port = int(avatar.get("port", 8767))
+    idle_motion = bool(avatar.get("idle_motion", True))
+    murmur_gains = {
+        "thinking": float(avatar.get("murmur_gain_thinking", 0.5)),
+        "listening": float(avatar.get("murmur_gain_listening", 0.3)),
+    }
 
-    engine = AvatarEngine(model_dir, wav2vec_dir, image)
+    engine = AvatarEngine(model_dir, wav2vec_dir, image, idle_motion=idle_motion,
+                          murmur_gains=murmur_gains)
 
     import websockets
 
     async def _main() -> None:
-        def on_frames(frames) -> None:
+        def on_frames(frames, is_idle: bool) -> None:
             cb = engine.on_frames
             if cb:
-                cb(frames)
+                cb(frames, is_idle)
 
         thread = threading.Thread(target=engine.run_inference_loop, args=(on_frames,), daemon=True)
         thread.start()

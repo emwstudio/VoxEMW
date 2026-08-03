@@ -4,7 +4,8 @@
  *   上行 JSON：OpenAI Realtime 事件（input_audio_buffer.append / response.cancel）
  *              + 自定义 {"type":"vox.persona","id":...} 人设切换
  *   下行 JSON：Realtime 事件透传（转写/音频 delta/打断）+ {"type":"vox.status",...}
- *   下行二进制：0x01 + JPEG 数字人视频帧
+ *   下行二进制：0x01 + tag(1B) + JPEG 数字人视频帧
+ *               （tag 0x00=idle 待机微动，直接画；0x01=speech 说话帧，进口型同步队列）
  *
  * 音频：麦克风 AudioWorklet 16kHz int16 上行；TTS PCM16 delta 在 AudioContext
  * 时间轴上无缝拼接播放；speech_started（打断）时清空播放队列。
@@ -16,6 +17,8 @@
 const SAMPLE_RATE = 16000;
 const FRAME_TYPE_JPEG = 0x01;       // 下行：数字人视频帧
 const FRAME_TYPE_USER_JPEG = 0x02;  // 上行：用户摄像头截帧（打分环节）
+const FRAME_TAG_IDLE = 0x00;        // 视频帧 tag：静音驱动的待机微动
+const FRAME_TAG_SPEECH = 0x01;      // 视频帧 tag：真实音频驱动
 
 const els = {
   status: document.getElementById("status"),
@@ -24,6 +27,7 @@ const els = {
   avatarWrap: document.querySelector(".avatar-wrap"),
   fallback: document.getElementById("avatar-fallback"),
   avatarLabel: document.getElementById("avatar-label"),
+  avatarState: document.getElementById("avatar-state"),
   camWrap: document.getElementById("cam-wrap"),
   userCam: document.getElementById("user-cam"),
   personaBar: document.getElementById("persona-bar"),
@@ -39,6 +43,9 @@ let personas = [];
 let currentPersona = null;
 let avatarOn = false;
 let assistantLine = null; // 正在流式累积的助手文本行
+// solo 模式（?solo=1）：demo 录制用，隐藏用户画面、数字人单栏居中、不开摄像头
+const SOLO_MODE = new URLSearchParams(location.search).has("solo");
+if (SOLO_MODE) document.body.classList.add("solo");
 
 // 截帧打分：persona 说出暗号（vision.trigger）→ 截一帧摄像头发给 orchestrator
 let visionOn = false;
@@ -325,6 +332,10 @@ function startFramePlayback() {
   // 放帧跟不上音频时钟,越落越多再跳帧,表现为一卡一卡
   const tick = () => {
     frameTimer = requestAnimationFrame(tick);
+    // 音频播放排空：「说话」结束回待机（角标隐藏，画面由 idle 微动接管）
+    if (avatarState === "speaking" && player && player.nextStartTime <= player.ctx.currentTime) {
+      setAvatarState("idle");
+    }
     if (!player || frameQueue.length === 0) return;
     const pos = player.ctx.currentTime - responseAudioBase;  // 本 response 已播音频秒数
     if (pos < 0) return;
@@ -379,6 +390,28 @@ function showStill(personaId) {
 }
 
 // ---------------------------------------------------------------------------
+// 对话状态角标：listening（用户说话中）/ thinking（说完到开口前）显示角标，
+// speaking / idle 隐藏。画面动感由 avatar 服务驱动：倾听/思考时循环 persona
+// 嘟囔音频（TTS 预合成）产生真实沉吟/附和微动，待机时纯静音基线微动
+// ---------------------------------------------------------------------------
+
+let avatarState = "idle"; // idle | listening | thinking | speaking
+
+function setAvatarState(state) {
+  avatarState = state;
+  const el = els.avatarState;
+  if (state === "listening") {
+    el.textContent = "👂 倾听中…";
+    el.className = "state-listening";
+  } else if (state === "thinking") {
+    el.textContent = "🤔 思考中…";
+    el.className = "state-thinking";
+  } else {
+    el.className = "hidden";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Realtime 事件处理
 // ---------------------------------------------------------------------------
 
@@ -390,6 +423,11 @@ const realtimeHandlers = {
     needVideoBase = true;
     assistantLine = null;
     responseText = "";
+    setAvatarState("listening");
+  },
+  "input_audio_buffer.speech_stopped"() {
+    // 用户说完：到助手首个音频 delta 之前是「思考」窗口
+    if (avatarState === "listening") setAvatarState("thinking");
   },
   "conversation.item.input_audio_transcription.completed"(event) {
     const text = (event.transcript || "").trim();
@@ -421,14 +459,21 @@ const realtimeHandlers = {
     maybeSnapshot();
   },
   "response.output_audio.delta"(event) {
-    if (event.delta) playPCM(int16FromBase64(event.delta));
+    if (event.delta) {
+      if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
+      playPCM(int16FromBase64(event.delta));
+    }
   },
   "response.audio.delta"(event) {
-    if (event.delta) playPCM(int16FromBase64(event.delta));
+    if (event.delta) {
+      if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
+      playPCM(int16FromBase64(event.delta));
+    }
   },
   "response.done"() {
     assistantLine = null;
     needVideoBase = true;  // 下一个音频 delta 开启新 response,重设视频对齐基准
+    if (avatarState === "thinking") setAvatarState("idle");  // 无音频回复的兜底
     maybeSnapshot();
     responseText = "";
   },
@@ -527,7 +572,19 @@ function connect() {
       handleTextMessage(msg.data);
     } else {
       const bytes = new Uint8Array(msg.data);
-      if (bytes[0] === FRAME_TYPE_JPEG) enqueueFrame(bytes.subarray(1));
+      if (bytes[0] === FRAME_TYPE_JPEG) {
+        // tag 0x00=idle：待机微动帧，不进唇同步队列直接画（首个 TTS delta 前
+        // 在飞的静音帧若进队列会错位唇同步）；tag 0x01=speech：照常排队
+        if (bytes[1] === FRAME_TAG_IDLE) {
+          // 尾部音频还在播时丢 idle 帧：response.done 后 avatar 已回 idle 生成，
+          // 但浏览器还在播缓冲的说话帧，直画 idle 会盖住唇同步画面
+          if (!player || player.nextStartTime <= player.ctx.currentTime + 0.05) {
+            drawFrame(bytes.subarray(2));
+          }
+        } else {
+          enqueueFrame(bytes.subarray(2));
+        }
+      }
     }
   };
 }
@@ -543,6 +600,7 @@ async function init() {
   els.fallback.classList.toggle("hidden", avatarOn);
   updatePersonaBar();
   showStill(currentPersona);
+  setAvatarState("idle");
   connect();
 }
 
@@ -550,6 +608,7 @@ els.micBtn.onclick = async () => {
   if (mic) {
     stopMic();
     stopCamera();
+    setAvatarState("idle");
     els.micBtn.textContent = "🎙 开始对话";
     els.micBtn.classList.remove("live");
     setStatus("已连接（麦克风关）", "");
@@ -564,6 +623,7 @@ els.micBtn.onclick = async () => {
     addLine("sys", "", `⚠ 麦克风不可用: ${e.message}`);
     return;
   }
+  if (SOLO_MODE) return;  // solo 模式不开摄像头（画面隐藏，截帧打分也不可用）
   try {
     await startCamera();
   } catch (e) {

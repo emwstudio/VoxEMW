@@ -26,16 +26,15 @@ vad:
   # speech_pad_ms: 500      # 段前保留音频
 
 # ---------------------------------------------------------------------------
-# STT：语音转文字。qwen3asr = 自定义积木（voxemw.pipeline.stt_qwen3asr），
-# Qwen3-ASR transformers 本地推理，中文首选。24GB 显存紧张可降 0.6B。
+# STT：语音转文字。sensevoice = 自定义积木（voxemw.pipeline.stt_sensevoice），
+# FunASR SenseVoiceSmall 本地推理：非自回归一次前向出全文，实测 4s 音频 0.06s
+# （Qwen3-ASR-1.7B 为 0.66s），中文 CER 同级。备选 qwen3asr（52 语种， multilingual 用）。
 # ---------------------------------------------------------------------------
 stt:
-  backend: qwen3asr
-  model_name: Qwen/Qwen3-ASR-1.7B-hf   # 备选 Qwen/Qwen3-ASR-0.6B-hf
+  backend: sensevoice
+  model_name: iic/SenseVoiceSmall       # ModelScope id，AutoModel 自动下载
   device: cuda
-  torch_dtype: bfloat16
-  language: Chinese                     # 语言提示，跳过自动语种检测
-  gen_max_new_tokens: 256
+  language: zh
 
 # ---------------------------------------------------------------------------
 # LLM：对话模型。chat-completions = OpenAI 兼容 /v1/chat/completions。
@@ -83,7 +82,13 @@ avatar:
   wav2vec_dir: models/wav2vec2-base-960h      # 音频特征提取器
   device: cuda
   fps: 15                              # 推流帧率目标（4090 实时可到 25，先保守）
-  jpeg_quality: 95                     # LAN/隧道带宽充足,95 块效应基本不可见
+  jpeg_quality: 95                     # LAN/隧道带宽充足,95 块效应基本不可见;网络抖时降 80
+  # 常驻活化：没语音时持续生成画面微动（纯静音基线，说话期间 speech_active 门控
+  # 不产帧防卡）。重开原因（2026-08-02 晚）：垫音→正式回复的空隙需要待机微动桥接，
+  # 否则画面定格显卡。嘟囔增益保持 0（静音驱动，勿开——哼鸣口型已被否决）
+  idle_motion: true
+  murmur_gain_thinking: 0            # 0 = 禁用嘟囔
+  murmur_gain_listening: 0           # 0 = 禁用嘟囔
   port: 8767                           # avatar service 内部 ws 端口
   host: 127.0.0.1
 
@@ -100,6 +105,14 @@ vision:
   api_key_env: KIMI_API_KEY
   max_tokens: 600   # kimi-k3 是 thinking 模型，reasoning 会吃掉配额，多给余量
   trigger: 让我好好看看你               # 暗号短语：persona 原句说出，前端检测后截帧
+
+# ---------------------------------------------------------------------------
+# Filler：垫音（已弃用，2026-08-02）。曾用于转写完成即播预渲染口头禅盖住 LLM 首句
+# 空白，实测衔接自然度不达标。代码保留（orchestrator 垫音管线 + fillers/ 素材 +
+# 情绪分组），重开即 true。
+# ---------------------------------------------------------------------------
+filler:
+  enabled: false
 
 # ---------------------------------------------------------------------------
 # 人设注册表：key = persona id（前端切换、TTS 音色名都用它），

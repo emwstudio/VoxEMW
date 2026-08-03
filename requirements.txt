@@ -3,8 +3,10 @@
 # torch/torchaudio 需先单独安装 cu128 wheel，flash_attn 与 ffmpeg 另装，
 # 见 scripts/autodl_setup.sh（本文件只管 pip 常规依赖）。
 
-# 语音管线主体（pip 依赖，运行时注册自定义积木；版本对齐上游 656099a）
-speech-to-speech==0.2.11
+# 语音管线主体（pip 依赖，运行时注册自定义积木；当前为上游 main @5b443c8
+# ——PyPI 最新仍是 0.2.11，main 含 #391 投机话轮修复。2026-08-03 按
+# docs/upgrade-regression.md 五阶段验收后扶正；回滚锚点：pip 版 0.2.11）
+speech-to-speech @ git+https://github.com/huggingface/speech-to-speech.git@5b443c8011349f7b5a7138c2ad29fe1c1e65b8bd
 
 # 自定义积木依赖
 voxcpm                  # TTS：openbmb/VoxCPM2

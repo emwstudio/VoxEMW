@@ -78,22 +78,30 @@ def render_s2s_argv(config: dict, env: dict | None = None) -> list[str]:
 
 
 def stt_setup_kwargs(config: dict) -> dict:
-    """qwen3asr STT handler 的 setup_kwargs（由 launch 的自定义工厂使用）。"""
+    """STT handler 的 setup_kwargs（由 launch 的自定义工厂使用）。"""
     stt = config["stt"]
-    if stt.get("backend") != "qwen3asr":
-        raise ValueError(f"不支持的 stt.backend: {stt.get('backend')!r}")
+    backend = stt.get("backend")
     gen_kwargs = {
         key[len("gen_"):]: value
         for key, value in stt.items()
         if key.startswith("gen_")
     }
-    return {
-        "model_name": stt.get("model_name", "Qwen/Qwen3-ASR-1.7B-hf"),
-        "device": stt.get("device", "cuda"),
-        "torch_dtype": stt.get("torch_dtype", "bfloat16"),
-        "language": stt.get("language", "Chinese"),
-        "gen_kwargs": gen_kwargs,
-    }
+    if backend == "qwen3asr":
+        return {
+            "model_name": stt.get("model_name", "Qwen/Qwen3-ASR-1.7B-hf"),
+            "device": stt.get("device", "cuda"),
+            "torch_dtype": stt.get("torch_dtype", "bfloat16"),
+            "language": stt.get("language", "Chinese"),
+            "gen_kwargs": gen_kwargs,
+        }
+    if backend == "sensevoice":
+        return {
+            "model_name": stt.get("model_name", "iic/SenseVoiceSmall"),
+            "device": stt.get("device", "cuda"),
+            "language": stt.get("language", "zh"),
+            "gen_kwargs": gen_kwargs,
+        }
+    raise ValueError(f"不支持的 stt.backend: {backend!r}")
 
 
 def tts_setup_kwargs(config: dict) -> dict:

@@ -114,6 +114,16 @@ def test_stt_setup_kwargs():
     assert kwargs["gen_kwargs"] == {"max_new_tokens": 256}
 
 
+def test_stt_setup_kwargs_sensevoice():
+    config = _config()
+    config["stt"] = {"backend": "sensevoice", "model_name": "iic/SenseVoiceSmall"}
+    kwargs = stt_setup_kwargs(config)
+    assert kwargs["model_name"] == "iic/SenseVoiceSmall"
+    assert kwargs["device"] == "cuda"
+    assert kwargs["language"] == "zh"
+    assert kwargs["gen_kwargs"] == {}
+
+
 def test_tts_setup_kwargs_voices_from_personas():
     kwargs = tts_setup_kwargs(_config())
     assert kwargs["model_name"] == "openbmb/VoxCPM2"
