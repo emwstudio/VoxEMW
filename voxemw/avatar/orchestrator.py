@@ -223,10 +223,11 @@ class Session:
 
     def __init__(self, browser_ws, s2s_url: str, avatar_url: str | None,
                  personas: dict, default_persona: str, vision_cfg: dict | None = None,
-                 filler_enabled: bool = True):
+                 filler_enabled: bool = True, avatar_backend: str = "flashhead"):
         self.browser = browser_ws
         self.s2s_url = s2s_url
         self.avatar_url = avatar_url
+        self.avatar_backend = avatar_backend  # 前端据此选口型延迟默认值（adelay）
         self.personas = personas
         self.persona_id = default_persona
         self.vision_cfg = vision_cfg
@@ -290,6 +291,7 @@ class Session:
         await self.browser.send_str(json.dumps({
             "type": "vox.status",
             "avatar": "on" if self.avatar is not None else "off",
+            "avatar_backend": self.avatar_backend if self.avatar is not None else "off",
             "persona": self.persona_id,
         }))
 
@@ -573,6 +575,7 @@ def create_app(config: dict):
         if avatar_available
         else None
     )
+    avatar_backend = str(avatar_cfg.get("backend", "flashhead")) if avatar_available else "off"
     vision_cfg = vision.vision_config(config)
     filler_enabled = bool((config.get("filler") or {}).get("enabled", True))
 
@@ -583,6 +586,7 @@ def create_app(config: dict):
         return web.json_response({
             "default": default_persona,
             "avatar": "on" if avatar_url else "off",
+            "avatar_backend": avatar_backend,
             "vision": "on" if vision_cfg else "off",
             "trigger": (vision_cfg or {}).get("trigger", "让我好好看看你"),
             "list": [
@@ -616,7 +620,8 @@ def create_app(config: dict):
             logger.info("新连接到达，顶掉旧会话（释放管线槽位）")
             await old.close()
         session = Session(ws, s2s_url, avatar_url, personas, default_persona,
-                          vision_cfg=vision_cfg, filler_enabled=filler_enabled)
+                          vision_cfg=vision_cfg, filler_enabled=filler_enabled,
+                          avatar_backend=avatar_backend)
         current_session["session"] = session
         try:
             await session.run()

@@ -95,13 +95,16 @@ function ensurePlayer() {
 // 口型同步模型:TTS 以 ~2x 实时速度流式送音频,播放链会积压(实测 3-4s),
 // 各自计时必然漂移 → 视频帧节奏从属于音频播放时钟:音频播到第几秒就放第几帧。
 // AVATAR_AUDIO_DELAY 保留基础延迟,保证音频播放位置始终落后于视频供帧点,
-// 视频始终有帧可放(avatar 攒满 0.96s chunk + 生成 ≈ 固有延迟)。
-// SDPA 时代实测 1.0s 最佳(0.8s 偶发供帧不足);flash_attn 后生成提速,
-// 实测 0.8s 最佳。可用 ?adelay=N 覆盖(?debug=1 看帧队列深度,经常见底就调回去)
-const AVATAR_AUDIO_DELAY = (() => {
+// 视频始终有帧可放。默认值按 avatar 后端固有延迟选择（vox.status 下发 avatar_backend）：
+// flashhead 攒 0.96s chunk + 生成 ≈ 实测 0.8s 最佳（flash_attn 后）；
+// avtr1 0.2s chunk + 0.2s 前瞻 + 生成 ≈ 0.35s。
+// 可用 ?adelay=N 覆盖(?debug=1 看帧队列深度,经常见底就调回去)
+const ADELAY_OVERRIDE = (() => {
   const v = parseFloat(new URLSearchParams(location.search).get("adelay"));
-  return Number.isFinite(v) && v >= 0 ? v : 0.8;
+  return Number.isFinite(v) && v >= 0 ? v : null;
 })();
+const BACKEND_ADELAY = { avtr1: 0.35, flashhead: 0.8 };
+let avatarAudioDelay = ADELAY_OVERRIDE ?? 0.8;
 
 function playPCM(int16) {
   const p = ensurePlayer();
@@ -112,7 +115,7 @@ function playPCM(int16) {
   src.buffer = buf;
   src.connect(p.ctx.destination);
   const prevEnd = p.nextStartTime;  // 本 delta 排程前的音频链尾（= 上一段回复的播放结束点）
-  const start = Math.max(p.ctx.currentTime + (avatarOn ? AVATAR_AUDIO_DELAY : 0.02), prevEnd);
+  const start = Math.max(p.ctx.currentTime + (avatarOn ? avatarAudioDelay : 0.02), prevEnd);
   src.start(start);
   p.nextStartTime = start + buf.duration;
   if (needVideoBase) {
@@ -492,6 +495,9 @@ function handleTextMessage(data) {
   if (event.type === "vox.status") {
     avatarOn = event.avatar === "on";
     currentPersona = event.persona;
+    if (ADELAY_OVERRIDE == null && event.avatar_backend) {
+      avatarAudioDelay = BACKEND_ADELAY[event.avatar_backend] ?? 0.8;
+    }
     els.fallback.classList.toggle("hidden", avatarOn);
     updatePersonaBar();
     showStill(currentPersona);

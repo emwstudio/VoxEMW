@@ -70,16 +70,23 @@ tts:
   # load_denoiser: true                  # 参考音频有底噪再开（额外下 ModelScope 降噪模型）
 
 # ---------------------------------------------------------------------------
-# Avatar：数字人形象。flashhead = Soul-AILab/SoulX-FlashHead-1_3B Lite，
+# Avatar：数字人形象。backend: flashhead = Soul-AILab/SoulX-FlashHead-1_3B Lite；
+# avtr1 = AVTR-1（avaturn-live/avtr-1，TensorRT，0.2s/chunk，实测 4090D ~80ms/chunk）。
 # 一张参考肖像（persona frontmatter 的 ref_image）+ TTS 音频流 → 实时说话头视频。
 # 独立 GPU 进程（voxemw.avatar.service），orchestrator 经 ws 推送音频、收视频帧。
 # enabled: false 或 persona 缺 ref_image 时自动降级为纯语音模式。
 # ---------------------------------------------------------------------------
 avatar:
-  backend: flashhead
+  backend: avtr1                 # avtr1（验收通过，默认）| flashhead（回退）
   enabled: true
-  model_dir: models/SoulX-FlashHead-1_3B      # 相对仓库根；含 Lite 权重
-  wav2vec_dir: models/wav2vec2-base-960h      # 音频特征提取器
+  model_dir: models/SoulX-FlashHead-1_3B      # flashhead：相对仓库根；含 Lite 权重
+  wav2vec_dir: models/wav2vec2-base-960h      # flashhead：音频特征提取器
+  # avtr1 后端专用（用 pixi env python 直调启动，勿 pixi run——会按 lock 重同步
+  # 覆盖 pip 降级；start_assistant.sh 按 backend 自动选环境）：
+  avtr1_storage: /root/autodl-tmp/avtr1_storage   # AVTR1_LOCAL_STORAGE（权重+TRT 引擎）
+  avtr1_bg: plain_white                # 合成背景 id（pasteback 区域外才生效）
+  # avtr1 参考图规范（重要）：16:9 横版胸像（官方帧 1920×1080），脸宽占图宽 ~20%、
+  # 头顶留白 ~19%——loader 对输入非等比 resize 到 1280×720，方图会把脸拉变形
   device: cuda
   fps: 15                              # 推流帧率目标（4090 实时可到 25，先保守）
   jpeg_quality: 95                     # LAN/隧道带宽充足,95 块效应基本不可见;网络抖时降 80

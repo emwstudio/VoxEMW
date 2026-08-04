@@ -34,10 +34,23 @@ pkill -f "voxemw.pipeline.launch" 2>/dev/null || true
 pkill -f "voxemw.avatar.orchestrator" 2>/dev/null || true
 sleep 2
 
-echo "==> 启动数字人服务（.venv-avatar，:8767）"
-nohup .venv-avatar/bin/python -m voxemw.avatar.service --config "$VOXEMW_CONFIG" \
-    > logs/avatar.log 2>&1 &
-echo "    PID=$!，日志 logs/avatar.log（torch.compile 预热要数分钟，耐心等）"
+AVTR_BACKEND=$(grep -E '^  backend:' "$VOXEMW_CONFIG" | head -1 | awk '{print $2}')
+if [ "$AVTR_BACKEND" = "avtr1" ]; then
+    # AVTR-1：pixi env python 直调（勿 pixi run——会按 lock 重同步 env，
+    # 把 pip 降级的 onnxruntime-gpu 1.22 还原成 1.28）
+    AVTR_ENV=/root/autodl-tmp/avtr-1/.pixi/envs/renderer
+    SP=$AVTR_ENV/lib/python3.12/site-packages
+    export LD_LIBRARY_PATH="$(echo $SP/nvidia/*/lib | tr " " ":"):${LD_LIBRARY_PATH:-}"
+    export AVTR1_LOCAL_STORAGE="${AVTR1_LOCAL_STORAGE:-/root/autodl-tmp/avtr1_storage}"
+    echo "==> 启动数字人服务（AVTR-1，pixi env，:8767）"
+    nohup "$AVTR_ENV/bin/python" -m voxemw.avatar.service --config "$VOXEMW_CONFIG" \
+        > logs/avatar.log 2>&1 &
+else
+    echo "==> 启动数字人服务（FlashHead，.venv-avatar，:8767）"
+    nohup .venv-avatar/bin/python -m voxemw.avatar.service --config "$VOXEMW_CONFIG" \
+        > logs/avatar.log 2>&1 &
+fi
+echo "    PID=$!，日志 logs/avatar.log（预热要数分钟，耐心等）"
 
 echo "==> 启动语音管线（.venv，:8765）"
 nohup .venv/bin/python -m voxemw.pipeline.launch --config "$VOXEMW_CONFIG" \

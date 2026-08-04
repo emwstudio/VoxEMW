@@ -1,7 +1,10 @@
-"""Avatar 积木：数字人服务（FlashHead 流式说话头）。
+"""Avatar 积木：数字人服务（流式说话头，backend: flashhead|avtr1 可选）。
 
 独立 GPU 进程。输入：参考肖像（persona 的 ref_image）+ 16kHz int16 PCM 音频流；
 输出：JPEG 视频帧流（512×512，目标 25fps，随生成节奏推流）。
+后端：flashhead = SoulX-FlashHead Lite（0.96s/chunk，默认）；
+      avtr1 = AVTR-1 TensorRT（0.2s/chunk，引擎实现见 voxemw/avatar/avtr1_engine.py，
+      须在 pixi env 直调启动，见 /root/autodl-tmp/restart_avatar_avtr1.sh）。
 
 协议（ws，默认 127.0.0.1:8767，orchestrator 是唯一客户端）：
   入（JSON 文本帧）：
@@ -52,11 +55,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
-# FlashHead 推理代码由 scripts/autodl_setup.sh 克隆到 vendor/（gitignore）
-sys.path.insert(0, str(REPO_ROOT / "vendor" / "SoulX-FlashHead"))
-# flash_head 内部按 CWD 相对路径读配置（import 时 open("flash_head/configs/infer_params.yaml")），
-# 与上游 app 一致切到 vendor 根目录；本服务的 config/models/assets 路径均已绝对化，不受影响
-os.chdir(REPO_ROOT / "vendor" / "SoulX-FlashHead")
+
+
+def _setup_flashhead_vendor() -> None:
+    """FlashHead 专用路径准备（仅 flashhead 后端调用）。
+    推理代码由 scripts/autodl_setup.sh 克隆到 vendor/（gitignore）；
+    flash_head 内部按 CWD 相对路径读配置（import 时 open("flash_head/configs/infer_params.yaml")），
+    与上游 app 一致切到 vendor 根目录；本服务的 config/models/assets 路径均已绝对化，不受影响。"""
+    sys.path.insert(0, str(REPO_ROOT / "vendor" / "SoulX-FlashHead"))
+    os.chdir(REPO_ROOT / "vendor" / "SoulX-FlashHead")
+
 
 logger = logging.getLogger(__name__)
 
@@ -402,8 +410,24 @@ def main() -> None:
         "listening": float(avatar.get("murmur_gain_listening", 0.3)),
     }
 
-    engine = AvatarEngine(model_dir, wav2vec_dir, image, idle_motion=idle_motion,
-                          murmur_gains=murmur_gains)
+    backend = str(avatar.get("backend", "flashhead"))
+    if backend == "avtr1":
+        # AVTR-1（TensorRT）：仅在 pixi env 直调 python 下可用（勿 pixi run，
+        # 会按 lock 重同步覆盖 pip 降级）；启动脚本 /root/autodl-tmp/restart_avatar_avtr1.sh
+        from voxemw.avatar.avtr1_engine import AVTR1Engine
+
+        engine = AVTR1Engine(
+            image,
+            storage=avatar.get("avtr1_storage") or None,
+            bg_id=str(avatar.get("avtr1_bg", "plain_white")),
+            idle_motion=idle_motion,
+        )
+    elif backend == "flashhead":
+        _setup_flashhead_vendor()
+        engine = AvatarEngine(model_dir, wav2vec_dir, image, idle_motion=idle_motion,
+                              murmur_gains=murmur_gains)
+    else:
+        sys.exit(f"未知 avatar.backend: {backend}（可选 flashhead|avtr1）")
 
     import websockets
 

@@ -20,7 +20,8 @@ orchestrator（voxemw/avatar/orchestrator.py，CPU）
    ├─→ s2s 语音管线（voxemw/pipeline/launch.py，:8765 内部）
    │     VAD silero → STT SenseVoiceSmall → LLM DeepSeek API → TTS VoxCPM2（克隆音色）
    ├─→ avatar 数字人服务（voxemw/avatar/service.py，:8767 内部，可缺席）
-   │     FlashHead Lite + wav2vec2：TTS 音频 delta → 口型同步 JPEG 帧流
+   │     AVTR-1（默认，TensorRT，0.2s/chunk）或 FlashHead Lite（回退，0.96s/chunk）
+   │     TTS 音频流 → 口型同步 JPEG 帧流
    └─→ vision 外貌描述（voxemw/vision.py → Kimi K3 多模态 API，可缺席）
          摄像头截帧 → 客观描述 → 注入 s2s 对话让 persona 锐评
 ```
@@ -31,25 +32,39 @@ vision 缺席（缺 KIMI_API_KEY）只关截帧打分，语音对话不受影响
 单用户单会话：新浏览器连接自动顶掉旧会话（换网络产生的僵尸会话即时释放，
 无需等超时）。
 
-## 延迟（单卡 4090D 实测，你说完 → 听到第一声 ≈ 2.9s）
+## 延迟（单卡 4090D 实测，你说完 → 听到第一声 ≈ 2.4s）
 
 | 环节 | 耗时 | 说明 |
 |---|---|---|
 | VAD 判停 | ~0.5s | `min_silence_ms: 500` |
-| STT | ~0.1s | SenseVoiceSmall 非自回归（自 Qwen3-ASR 的 0.75s 优化而来） |
+| STT | ~0.1s | SenseVoiceSmall 非自回归 |
 | LLM 首句 | ~1.4s | DeepSeek v4-flash 流式逐句（首 token 0.65 + 解码 0.3 + 管线 0.45） |
 | TTS 首音 | ~0.1s | VoxCPM 流式 TTFA |
-| 唇同步缓冲 | 0.8s | FlashHead 0.96s 窗口 + 生成成本的物理地板（音画时钟解耦设计） |
+| 唇同步缓冲 | 0.35s | AVTR-1 0.2s 窗口（首帧实测 0.32-0.42s）；FlashHead 后端需 0.8s |
 
 ## 数字人常驻微动
 
 没有语音时（你说话中/峰哥思考中/说完待机），avatar 服务以静音持续驱动
-FlashHead 生成 25fps 画面——模型训练数据自带静音段，产出自然的眨眼、
-轻摇头（嘴闭合）。下行帧带 1 字节 tag（idle/speech）：speech 帧进前端
-唇同步队列（从属于音频播放时钟），idle 帧直接上屏。说话期间 orchestrator
-下发 speech_active 禁止 idle 生成（防句间停顿插入 idle 帧卡画面）；
-idle 生成按 0.96s 实时节奏节流（防洪水挤占供帧）。`avatar.idle_motion: false`
-可回退闲时定格。
+25fps 画面——模型原生 idle 语义产出自然的眨眼、视线游移、头部微动（嘴闭合）。
+下行帧带 1 字节 tag（idle/speech）：speech 帧进前端唇同步队列（从属于音频
+播放时钟），idle 帧直接上屏。说话期间 orchestrator 下发 speech_active 禁止
+idle 生成（防句间停顿插入 idle 帧卡画面）；idle 生成按实时节奏节流。
+`avatar.idle_motion: false` 可回退闲时定格。
+
+## 数字人后端：AVTR-1 vs FlashHead
+
+默认 **AVTR-1**（[avaturn-live/avtr-1](https://github.com/avaturn-live/avtr-1)，
+TensorRT 加速，5 帧/0.2s 生成粒度，4090D 实测 ~80ms/chunk = 2.5x 实时）：
+唇同步缓冲 0.35s、原生静音 idle、支持双流倾听（listen 轨，接入中）。
+**FlashHead** 保留为回退后端（`avatar.backend: flashhead`，扩散重绘画质更锐，
+但 0.96s 窗口决定了 0.8s 缓冲地板）。`start_assistant.sh` 按 backend 自动选
+python 环境（avtr1 = pixi env，flashhead = .venv-avatar）。
+
+**AVTR-1 参考图规范（重要）**：官方 loader 假定参考帧为 16:9 横版胸像
+（官方帧均 1920×1080，脸宽占图宽 ~20%、头顶留白 ~19%），对输入**非等比**
+resize 到 1280×720——方图/竖图会把脸型拉变形。换人务必按此构图准备
+`ref.png`。AVTR-1 部署：pixi env + TRT 引擎按显卡编译（sm89 已编好，
+缓存在 avtr1_storage），注意 pixi 勿用 `pixi run`（会重同步 env 覆盖 pip 降级）。
 
 ## 截帧打分（视频通话玩法）
 
@@ -74,7 +89,7 @@ response.create 被拒时等当前回复 response.done 自动重发）。从截�
 | stt | `iic/SenseVoiceSmall` | 自定义积木 `voxemw.pipeline.stt_sensevoice`，FunASR 非自回归本地推理（4s 音频 0.06s）；`qwen3asr` 备选（多语种） |
 | llm | DeepSeek `deepseek-v4-flash` | s2s 内置 chat-completions；流式逐句送 TTS（长回复首音 ~2s vs 整段 3-5s）；关 thinking 由 launch 注入 |
 | tts | `openbmb/VoxCPM2` | 自定义积木 `voxemw.pipeline.tts_voxcpm`，Ultimate Cloning + 流式 |
-| avatar | `Soul-AILab/SoulX-FlashHead-1_3B` Lite | 独立进程，96FPS@4090 能力，推 25fps |
+| avatar | `avaturn-live/avtr-1`（TensorRT）| 默认后端，0.2s/chunk，4090D ~80ms/chunk；`SoulX-FlashHead-1_3B` Lite 保留回退 |
 | persona | `personas/<id>.md` | 女娲蒸馏产物；frontmatter 绑定音色三件套（见下） |
 
 另有一块可选的 `vision` 积木（`voxemw/vision.py`）：Kimi K3 多模态 API，
@@ -180,7 +195,8 @@ GPU 进程（pipeline/avatar）只能在服务器跑；orchestrator 逻辑可本
 - `voxemw/config.py` — YAML + .env + persona frontmatter/素材解析（纯逻辑）
 - `voxemw/pipeline/` — s2s 集成：`args.py`（配置→argv 纯逻辑）、
   `stt_sensevoice.py` / `stt_qwen3asr.py` / `tts_voxcpm.py`（自定义积木）、`launch.py`（启动器）
-- `voxemw/avatar/` — `service.py`（FlashHead 数字人服务：唇同步 + 常驻微动）、
+- `voxemw/avatar/` — `service.py`（数字人服务，双后端）、
+  `avtr1_engine.py`（AVTR-1 引擎，官方 scheduler 语义）、
   `orchestrator.py`（浏览器入口 + 双写编排 + 截帧注入 + 单会话顶掉）
 - `voxemw/vision.py` — Kimi K3 多模态外貌描述（截帧打分，可缺席）
 - `docs/upgrade-regression.md` — 上游 speech-to-speech 升级五阶段回归方案
