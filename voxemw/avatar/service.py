@@ -9,7 +9,12 @@
 协议（ws，默认 127.0.0.1:8767，orchestrator 是唯一客户端）：
   入（JSON 文本帧）：
     {"type": "audio", "pcm": "<base64 int16 16k mono>"}   喂音频
-    {"type": "reset"}                                       utterance 边界/打断：清缓冲、运动上下文归位
+    {"type": "listen", "pcm": "<base64 int16 16k mono>"}  用户麦克风音频（listen 轨，
+                                                            active listening；仅 avtr1 后端消费，
+                                                            flashhead 后端 no-op）
+    {"type": "reset"}                                       utterance 边界/打断：清音频缓冲
+                                                            （flashhead 同时运动上下文归位；
+                                                            avtr1 保留运动上下文，对齐官方 interrupt）
     {"type": "set_image", "path": "<服务器本地路径>"}       切换 persona 肖像（同机路径直传）
     {"type": "speech_active", "on": true|false}             助手说话期间禁 idle 生成
                                                             （句间停顿 pending 排空时若插入 idle 帧，
@@ -198,6 +203,9 @@ class AvatarEngine:
         with self._cond:
             self._idle_mode = mode if mode in IDLE_MODES else "calm"
 
+    def feed_listen(self, pcm_f32) -> None:
+        """用户麦克风音频（listen 轨）。FlashHead 无双流能力，no-op 保持接口一致。"""
+
     def close(self) -> None:
         with self._cond:
             self._closed = True
@@ -361,6 +369,10 @@ async def _serve(ws, engine: AvatarEngine, jpeg_quality: int) -> None:
             if etype == "audio":
                 pcm = np.frombuffer(base64.b64decode(event["pcm"]), dtype=np.int16)
                 engine.feed_audio(pcm.astype(np.float32) / 32768.0)
+            elif etype == "listen":
+                # 用户麦克风音频（active listening，仅 AVTR-1 后端消费）
+                pcm = np.frombuffer(base64.b64decode(event["pcm"]), dtype=np.int16)
+                engine.feed_listen(pcm.astype(np.float32) / 32768.0)
             elif etype == "reset":
                 engine.reset()
             elif etype == "set_image":
@@ -421,6 +433,7 @@ def main() -> None:
             storage=avatar.get("avtr1_storage") or None,
             bg_id=str(avatar.get("avtr1_bg", "plain_white")),
             idle_motion=idle_motion,
+            cfg_self_audio=float(avatar.get("avtr1_cfg_self_audio", 2.0)),
         )
     elif backend == "flashhead":
         _setup_flashhead_vendor()

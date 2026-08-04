@@ -67,6 +67,10 @@ tts:
   cfg_value: 2.0                         # 官方推荐值；越大越贴近参考音色，过高会僵硬
   inference_timesteps: 10                # 扩散步数,官方推荐 10；调低更快更糙
   optimize: true                         # torch.compile：启动慢一两分钟，RTF ~1.0 → ~0.3-0.5
+  # 语速补偿：VoxCPM2 克隆语速实测比 ref.wav 快 ~12%（同文本合成 21.4s vs 24.2s，
+  # 2026-08-04 A/B：与逐句/整段、cfg_value、timesteps 均无关，模型固有）。
+  # atempo 保调变速，rate=时长倍数的倒数；1.0 = 关闭。每句一个 ffmpeg 管道，~几十 ms 窗口延迟
+  rate: 0.886                            # 时长 ×1.13，对齐 ref.wav 语速
   # load_denoiser: true                  # 参考音频有底噪再开（额外下 ModelScope 降噪模型）
 
 # ---------------------------------------------------------------------------
@@ -86,7 +90,8 @@ avatar:
   avtr1_storage: /root/autodl-tmp/avtr1_storage   # AVTR1_LOCAL_STORAGE（权重+TRT 引擎）
   avtr1_bg: plain_white                # 合成背景 id（pasteback 区域外才生效）
   # avtr1 参考图规范（重要）：16:9 横版胸像（官方帧 1920×1080），脸宽占图宽 ~20%、
-  # 头顶留白 ~19%——loader 对输入非等比 resize 到 1280×720，方图会把脸拉变形
+  # 头顶留白 ~19%——loader 对输入非等比 resize 到 1280×720，方图会把脸拉变形。
+  # 想口型明显：用微张嘴/露齿、胡须不遮嘴线的照片（模型对闭嘴素材开合保守）
   device: cuda
   fps: 15                              # 推流帧率目标（4090 实时可到 25，先保守）
   jpeg_quality: 95                     # LAN/隧道带宽充足,95 块效应基本不可见;网络抖时降 80

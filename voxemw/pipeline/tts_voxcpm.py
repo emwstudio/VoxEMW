@@ -44,6 +44,91 @@ PIPELINE_SR = 16000  # 管线音频采样率（与上游其他 TTS handler 一�
 DEFAULT_VOICE = "default"  # ref_audio/ref_text 启动参数对应的音色名（voices 未命中时的回退）
 
 
+class _AtempoStretcher:
+    """ffmpeg atempo 流式变速（保调）封装：16kHz mono f32 进/出，每句一个实例。
+
+    背景：VoxCPM2 克隆语速实测比参考音快 ~12%（同文本合成 21.4s vs ref.wav 24.2s），
+    与分段/cfg/timesteps 无关，模型固有。tts.rate=0.886 即补偿（时长 ×1/0.886）。
+    atempo 内部有几十 ms 分析窗，首段输出比输入晚一个窗，属正常流式延迟。
+    """
+
+    def __init__(self, sample_rate: int, rate: float):
+        import queue
+        import subprocess
+        import threading
+
+        self._q: queue.Queue = queue.Queue()
+        self._p = subprocess.Popen(
+            [
+                "ffmpeg", "-v", "error",
+                "-f", "f32le", "-ar", str(sample_rate), "-ac", "1", "-i", "pipe:0",
+                "-af", f"atempo={rate}",
+                "-f", "f32le", "-ar", str(sample_rate), "-ac", "1", "pipe:1",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            bufsize=0,
+        )
+        self._buf = b""
+        threading.Thread(target=self._reader, daemon=True).start()
+
+    def _reader(self) -> None:
+        while True:
+            data = self._p.stdout.read(65536)
+            if not data:
+                self._q.put(None)
+                return
+            self._q.put(data)
+
+    def feed(self, audio_f32) -> "np.ndarray":
+        """喂一块 16kHz f32，返回当前可得的拉伸输出（可能为空，窗口延迟）。"""
+        import queue
+
+        import numpy as np
+
+        self._p.stdin.write(audio_f32.astype(np.float32).tobytes())
+        self._p.stdin.flush()
+        while True:
+            try:
+                item = self._q.get_nowait()
+            except queue.Empty:
+                break
+            if item is not None:
+                self._buf += item
+        out, self._buf = self._buf, b""
+        return np.frombuffer(out, dtype=np.float32)
+
+    def flush(self) -> "np.ndarray":
+        """句尾收干（关闭 stdin 后读干到 EOF）。"""
+        import queue
+
+        import numpy as np
+
+        try:
+            self._p.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+        while True:
+            try:
+                item = self._q.get(timeout=10)
+            except queue.Empty:
+                logger.warning("atempo flush 超时（ffmpeg 异常？），丢弃尾部")
+                break
+            if item is None:
+                break
+            self._buf += item
+        self._p.wait()
+        out, self._buf = self._buf, b""
+        return np.frombuffer(out, dtype=np.float32)
+
+    def close(self) -> None:
+        """打断废弃：直接杀进程，不等收尾。"""
+        try:
+            self._p.kill()
+        except OSError:
+            pass
+
+
 class VoxCPMTTSHandler(BaseHandler[TTSIn, TTSOut]):
     """
     Handles Text-to-Speech using openbmb/VoxCPM2 (streaming + Ultimate Cloning).
@@ -63,6 +148,7 @@ class VoxCPMTTSHandler(BaseHandler[TTSIn, TTSOut]):
         inference_timesteps: int = 10,
         optimize: bool = False,
         load_denoiser: bool = False,
+        rate: float = 1.0,
         gen_kwargs: dict[str, Any] | None = None,
         cancel_scope: CancelScope | None = None,
         speculative_turns: SpeculativeTurnTracker | None = None,
@@ -77,6 +163,10 @@ class VoxCPMTTSHandler(BaseHandler[TTSIn, TTSOut]):
         self.gen_kwargs = gen_kwargs or {}
         self.cfg_value = cfg_value
         self.inference_timesteps = inference_timesteps
+        self.rate = rate  # 语速补偿（atempo，1.0=不变；0.886 ≈ 抵消克隆语速 +12%）
+        if self.rate != 1.0:
+            logger.info("VoxCPM 语速补偿开启: atempo rate=%.3f（时长 ×%.3f）",
+                        self.rate, 1.0 / self.rate)
 
         logger.info("Loading VoxCPM model: %s on %s", model_name, device)
         self.model = VoxCPM.from_pretrained(
@@ -235,12 +325,16 @@ class VoxCPMTTSHandler(BaseHandler[TTSIn, TTSOut]):
 
         from scipy.signal import resample_poly
 
+        # 语速补偿（rate≠1.0）：每句一个 atempo 管道，流式保调变速
+        stretcher = _AtempoStretcher(self.sample_rate, self.rate) if self.rate != 1.0 else None
+        cancelled = False
         pending = np.empty(0, dtype=np.int16)
         total_out = 0
         first_chunk_at: Optional[float] = None
         try:
             for wav, _, _ in gen:
                 if self._is_stale(cancel_gen):
+                    cancelled = True
                     logger.info("TTS generation cancelled (interruption)")
                     return
                 # core.py: wav.squeeze(0).cpu().numpy()（48kHz 单声道 float）
@@ -254,6 +348,10 @@ class VoxCPMTTSHandler(BaseHandler[TTSIn, TTSOut]):
                     logger.info(f"VoxCPM TTFA: {first_chunk_at:.2f}s (streaming first chunk)")
                 if self._needs_resampling:
                     audio = resample_poly(audio, up=self._resample_up, down=self._resample_down)
+                if stretcher is not None:
+                    audio = stretcher.feed(audio)
+                    if audio.size == 0:
+                        continue  # atempo 窗口延迟，本块暂无输出
                 pending = np.concatenate([pending, self._to_int16(audio)])
                 while len(pending) >= self.blocksize:
                     yield pending[: self.blocksize]
@@ -261,10 +359,25 @@ class VoxCPMTTSHandler(BaseHandler[TTSIn, TTSOut]):
                     total_out += self.blocksize
         finally:
             gen.close()
+            if stretcher is not None:
+                if cancelled:
+                    stretcher.close()  # 打断：丢弃未收尾音频
+                else:
+                    tail = stretcher.flush()
+                    if tail.size:
+                        pending = np.concatenate([pending, self._to_int16(tail)])
 
         if len(pending) > 0:
-            total_out += len(pending)
-            yield np.pad(pending, (0, self.blocksize - len(pending)))
+            # flush 尾巴可能很大（atempo 窗尾可达数千采样），先整块吐完再补零收尾；
+            # 之前直接 np.pad(pending, (0, blocksize-len))，pending>blocksize 时
+            # pad 宽度为负 → ValueError → 句尾被静默丢弃（「吞音」根因，2026-08-05）
+            while len(pending) >= self.blocksize:
+                yield pending[: self.blocksize]
+                pending = pending[self.blocksize :]
+                total_out += self.blocksize
+            if len(pending) > 0:
+                total_out += len(pending)
+                yield np.pad(pending, (0, self.blocksize - len(pending)))
 
         generation_time = perf_counter() - start
         audio_duration = total_out / self.sample_rate

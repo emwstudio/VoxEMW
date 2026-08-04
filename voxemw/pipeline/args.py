@@ -135,4 +135,5 @@ def tts_setup_kwargs(config: dict) -> dict:
         "inference_timesteps": int(tts.get("inference_timesteps", 10)),
         "optimize": bool(tts.get("optimize", True)),
         "load_denoiser": bool(tts.get("load_denoiser", False)),
+        "rate": float(tts.get("rate", 1.0)),
     }

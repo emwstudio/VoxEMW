@@ -233,6 +233,7 @@ class Session:
         self.vision_cfg = vision_cfg
         self._vision_busy = False
         self._mic_muted = False  # 垫场→打分说完期间：上行麦克风音频丢弃，插话不打断打分
+        self._user_speaking = False  # server VAD 判定的用户说话段（listen 轨转发门控）
         self.s2s = None
         self.avatar = None
         self._avatar_speaking = False  # 是否已向 avatar 下发 speech_active=on
@@ -330,6 +331,13 @@ class Session:
             # 垫场→打分说完期间麦克风静音：上行音频直接丢弃，插话不打断打分
             if self._mic_muted and event.get("type") == "input_audio_buffer.append":
                 continue
+            # listen 轨 tee：用户说话段（server VAD 门控，防环境噪音/回声引起多余反应）
+            # 的麦克风音频转发给 avatar 做 active listening（官方 listen 轨常开，
+            # 这里按段转发是 deliberate 的门控收敛）
+            if (event.get("type") == "input_audio_buffer.append"
+                    and self.avatar is not None and self._user_speaking):
+                await self.avatar.send(json.dumps({
+                    "type": "listen", "pcm": event.get("audio", "")}))
             await self.s2s.send(message.data)
 
     # ── 截帧打分：vision 描述 → 注入 s2s 让 persona 锐评 ──
@@ -525,6 +533,10 @@ class Session:
         etype = event.get("type", "")
         if etype == "response.done":
             self._responses_done += 1
+        elif etype == "input_audio_buffer.speech_started":
+            self._user_speaking = True
+        elif etype == "input_audio_buffer.speech_stopped":
+            self._user_speaking = False
         elif etype == "response.created":
             # 只有注入的回复才发 response.created（VAD 回复不发）
             self._inject_outcome = "accepted"

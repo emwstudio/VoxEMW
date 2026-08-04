@@ -55,7 +55,9 @@ idle 生成（防句间停顿插入 idle 帧卡画面）；idle 生成按实时�
 
 默认 **AVTR-1**（[avaturn-live/avtr-1](https://github.com/avaturn-live/avtr-1)，
 TensorRT 加速，5 帧/0.2s 生成粒度，4090D 实测 ~80ms/chunk = 2.5x 实时）：
-唇同步缓冲 0.35s、原生静音 idle、支持双流倾听（listen 轨，接入中）。
+唇同步缓冲 0.35s、原生静音 idle、**双流倾听**（listen 轨已接入——你说话时
+麦克风音频经 orchestrator 的 VAD 门控 tee 给 avatar，峰哥对你的声音实时做
+倾听反应）。输出 1280×720（官方原生分辨率，隧道带宽紧张可降 960×540）。
 **FlashHead** 保留为回退后端（`avatar.backend: flashhead`，扩散重绘画质更锐，
 但 0.96s 窗口决定了 0.8s 缓冲地板）。`start_assistant.sh` 按 backend 自动选
 python 环境（avtr1 = pixi env，flashhead = .venv-avatar）。
@@ -88,7 +90,7 @@ response.create 被拒时等当前回复 response.done 自动重发）。从截�
 | vad | silero-vad | s2s 内置，判停 500ms（speculative reopen 兜误断） |
 | stt | `iic/SenseVoiceSmall` | 自定义积木 `voxemw.pipeline.stt_sensevoice`，FunASR 非自回归本地推理（4s 音频 0.06s）；`qwen3asr` 备选（多语种） |
 | llm | DeepSeek `deepseek-v4-flash` | s2s 内置 chat-completions；流式逐句送 TTS（长回复首音 ~2s vs 整段 3-5s）；关 thinking 由 launch 注入 |
-| tts | `openbmb/VoxCPM2` | 自定义积木 `voxemw.pipeline.tts_voxcpm`，Ultimate Cloning + 流式 |
+| tts | `openbmb/VoxCPM2` | 自定义积木 `voxemw.pipeline.tts_voxcpm`，Ultimate Cloning + 流式；`tts.rate` 保调变速（克隆固有提速 ~12%，默认 0.886 对齐参考音）|
 | avatar | `avaturn-live/avtr-1`（TensorRT）| 默认后端，0.2s/chunk，4090D ~80ms/chunk；`SoulX-FlashHead-1_3B` Lite 保留回退 |
 | persona | `personas/<id>.md` | 女娲蒸馏产物；frontmatter 绑定音色三件套（见下） |
 
@@ -155,9 +157,10 @@ tail -f logs/{pipeline,avatar,orchestrator}.log                 # 排障
 
 音画对齐（web/assistant.js）：数字人攒满 0.96s 音频才出帧，画面天然晚 ~0.9s；
 前端把音频延迟 0.8s 播放（SDPA 时代 1.0s，flash_attn 后实测最优）、视频帧按序
-从属于音频播放时钟（vlag=0），实测偏移 <0.1s。`?debug=1` 显示同步角标；
+从属于音频播放时钟（vlag=0），实测偏移 <0.1s；speech 与 idle 帧合流同队列
+沿音频时钟连播（句尾回落→待机微动无接管跳变）。`?debug=1` 显示同步角标；
 `?vlag=N` 调视频滞后帧；`?adelay=N` 调音频基础延迟；
-`?solo=1` 单栏模式（隐藏摄像头画面、数字人居中，demo 录制用）。
+`?solo=1` 单栏模式（隐藏摄像头画面、数字人 16:9 全宽居中，demo 录制用）。
 
 ## 女娲蒸馏（造新人设）
 

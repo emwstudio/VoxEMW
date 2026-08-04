@@ -2,7 +2,7 @@
 
 接口与 voxemw.avatar.service.AvatarEngine（FlashHead）完全一致：
 feed_audio/reset/set_image/set_speech_active/set_idle_mode/close +
-run_inference_loop(on_frames)/warmup(on_frames)，帧统一裁成 512×512 RGB uint8，
+run_inference_loop(on_frames)/warmup(on_frames)，帧统一输出 960×540 RGB uint8（16:9 原生），
 ws 协议层（service.py）无感知。
 
 流式语义对齐官方 streamer（avaturn_live_streamer/worklets/rendering.py +
@@ -20,7 +20,8 @@ speech/speech_scheduler.py，2026-08-04 逐条对账）：
 - 句尾（speech_active 转 false 即段结束）仍有未消费真音频：立即右补零排空
   （官方 SegmentEnded → pad_right，无等待），帧标 speech，嘴型自然闭合。
 - 无活动语音段：静音 chunk 持续渲染（官方 pad_right），按 0.2s 实时节奏节流，
-  帧标 idle；listen 轨恒零（listening/thinking/calm 本期统一映射静音）。
+  帧标 idle；listen 轨（用户麦克风）在 idle_mode=="listening" 时生效
+  （active listening：点头/注视等倾听反应），thinking/calm 为纯静音。
 - 参考帧须为 16:9 胸像（官方 18 帧全部 1920×1080、脸宽占图宽 ~0.20、头顶留白
   ~18%）：loader 会把输入非等比 resize 到 1280×720，非 16:9 输入脸型必失真
   （2026-08-04 实测：方图特写 → 窄长脸 + AR 状态漂移；合规构图下状态永续不漂移）。
@@ -47,16 +48,23 @@ CHUNK_STEP = 3200                                # 0.2s（5 帧 × 640）
 CHUNK_WINDOW = (5 + 5) * 640 + 80                # 6480 = 当前 3280 + 前瞻 3200
 CHUNK_SECONDS = CHUNK_STEP / SAMPLE_RATE         # 0.2
 OUT_H, OUT_W = 720, 1280
-FRAME_SIZE = 512      # 下行统一 512×512（协议层不变）
+FRAME_W = 1280          # 下行统一 1280×720（16:9 官方原生，协议层不变）
+FRAME_H = 720
 
 WARMUP_CHUNKS = 2
+LISTEN_CAP = SAMPLE_RATE * 8   # listen 环形缓冲上限（最近 8s 用户语音）
+# 句尾淡出：段结束时对未消费真音频末尾做余弦渐变（仅模型输入，用户听到的音频
+# 不变）。硬切静音会让模型 ~0.3s 内急回中性位（用户感知「说完立马摆正」，实测
+# 帧间运动峰值 1.1-1.7）；0.5s 淡出把峰值减半、回落摊到 ~1s（胶片条实测）。
+TAIL_FADE_SECONDS = 0.5
 
 
 class AVTR1Engine:
     """AVTR-1 推理引擎：所有 pipeline 调用序列化在 inference 线程。"""
 
     def __init__(self, image_path: str, storage: str | None = None,
-                 bg_id: str = "plain_white", idle_motion: bool = True):
+                 bg_id: str = "plain_white", idle_motion: bool = True,
+                 cfg_self_audio: float = 2.0):
         import numpy as _np  # noqa: F401
 
         if storage:
@@ -94,7 +102,10 @@ class AVTR1Engine:
             max_dim=max(OUT_H, OUT_W),
         )
         self._options = RenderOptions(
-            pixel_format="yuv_i420", bg_id=bg_id, stream_frames=False
+            pixel_format="yuv_i420", bg_id=bg_id, stream_frames=False,
+            # speech 轨 CFG 权重（官方默认 2.0）。实测 4.0 口型开合 +3.5%、无伪影
+            # （2026-08-04 扫参）；口型幅度的主因是参考图素材（闭嘴+胡须），见审计报告
+            cfg_self_audio=cfg_self_audio,
         )
         self.idle_motion = idle_motion
 
@@ -108,12 +119,16 @@ class AVTR1Engine:
         self._buf = _np.empty(0, dtype=_np.float32)
         self._pos = 0
         self._real_len = 0
+        self._tail_faded = False  # 本段句尾淡出是否已施加（防多轮补零重复淡出）
 
         self._cond = threading.Condition()
         self._closed = False
         self._pending_image = None
         self._speech_active = False
-        self._idle_mode = "calm"  # 收下但本期三态统一映射静音
+        self._idle_mode = "calm"      # listening 时 listen 轨生效，其余静音
+        # listen 环形缓冲（用户麦克风音频，16kHz f32）：实时到达，持续保留最近
+        # 一段；chunk 取末尾一窗（不足左补零）。只在 idle_mode=="listening" 时使用。
+        self._listen = _np.empty(0, dtype=_np.float32)
         self.on_frames = None
 
     # ── 内部 ──
@@ -134,6 +149,7 @@ class AVTR1Engine:
             # buf 布局恒为 [真实音频(real_len)][补零]，补零只在末尾。
             self._buf = np.concatenate([self._buf[: self._real_len], pcm_f32])
             self._real_len += len(pcm_f32)
+            self._tail_faded = False  # 新音频到达：上一段的淡出标记作废
             self._cond.notify()
 
     def reset(self) -> None:
@@ -146,6 +162,7 @@ class AVTR1Engine:
             self._buf = np.empty(0, dtype=np.float32)
             self._pos = 0
             self._real_len = 0
+            self._tail_faded = False
             self._cond.notify()
 
     def set_image(self, image_path: str) -> None:
@@ -158,9 +175,18 @@ class AVTR1Engine:
             self._speech_active = on
             self._cond.notify()
 
+    def feed_listen(self, pcm_f32) -> None:
+        """用户麦克风音频（listen 轨）。环形保留最近 LISTEN_CAP 采样。"""
+        with self._cond:
+            import numpy as np
+
+            self._listen = np.concatenate([self._listen, pcm_f32])[-LISTEN_CAP:]
+            self._cond.notify()
+
     def set_idle_mode(self, mode: str) -> None:
         with self._cond:
-            self._idle_mode = mode  # 本期不接双流 listen，统一静音 idle
+            self._idle_mode = mode  # listening → listen 轨生效；thinking/calm → 静音
+            self._cond.notify()
 
     def close(self) -> None:
         with self._cond:
@@ -171,12 +197,35 @@ class AVTR1Engine:
 
     @staticmethod
     def _to_display(frame) -> "object":
-        """Frame(yuv_i420 720×1280) → 居中裁方 512×512 RGB uint8。"""
+        """Frame(yuv_i420 720×1280) → 1280×720 RGB uint8（16:9 官方原生比例）。"""
         import cv2
 
         rgb = cv2.cvtColor(frame.data, cv2.COLOR_YUV2RGB_I420)
-        sq = rgb[:, (OUT_W - OUT_H) // 2 : (OUT_W + OUT_H) // 2]
-        return cv2.resize(sq, (FRAME_SIZE, FRAME_SIZE), interpolation=cv2.INTER_AREA)
+        return cv2.resize(rgb, (FRAME_W, FRAME_H), interpolation=cv2.INTER_AREA)
+
+    def _listen_window(self):
+        """当前 chunk 的 listen 轨：idle_mode=="listening" 时取环形缓冲末尾一窗
+        （不足左补零），否则纯静音。对齐官方 user_speech_scheduler 语义
+        （用户音频常开喂入、缺席时 scheduler 补静音）。"""
+        import numpy as np
+
+        if self._idle_mode != "listening" or len(self._listen) == 0:
+            return np.zeros(CHUNK_WINDOW, dtype=np.float32)
+        tail = self._listen[-CHUNK_WINDOW:]
+        if len(tail) < CHUNK_WINDOW:
+            tail = np.pad(tail, (CHUNK_WINDOW - len(tail), 0))
+        return tail
+
+    def _fade_tail(self) -> None:
+        """对未消费真音频的末尾做余弦淡出（只改模型输入，用户听到的音频不变）。
+        在句尾补零前调用一次，见 TAIL_FADE_SECONDS。"""
+        import numpy as np
+
+        n = min(int(TAIL_FADE_SECONDS * SAMPLE_RATE), self._real_len - self._pos)
+        if n <= 0:
+            return
+        ramp = (np.cos(np.linspace(0, np.pi / 2, n)) ** 1.5).astype(np.float32)
+        self._buf[self._real_len - n : self._real_len] *= ramp
 
     def run_inference_loop(self, on_frames) -> None:
         """阻塞循环（官方 scheduler 语义）：
@@ -187,7 +236,7 @@ class AVTR1Engine:
           （官方 midsegment block——补零假帧会让口型滞后漂移）；
         - 无活动段（缓冲全空且 speech_active=false）：静音 idle chunk 按 0.2s
           实时节流（标 idle）。
-        on_frames(frames_uint8: np.ndarray (5,512,512,3), is_idle: bool) 每 chunk 一次。"""
+        on_frames(frames_uint8: np.ndarray (5,960,540,3), is_idle: bool) 每 chunk 一次。"""
         import time as _time
 
         import numpy as np
@@ -202,7 +251,11 @@ class AVTR1Engine:
                     if buffered >= CHUNK_WINDOW:
                         break  # 可生成（真实够窗，或句尾补零已补齐）
                     if 0 < unconsumed < CHUNK_WINDOW and not self._speech_active:
-                        # 段结束尾巴：立即右补零（下轮循环 break 生成）
+                        # 段结束尾巴：先对真音频末尾淡出（防模型急回中性位），
+                        # 再立即右补零（下轮循环 break 生成）
+                        if not self._tail_faded:
+                            self._fade_tail()
+                            self._tail_faded = True
                         pad = CHUNK_WINDOW - buffered
                         self._buf = np.concatenate(
                             [self._buf, np.zeros(pad, dtype=np.float32)])
@@ -235,7 +288,7 @@ class AVTR1Engine:
                         self._real_len = max(0, self._real_len - self._pos)
                         self._pos = 0
             chunk = Chunk(audio_speech=audio,
-                          audio_listen=np.zeros_like(audio))
+                          audio_listen=self._listen_window())
             self._state, frames_iter = self.pipeline.process_chunk(
                 self._avatar, chunk, self._state, self._options
             )

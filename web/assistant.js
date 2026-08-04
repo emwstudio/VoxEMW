@@ -316,6 +316,8 @@ let frameTimer = null;
 let responseAudioBase = 0;   // 当前 response 音频在 ctx 时间轴上的起点
 let videoFrameIdx = 0;       // 当前 response 已消费（播放或丢弃）的帧序号
 let needVideoBase = true;    // 下一个音频 delta 是 response 起点（response.done/打断后置位）
+const idleQueue = [];        // idle 帧缓冲（无音频时钟，按 ~25fps 均匀释放）
+let lastIdleDraw = 0;
 
 function enqueueFrame(jpegBytes) {
   frameRecvCount++;
@@ -335,9 +337,17 @@ function startFramePlayback() {
   // 放帧跟不上音频时钟,越落越多再跳帧,表现为一卡一卡
   const tick = () => {
     frameTimer = requestAnimationFrame(tick);
-    // 音频播放排空：「说话」结束回待机（角标隐藏，画面由 idle 微动接管）
+    // 音频播放排空：「说话」结束回待机（角标隐藏；句尾后的 idle 帧已排在
+    // 说话帧队列尾沿时钟连播，见下行二进制 handler 的注释，无需在此切换通道）
     if (avatarState === "speaking" && player && player.nextStartTime <= player.ctx.currentTime) {
       setAvatarState("idle");
+    }
+    // idle 帧均匀释放：服务端 0.2s 一簇 5 帧推流，到就画会成簇卡顿
+    //（说话结束从时钟播放切换到直画的那一刻尤其明显）
+    const now = performance.now();
+    if (idleQueue.length > 0 && now - lastIdleDraw >= 38) {
+      lastIdleDraw = now;
+      drawFrame(idleQueue.shift());
     }
     if (!player || frameQueue.length === 0) return;
     const pos = player.ctx.currentTime - responseAudioBase;  // 本 response 已播音频秒数
@@ -423,6 +433,7 @@ const realtimeHandlers = {
     // 用户开口（打断）：本地播放队列清空，助手文本行封口
     flushPlayback();
     frameQueue.length = 0;  // 视频帧队列一并清空，嘴型跟着归位
+    idleQueue.length = 0;
     needVideoBase = true;
     assistantLine = null;
     responseText = "";
@@ -579,13 +590,20 @@ function connect() {
     } else {
       const bytes = new Uint8Array(msg.data);
       if (bytes[0] === FRAME_TYPE_JPEG) {
-        // tag 0x00=idle：待机微动帧，不进唇同步队列直接画（首个 TTS delta 前
-        // 在飞的静音帧若进队列会错位唇同步）；tag 0x01=speech：照常排队
+        // tag 0x00=idle：无音频时钟（待机微动/倾听反应），进 idleQueue 按
+        // ~25fps 均匀释放（成簇直画会卡）；tag 0x01=speech：照常排队
         if (bytes[1] === FRAME_TAG_IDLE) {
-          // 尾部音频还在播时丢 idle 帧：response.done 后 avatar 已回 idle 生成，
-          // 但浏览器还在播缓冲的说话帧，直画 idle 会盖住唇同步画面
-          if (!player || player.nextStartTime <= player.ctx.currentTime + 0.05) {
-            drawFrame(bytes.subarray(2));
+          // 句尾平滑（2026-08-04 终版）：说话帧队列未空（或音频仍在播）时，idle 帧
+          // 排进同一队列、沿音频时钟 25fps 连播——引擎内容本就连贯（尾帧回落→idle
+          // 微动），按到达顺序播即无跳变也无断供。这正是官方 demo 的播放模型
+          // （帧按内容顺序持续上屏）。完全空闲（无音频时钟）才走 idleQueue 直画。
+          // 旧实现两处败笔：①积压期丢 idle 帧→接管瞬间姿态跳变；②drain 后才
+          // flush→队列耗尽到尾帧到达之间定格。
+          if (frameQueue.length > 0 || (player && player.nextStartTime > player.ctx.currentTime)) {
+            enqueueFrame(bytes.subarray(2));
+          } else {
+            if (idleQueue.length >= 10) idleQueue.shift();  // 满则丢最旧
+            idleQueue.push(bytes.subarray(2));
           }
         } else {
           enqueueFrame(bytes.subarray(2));

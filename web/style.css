@@ -50,14 +50,15 @@ body {
   .call-view { grid-template-columns: 1fr; }
 }
 
-/* solo 模式（?solo=1，demo 录制用）：隐藏用户画面，数字人单栏居中。
+/* solo 模式（?solo=1，demo 录制用）：隐藏用户画面，数字人 16:9 全宽居中。
    注意必须用 grid 轨道尺寸 + justify-content 居中——
    max-width + margin auto 在 flex/grid 嵌套下会把容器宽度压成 0（头像消失）*/
 body.solo .call-view {
-  grid-template-columns: min(560px, 100%);
+  grid-template-columns: min(1080px, 100%);
   justify-content: center;
 }
 body.solo .cam-wrap { display: none; }
+body.solo .avatar-wrap { aspect-ratio: 16 / 9; }
 
 .cam-wrap,
 .avatar-wrap {
