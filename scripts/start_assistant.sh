@@ -34,7 +34,7 @@ pkill -f "voxemw.pipeline.launch" 2>/dev/null || true
 pkill -f "voxemw.avatar.orchestrator" 2>/dev/null || true
 sleep 2
 
-AVTR_BACKEND=$(grep -E '^  backend:' "$VOXEMW_CONFIG" | head -1 | awk '{print $2}')
+AVTR_BACKEND=$(awk '/^avatar:/{f=1} f && /^  backend:/{print $2; exit}' "$VOXEMW_CONFIG")
 if [ "$AVTR_BACKEND" = "avtr1" ]; then
     # AVTR-1：pixi env python 直调（勿 pixi run——会按 lock 重同步 env，
     # 把 pip 降级的 onnxruntime-gpu 1.22 还原成 1.28）

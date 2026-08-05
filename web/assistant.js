@@ -106,6 +106,17 @@ const ADELAY_OVERRIDE = (() => {
 const BACKEND_ADELAY = { avtr1: 0.35, flashhead: 0.8 };
 let avatarAudioDelay = ADELAY_OVERRIDE ?? 0.8;
 
+// 口型-语音时间偏移补偿（帧数）：AVTR-1 模型固有口型滞后（音频包络 vs 唇部开合
+// 互相关实测：爆破音段 +3 帧/120ms、自然语音段 +2 帧/80ms，官方 generate_offline
+// 同幅——模型属性非链路错位），视频提前 3 帧（120ms）补偿；flashhead 无此偏移。
+// 可用 ?vlag=N 覆盖（正负号：target = pos*25 - videoLagFrames）
+const VLAG_OVERRIDE = (() => {
+  const v = parseInt(new URLSearchParams(location.search).get("vlag") || "", 10);
+  return Number.isFinite(v) ? v : null;
+})();
+const BACKEND_VLAG = { avtr1: -3, flashhead: 0 };
+let videoLagFrames = VLAG_OVERRIDE ?? 0;
+
 function playPCM(int16) {
   const p = ensurePlayer();
   const buf = p.ctx.createBuffer(1, int16.length, SAMPLE_RATE);
@@ -330,9 +341,6 @@ function enqueueFrame(jpegBytes) {
 
 function startFramePlayback() {
   if (frameTimer) return;
-  // 画面在音频时钟基础上的滞后帧数(缓冲垫,吸供帧抖动)。
-  // 口型偏移感知阈值 ~0.1-0.15s,实测 vlag=0 口型最准且供帧跟得上;可用 ?vlag=N 覆盖
-  const VIDEO_LAG_FRAMES = parseInt(new URLSearchParams(location.search).get("vlag") || "0", 10);
   // rAF 驱动(60Hz,跟屏幕刷新):setInterval(40ms) 在 iOS 上漂移严重,
   // 放帧跟不上音频时钟,越落越多再跳帧,表现为一卡一卡
   const tick = () => {
@@ -352,7 +360,7 @@ function startFramePlayback() {
     if (!player || frameQueue.length === 0) return;
     const pos = player.ctx.currentTime - responseAudioBase;  // 本 response 已播音频秒数
     if (pos < 0) return;
-    const target = Math.floor(pos * 25) - VIDEO_LAG_FRAMES;
+    const target = Math.floor(pos * 25) - videoLagFrames;
     // 落后 >1s：跳到最新，保同步优先于完整
     while (frameQueue.length > 0 && videoFrameIdx < target - 25) {
       frameQueue.shift();
@@ -508,6 +516,9 @@ function handleTextMessage(data) {
     currentPersona = event.persona;
     if (ADELAY_OVERRIDE == null && event.avatar_backend) {
       avatarAudioDelay = BACKEND_ADELAY[event.avatar_backend] ?? 0.8;
+    }
+    if (VLAG_OVERRIDE == null && event.avatar_backend) {
+      videoLagFrames = BACKEND_VLAG[event.avatar_backend] ?? 0;
     }
     els.fallback.classList.toggle("hidden", avatarOn);
     updatePersonaBar();
