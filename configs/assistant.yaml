@@ -127,6 +127,19 @@ filler:
   enabled: false
 
 # ---------------------------------------------------------------------------
+# Memory：记忆积木（第七块）。Mem0 内嵌模式——LLM 抽取走 DeepSeek（OpenAI 兼容），
+# embedding 本地 bge-m3（DeepSeek 无 embedding API），向量库内嵌 qdrant 文件落盘。
+# 会话开始时召回注入 instructions（一次性）；response.done 后异步写入（不占语音延迟）。
+# 默认关，验收后开。
+# ---------------------------------------------------------------------------
+memory:
+  enabled: true
+  user_id: emw
+  top_k: 5
+  store_dir: data/memory
+  embedder_model: BAAI/bge-m3
+
+# ---------------------------------------------------------------------------
 # 人设注册表：key = persona id（前端切换、TTS 音色名都用它），
 # value = 女娲蒸馏产物。每个文件的 frontmatter 声明三件套：
 #   name（显示名）/ ref_wav（音色参考音）/ ref_text（逐字台词）/ ref_image（数字人肖像）

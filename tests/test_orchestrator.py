@@ -167,3 +167,27 @@ def test_extract_emotion():
     assert extract_emotion("<|zh|><|HAPPY|><|Speech|><|withitn|>太好了") == "HAPPY"
     assert extract_emotion("<|zh|><|ANGRY|><|Speech|><|withitn|>你干嘛") == "ANGRY"
     assert extract_emotion("没有标签的文本") == "NEUTRAL"
+
+
+def test_build_memory_block():
+    from voxemw.memory import build_memory_block
+
+    assert build_memory_block([]) == ""
+    block = build_memory_block(["用户叫小明", "用户在减肥"])
+    assert "关于用户的记忆" in block
+    assert "- 用户叫小明" in block
+    # 超长截断（80 字上限）
+    long_block = build_memory_block(["x" * 100])
+    assert "x" * 81 not in long_block
+
+
+def test_create_memory_store_disabled_by_default():
+    from voxemw.memory import create_memory_store
+
+    assert create_memory_store({}) is None
+    assert create_memory_store({"memory": {"enabled": False}}) is None
+    # 启用但缺 key → 降级 None
+    assert create_memory_store({
+        "memory": {"enabled": True},
+        "llm": {"api_key_env": "DEFINITELY_MISSING_KEY"},
+    }) is None

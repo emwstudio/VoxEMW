@@ -223,7 +223,8 @@ class Session:
 
     def __init__(self, browser_ws, s2s_url: str, avatar_url: str | None,
                  personas: dict, default_persona: str, vision_cfg: dict | None = None,
-                 filler_enabled: bool = True, avatar_backend: str = "flashhead"):
+                 filler_enabled: bool = True, avatar_backend: str = "flashhead",
+                 memory_store=None):
         self.browser = browser_ws
         self.s2s_url = s2s_url
         self.avatar_url = avatar_url
@@ -231,6 +232,9 @@ class Session:
         self.personas = personas
         self.persona_id = default_persona
         self.vision_cfg = vision_cfg
+        self.memory = memory_store  # 记忆积木（None = 未启用/降级）
+        self._turn_user_text = ""       # 本轮用户转写（记忆写入用）
+        self._turn_assistant_text = ""  # 本轮峰哥回复（记忆写入用）
         self._vision_busy = False
         self._mic_muted = False  # 垫场→打分说完期间：上行麦克风音频丢弃，插话不打断打分
         self._user_speaking = False  # server VAD 判定的用户说话段（listen 轨转发门控）
@@ -300,7 +304,19 @@ class Session:
         persona = self.personas[persona_id]
         self.persona_id = persona_id
         self._fillers = load_fillers(persona)
-        await self.s2s.send(json.dumps(build_session_update(persona_id, persona["text"])))
+        instructions = persona["text"]
+        if self.memory is not None:
+            try:
+                from voxemw.memory import build_memory_block
+
+                memories = await asyncio.to_thread(self.memory.search, persona_id)
+                block = build_memory_block(memories)
+                if block:
+                    instructions = instructions + "\n\n" + block
+                    logger.info("记忆注入 %d 条", len(memories))
+            except Exception as e:
+                logger.warning("记忆召回失败（跳过）: %s", e)
+        await self.s2s.send(json.dumps(build_session_update(persona_id, instructions)))
         if self.avatar is not None:
             image = persona.get("ref_image")
             if image:
@@ -397,6 +413,25 @@ class Session:
             raise  # 用户插话取消：前端已被 speech_started flush，直接退出
         except Exception as e:
             logger.info("垫音播放中断（连接关闭？）: %r", e)
+
+    def _maybe_write_memory(self) -> None:
+        """response.done → 异步写入本轮对话到记忆（Mem0 抽取，不占语音延迟）。
+        打分流程（mic_muted）的注入回复不入库（旁白/指令不是真实对话）。"""
+        user_text, assistant_text = self._turn_user_text, self._turn_assistant_text
+        self._turn_user_text = ""
+        self._turn_assistant_text = ""
+        if self.memory is None or self._mic_muted or not user_text:
+            return
+
+        async def _write():
+            try:
+                await asyncio.to_thread(
+                    self.memory.add_turn, user_text, assistant_text, self.persona_id
+                )
+            except Exception as e:
+                logger.info("记忆写入失败（忽略）: %s", e)
+
+        asyncio.create_task(_write())
 
     async def _send_vision_state(self, state: str) -> None:
         try:
@@ -500,6 +535,13 @@ class Session:
                 continue
             self._track_dialog_state(event)
             etype = event.get("type", "")
+            # 记忆：跟踪本轮转写文本（写入发生在 response.done）
+            if etype == "conversation.item.input_audio_transcription.completed":
+                self._turn_user_text = (event.get("transcript") or "").strip()
+            elif etype == "response.output_audio_transcript.done":
+                self._turn_assistant_text = (event.get("transcript") or "").strip()
+            elif etype == "response.done":
+                self._maybe_write_memory()
             # 转写完成 → 立即垫音；用户再开口（打断）→ 取消垫音
             if etype == "conversation.item.input_audio_transcription.completed":
                 if (event.get("transcript") or "").strip():
@@ -591,6 +633,10 @@ def create_app(config: dict):
     vision_cfg = vision.vision_config(config)
     filler_enabled = bool((config.get("filler") or {}).get("enabled", True))
 
+    from voxemw.memory import create_memory_store
+
+    memory_store = create_memory_store(config)
+
     async def index(_request):
         return web.FileResponse(REPO_ROOT / "web" / "index.html")
 
@@ -633,7 +679,7 @@ def create_app(config: dict):
             await old.close()
         session = Session(ws, s2s_url, avatar_url, personas, default_persona,
                           vision_cfg=vision_cfg, filler_enabled=filler_enabled,
-                          avatar_backend=avatar_backend)
+                          avatar_backend=avatar_backend, memory_store=memory_store)
         current_session["session"] = session
         try:
             await session.run()
