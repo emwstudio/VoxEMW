@@ -214,7 +214,7 @@ class Session:
     def __init__(self, browser_ws, s2s_url: str, avatar_url: str | None,
                  personas: dict, default_persona: str,
                  filler_enabled: bool = True, avatar_backend: str = "avtr1",
-                 memory_store=None):
+                 memory_store=None, weibo_cfg: dict | None = None):
         self.browser = browser_ws
         self.s2s_url = s2s_url
         self.avatar_url = avatar_url
@@ -222,6 +222,9 @@ class Session:
         self.personas = personas
         self.persona_id = default_persona
         self.memory = memory_store  # 记忆积木（None = 未启用/降级）
+        weibo_cfg = weibo_cfg or {}
+        self.weibo_db = weibo_cfg.get("db_path") if weibo_cfg.get("enabled") else None
+        self.weibo_top_n = int(weibo_cfg.get("top_n", 8))
         self._turn_user_text = ""       # 本轮用户转写（记忆写入用）
         self._turn_assistant_text = ""  # 本轮峰哥回复（记忆写入用）
         self._user_speaking = False  # server VAD 判定的用户说话段（listen 轨转发门控）
@@ -296,6 +299,16 @@ class Session:
                     logger.info("记忆注入 %d 条", len(memories))
             except Exception as e:
                 logger.warning("记忆召回失败（跳过）: %s", e)
+        if self.weibo_db:
+            from voxemw.weibo import build_posts_block, get_recent_posts
+
+            posts = await asyncio.to_thread(
+                get_recent_posts, self.weibo_db, self.weibo_top_n
+            )
+            block = build_posts_block(posts)
+            if block:
+                instructions = instructions + "\n\n" + block
+                logger.info("动态注入 %d 条", len(posts))
         await self.s2s.send(json.dumps(build_session_update(persona_id, instructions)))
         if self.avatar is not None:
             image = persona.get("ref_image")
@@ -541,7 +554,8 @@ def create_app(config: dict):
             await old.close()
         session = Session(ws, s2s_url, avatar_url, personas, default_persona,
                           filler_enabled=filler_enabled,
-                          avatar_backend=avatar_backend, memory_store=memory_store)
+                          avatar_backend=avatar_backend, memory_store=memory_store,
+                          weibo_cfg=config.get("weibo"))
         current_session["session"] = session
         try:
             await session.run()
