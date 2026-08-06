@@ -1,7 +1,8 @@
 # VoxEMW 数字人实时语音助手 —— AutoDL RTX 4090D（24GB 单卡）
 #
-# 六段积木：vad（语音活动检测）/ stt（语音转文字）/ llm（对话模型）/
-#           tts（文字转语音）/ avatar（数字人形象）/ personas（人设注册表）
+# 七块积木：vad（语音活动检测）/ stt（语音转文字）/ llm（对话模型）/
+#           tts（文字转语音）/ avatar（数字人形象，AVTR-1）/ personas（人设注册表）/
+#           memory（长期记忆，Mem0）
 #
 # 架构：huggingface/speech-to-speech 管线（pip 依赖，运行时注册自定义积木）
 #        浏览器 ↔ orchestrator（voxemw.avatar.orchestrator，:8000）
@@ -74,49 +75,24 @@ tts:
   # load_denoiser: true                  # 参考音频有底噪再开（额外下 ModelScope 降噪模型）
 
 # ---------------------------------------------------------------------------
-# Avatar：数字人形象。backend: flashhead = Soul-AILab/SoulX-FlashHead-1_3B Lite；
-# avtr1 = AVTR-1（avaturn-live/avtr-1，TensorRT，0.2s/chunk，实测 4090D ~80ms/chunk）。
-# 一张参考肖像（persona frontmatter 的 ref_image）+ TTS 音频流 → 实时说话头视频。
+# Avatar：数字人形象 = AVTR-1（avaturn-live/avtr-1，TensorRT，0.2s/chunk，
+# 实测 4090D ~80ms/chunk）。一张参考肖像 + TTS 音频流 → 实时说话头视频。
 # 独立 GPU 进程（voxemw.avatar.service），orchestrator 经 ws 推送音频、收视频帧。
 # enabled: false 或 persona 缺 ref_image 时自动降级为纯语音模式。
+# 参考图规范（重要）：16:9 横版胸像（官方帧 1920×1080），脸宽占图宽 ~20%、
+# 头顶留白 ~19%——loader 对输入非等比 resize 到 1280×720，方图会把脸拉变形。
+# 想口型明显：用微张嘴/露齿、胡须不遮嘴线的照片（模型对闭嘴素材开合保守）
 # ---------------------------------------------------------------------------
 avatar:
-  backend: avtr1                 # avtr1（验收通过，默认）| flashhead（回退）
   enabled: true
-  model_dir: models/SoulX-FlashHead-1_3B      # flashhead：相对仓库根；含 Lite 权重
-  wav2vec_dir: models/wav2vec2-base-960h      # flashhead：音频特征提取器
-  # avtr1 后端专用（用 pixi env python 直调启动，勿 pixi run——会按 lock 重同步
-  # 覆盖 pip 降级；start_assistant.sh 按 backend 自动选环境）：
   avtr1_storage: /root/autodl-tmp/avtr1_storage   # AVTR1_LOCAL_STORAGE（权重+TRT 引擎）
   avtr1_bg: plain_white                # 合成背景 id（pasteback 区域外才生效）
-  # avtr1 参考图规范（重要）：16:9 横版胸像（官方帧 1920×1080），脸宽占图宽 ~20%、
-  # 头顶留白 ~19%——loader 对输入非等比 resize 到 1280×720，方图会把脸拉变形。
-  # 想口型明显：用微张嘴/露齿、胡须不遮嘴线的照片（模型对闭嘴素材开合保守）
   device: cuda
   fps: 15                              # 推流帧率目标（4090 实时可到 25，先保守）
   jpeg_quality: 95                     # LAN/隧道带宽充足,95 块效应基本不可见;网络抖时降 80
-  # 常驻活化：没语音时持续生成画面微动（纯静音基线，说话期间 speech_active 门控
-  # 不产帧防卡）。重开原因（2026-08-02 晚）：垫音→正式回复的空隙需要待机微动桥接，
-  # 否则画面定格显卡。嘟囔增益保持 0（静音驱动，勿开——哼鸣口型已被否决）
-  idle_motion: true
-  murmur_gain_thinking: 0            # 0 = 禁用嘟囔
-  murmur_gain_listening: 0           # 0 = 禁用嘟囔
+  idle_motion: true                    # 常驻微动：无语音时静音驱动（眨眼/轻摇头/倾听反应）
   port: 8767                           # avatar service 内部 ws 端口
   host: 127.0.0.1
-
-# ---------------------------------------------------------------------------
-# Vision：外貌描述（可选积木，缺 key/整段删除即关闭，不影响语音链路）。
-# 场景：LLM 是纯文本看不见用户。persona 说出暗号（trigger）→ 前端截一帧摄像头
-# → orchestrator 调 Kimi 多模态拿客观描述 → 注入对话让 persona 锐评。
-# Kimi 视觉只收 base64 图片（不收公网 URL），key 在 platform.moonshot.cn 申请。
-# ---------------------------------------------------------------------------
-vision:
-  backend: kimi                        # OpenAI 兼容多模态接口
-  model_name: kimi-k3
-  base_url: https://api.moonshot.cn/v1 # AutoDL 国内直连；海外用 https://api.kimi.com/v1
-  api_key_env: KIMI_API_KEY
-  max_tokens: 600   # kimi-k3 是 thinking 模型，reasoning 会吃掉配额，多给余量
-  trigger: 让我好好看看你               # 暗号短语：persona 原句说出，前端检测后截帧
 
 # ---------------------------------------------------------------------------
 # Filler：垫音（已弃用，2026-08-02）。曾用于转写完成即播预渲染口头禅盖住 LLM 首句

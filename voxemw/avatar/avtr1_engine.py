@@ -1,9 +1,8 @@
-"""AVTR-1 数字人引擎后端（TensorRT，avaturn-live/avtr-1）。
+"""AVTR-1 数字人引擎（TensorRT，avaturn-live/avtr-1）。
 
-接口与 voxemw.avatar.service.AvatarEngine（FlashHead）完全一致：
-feed_audio/reset/set_image/set_speech_active/set_idle_mode/close +
-run_inference_loop(on_frames)/warmup(on_frames)，帧统一输出 960×540 RGB uint8（16:9 原生），
-ws 协议层（service.py）无感知。
+接口：feed_audio/feed_listen/reset/set_image/set_speech_active/set_idle_mode/close +
+run_inference_loop(on_frames)/warmup(on_frames)，帧统一输出 1280×720 RGB uint8
+（16:9 官方原生），ws 协议层（service.py）无感知。
 
 流式语义对齐官方 streamer（avaturn_live_streamer/worklets/rendering.py +
 speech/speech_scheduler.py，2026-08-04 逐条对账）：

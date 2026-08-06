@@ -39,7 +39,7 @@ llm:
   base_url: https://api.deepseek.com/v1
   api_key_env: TEST_LLM_KEY
 tts: {{ backend: voxcpm, model_name: openbmb/VoxCPM2, device: cuda }}
-avatar: {{ backend: flashhead, enabled: true }}
+avatar: {{ enabled: true }}
 personas:
   default: demo
   list:

@@ -32,7 +32,7 @@ def _config():
             "device": "cuda",
             "optimize": True,
         },
-        "avatar": {"backend": "flashhead", "enabled": True},
+        "avatar": {"enabled": True},
         "personas": {
             "default": "demo",
             "resolved": {

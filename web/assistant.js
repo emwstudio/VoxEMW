@@ -5,7 +5,7 @@
  *              + 自定义 {"type":"vox.persona","id":...} 人设切换
  *   下行 JSON：Realtime 事件透传（转写/音频 delta/打断）+ {"type":"vox.status",...}
  *   下行二进制：0x01 + tag(1B) + JPEG 数字人视频帧
- *               （tag 0x00=idle 待机微动，直接画；0x01=speech 说话帧，进口型同步队列）
+ *               （tag 0x00=idle 待机微动；0x01=speech 说话帧；合流同队列沿音频时钟连播）
  *
  * 音频：麦克风 AudioWorklet 16kHz int16 上行；TTS PCM16 delta 在 AudioContext
  * 时间轴上无缝拼接播放；speech_started（打断）时清空播放队列。
@@ -16,7 +16,6 @@
 
 const SAMPLE_RATE = 16000;
 const FRAME_TYPE_JPEG = 0x01;       // 下行：数字人视频帧
-const FRAME_TYPE_USER_JPEG = 0x02;  // 上行：用户摄像头截帧（打分环节）
 const FRAME_TAG_IDLE = 0x00;        // 视频帧 tag：静音驱动的待机微动
 const FRAME_TAG_SPEECH = 0x01;      // 视频帧 tag：真实音频驱动
 
@@ -47,11 +46,6 @@ let assistantLine = null; // 正在流式累积的助手文本行
 const SOLO_MODE = new URLSearchParams(location.search).has("solo");
 if (SOLO_MODE) document.body.classList.add("solo");
 
-// 截帧打分：persona 说出暗号（vision.trigger）→ 截一帧摄像头发给 orchestrator
-let visionOn = false;
-let visionTrigger = "让我好好看看你";
-let visionCooldownUntil = 0;
-let responseText = ""; // 当前 response 已累积的助手文本（暗号在这里面找）
 
 // ---------------------------------------------------------------------------
 // PCM 编解码
@@ -95,26 +89,24 @@ function ensurePlayer() {
 // 口型同步模型:TTS 以 ~2x 实时速度流式送音频,播放链会积压(实测 3-4s),
 // 各自计时必然漂移 → 视频帧节奏从属于音频播放时钟:音频播到第几秒就放第几帧。
 // AVATAR_AUDIO_DELAY 保留基础延迟,保证音频播放位置始终落后于视频供帧点,
-// 视频始终有帧可放。默认值按 avatar 后端固有延迟选择（vox.status 下发 avatar_backend）：
-// flashhead 攒 0.96s chunk + 生成 ≈ 实测 0.8s 最佳（flash_attn 后）；
-// avtr1 0.2s chunk + 0.2s 前瞻 + 生成 ≈ 0.35s。
+// 视频始终有帧可放。AVTR-1 0.2s chunk + 0.2s 前瞻 + 生成 ≈ 实测 0.35s 最佳。
 // 可用 ?adelay=N 覆盖(?debug=1 看帧队列深度,经常见底就调回去)
 const ADELAY_OVERRIDE = (() => {
   const v = parseFloat(new URLSearchParams(location.search).get("adelay"));
   return Number.isFinite(v) && v >= 0 ? v : null;
 })();
-const BACKEND_ADELAY = { avtr1: 0.35, flashhead: 0.8 };
-let avatarAudioDelay = ADELAY_OVERRIDE ?? 0.8;
+const BACKEND_ADELAY = { avtr1: 0.35 };  // 数字人 = AVTR-1（flashhead 已下线）
+let avatarAudioDelay = ADELAY_OVERRIDE ?? 0.35;
 
 // 口型-语音时间偏移补偿（帧数）：AVTR-1 模型固有口型滞后（音频包络 vs 唇部开合
 // 互相关实测：爆破音段 +3 帧/120ms、自然语音段 +2 帧/80ms，官方 generate_offline
-// 同幅——模型属性非链路错位），视频提前 3 帧（120ms）补偿；flashhead 无此偏移。
+// 同幅——模型属性非链路错位），视频提前 3 帧（120ms）补偿。
 // 可用 ?vlag=N 覆盖（正负号：target = pos*25 - videoLagFrames）
 const VLAG_OVERRIDE = (() => {
   const v = parseInt(new URLSearchParams(location.search).get("vlag") || "", 10);
   return Number.isFinite(v) ? v : null;
 })();
-const BACKEND_VLAG = { avtr1: -3, flashhead: 0 };
+const BACKEND_VLAG = { avtr1: -3 };
 let videoLagFrames = VLAG_OVERRIDE ?? 0;
 
 function playPCM(int16) {
@@ -208,7 +200,7 @@ function stopMic() {
 }
 
 // ---------------------------------------------------------------------------
-// 摄像头（左侧画面 + 打分截帧）
+// 摄像头（左侧画面，仅展示）
 // ---------------------------------------------------------------------------
 
 async function startCamera() {
@@ -223,43 +215,6 @@ function stopCamera() {
   camStream = null;
   els.userCam.srcObject = null;
   els.camWrap.classList.remove("live");
-}
-
-// 截一帧（与显示一致做镜像），缩放到最长边 640，0x02 + JPEG 发给 orchestrator
-function sendCameraSnapshot() {
-  if (!ws || ws.readyState !== WebSocket.OPEN || !camStream) return;
-  const video = els.userCam;
-  const w = video.videoWidth, h = video.videoHeight;
-  if (!w || !h) return;
-  visionBusy = true;  // 直到 vox.vision scored/error/off 才恢复暗号检测
-  const scale = Math.min(1, 640 / Math.max(w, h));
-  const c = document.createElement("canvas");
-  c.width = Math.round(w * scale);
-  c.height = Math.round(h * scale);
-  const cx = c.getContext("2d");
-  cx.translate(c.width, 0);
-  cx.scale(-1, 1);
-  cx.drawImage(video, 0, 0, c.width, c.height);
-  const b64 = c.toDataURL("image/jpeg", 0.8).split(",")[1];
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length + 1);
-  bytes[0] = FRAME_TYPE_USER_JPEG;
-  for (let i = 0; i < bin.length; i++) bytes[i + 1] = bin.charCodeAt(i);
-  ws.send(bytes.buffer);
-}
-
-// 助手本轮文本里出现暗号 → 延迟 1.2s（留摆姿势时间）截帧；10s 冷却防连发。
-// visionBusy 期间（垫场+打分回复）不再检测——打分回复里可能又提到暗号句式，
-// 不挡住会无限循环打分
-let visionBusy = false;
-
-function maybeSnapshot() {
-  if (!visionOn || !camStream || visionBusy) return;
-  if (!responseText.includes(visionTrigger)) return;
-  const now = performance.now();
-  if (now < visionCooldownUntil) return;
-  visionCooldownUntil = now + 10000;
-  setTimeout(sendCameraSnapshot, 1200);
 }
 
 // ---------------------------------------------------------------------------
@@ -444,7 +399,6 @@ const realtimeHandlers = {
     idleQueue.length = 0;
     needVideoBase = true;
     assistantLine = null;
-    responseText = "";
     setAvatarState("listening");
   },
   "input_audio_buffer.speech_stopped"() {
@@ -458,27 +412,22 @@ const realtimeHandlers = {
   "response.output_audio_transcript.delta"(event) {
     if (event.delta) {
       appendAssistantDelta(event.delta);
-      responseText += event.delta;
     }
   },
   "response.output_text.delta"(event) {
     if (event.delta) {
       appendAssistantDelta(event.delta);
-      responseText += event.delta;
     }
   },
   "response.output_audio_transcript.done"(event) {
     // 音频模式下上游不发 delta,只在 done 里带整段文本——必须在这里显示
     if (event.transcript) {
       appendAssistantDelta(event.transcript);
-      responseText += event.transcript;
     }
     assistantLine = null;
-    maybeSnapshot();
   },
   "response.output_text.done"() {
     assistantLine = null;
-    maybeSnapshot();
   },
   "response.output_audio.delta"(event) {
     if (event.delta) {
@@ -496,8 +445,6 @@ const realtimeHandlers = {
     assistantLine = null;
     needVideoBase = true;  // 下一个音频 delta 开启新 response,重设视频对齐基准
     if (avatarState === "thinking") setAvatarState("idle");  // 无音频回复的兜底
-    maybeSnapshot();
-    responseText = "";
   },
   error(event) {
     addLine("sys", "", `⚠ ${(event.error && event.error.message) || "未知错误"}`);
@@ -523,20 +470,6 @@ function handleTextMessage(data) {
     els.fallback.classList.toggle("hidden", avatarOn);
     updatePersonaBar();
     showStill(currentPersona);
-    return;
-  }
-  if (event.type === "vox.vision") {
-    if (event.state === "scored" || event.state === "error" || event.state === "off") {
-      visionBusy = false;
-    }
-    const msg = {
-      scoring: "📷 峰哥打分中…（麦克风暂闭，插话不会打断他）",
-      scored: "📷 打分完毕，麦克风恢复",
-      busy: "📷 上一张还没看完，别急",
-      error: "📷 没看清，换个光线再让他评",
-      off: "📷 打分功能未启用（服务器缺 KIMI_API_KEY）",
-    }[event.state];
-    if (msg) addLine("sys", "", msg);
     return;
   }
   const handler = realtimeHandlers[event.type];
@@ -630,8 +563,6 @@ async function init() {
   personas = data.list;
   currentPersona = data.default;
   avatarOn = data.avatar === "on";
-  visionOn = data.vision === "on";
-  if (data.trigger) visionTrigger = data.trigger;
   els.fallback.classList.toggle("hidden", avatarOn);
   updatePersonaBar();
   showStill(currentPersona);

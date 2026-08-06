@@ -5,9 +5,9 @@
 # 用法：rsync 仓库到实例后，在仓库根目录执行  bash scripts/autodl_setup.sh
 # 幂等：重复执行不会重复装依赖/下模型，已在跑的服务不重启。
 #
-# 双 venv 隔离（依赖互相冲突，不可合装）：
-#   .venv         py312 + torch 2.8：s2s 语音管线（transformers 5.13 / Qwen3-ASR / VoxCPM2）+ orchestrator
-#   .venv-avatar  py310 + torch 2.7.1：FlashHead 数字人（transformers==4.57.3 / xformers / flash_attn）
+# 环境：.venv（py312 + torch 2.8）：s2s 语音管线（SenseVoice / VoxCPM2）+ orchestrator + 记忆
+# 数字人（AVTR-1）运行在独立的 pixi env（/root/autodl-tmp/avtr-1/.pixi/envs/renderer），
+# 安装过程含 TRT 引擎编译等一次性步骤，见本脚本 [2/7] 段说明。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -114,86 +114,28 @@ pip show qwentts-cpp-python > /dev/null 2>&1 || \
 pip install --no-cache-dir -r requirements.txt "huggingface_hub[cli]" "voxcpm==2.0.3" "transformers==5.13.0"
 deactivate
 
-echo "==> [2/7] 数字人 venv（py310 + torch 2.7.1 cu128）"
-[ -x .venv-avatar/bin/python ] || "$CONDA_BASE/envs/py310/bin/python" -m venv .venv-avatar
-# shellcheck disable=SC1091
-source .venv-avatar/bin/activate
-pip install -U pip
-if python -c "import torch; assert torch.__version__.startswith('2.7.1')" > /dev/null 2>&1; then
-    echo "    torch 已安装：$(python -c 'import torch; print(torch.__version__)')"
+echo "==> [2/7] 数字人（AVTR-1）环境检查"
+# AVTR-1 运行在独立 pixi env（与主 venv 依赖冲突不可合装）。一次性部署步骤：
+#   git clone https://github.com/avaturn-live/avtr-1 /root/autodl-tmp/avtr-1
+#   cd 后 pixi install（国内镜像调整见仓库部署笔记）→ pixi run download（HF gated，
+#   需先在 HF 页面接受协议）→ pixi run build-trt-engines（按显卡编译，~20 分钟）
+# 已知坑：onnxruntime-gpu 需降 1.22（pixi run 会重同步，用 env python 直调）；
+# glibc 2.31 需重编 libgrid_sample_3d_plugin。完成标志：pixi env python 可 import avtr1_renderer。
+AVTR_ENV=/root/autodl-tmp/avtr-1/.pixi/envs/renderer
+if [ -x "$AVTR_ENV/bin/python" ] && "$AVTR_ENV/bin/python" -c "import avtr1_renderer" 2>/dev/null; then
+    echo "    AVTR-1 环境就绪"
 else
-    pip install --no-cache-dir torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu128
+    echo "ERROR: AVTR-1 环境未就绪（$AVTR_ENV）。请按上方步骤先完成一次性部署。" >&2
+    exit 1
 fi
-deactivate
-
-echo "==> [3/7] FlashHead 推理代码（vendor/SoulX-FlashHead）"
-if [ -d vendor/SoulX-FlashHead/flash_head ]; then
-    echo "    已存在，跳过"
-else
-    mkdir -p vendor
-    # GitHub 直连超时：优先 AutoDL 学术加速（只在子 shell 生效，避免拖慢 pip），失败回退代理
-    (source /etc/network_turbo > /dev/null 2>&1 || true; \
-     git clone --depth 1 https://github.com/Soul-AILab/SoulX-FlashHead.git vendor/SoulX-FlashHead) || \
-    git clone --depth 1 https://gh-proxy.com/https://github.com/Soul-AILab/SoulX-FlashHead.git vendor/SoulX-FlashHead
-fi
-# shellcheck disable=SC1091
-source .venv-avatar/bin/activate
-# gradio/flask 是官方 demo 的依赖，推理路径用不到，不装;
-# nvidia-* 钉版与 torch 2.7.1 自带的 nvidia-nccl-cu12==2.26.2 冲突（单卡根本不用 nccl），剔除
-grep -vE '^(gradio|flask|nvidia-)' vendor/SoulX-FlashHead/requirements.txt > /tmp/flashhead-req.txt
-pip install --no-cache-dir -r /tmp/flashhead-req.txt
-pip install --no-cache-dir websockets pyyaml
-# flash_attn：显著提速（官方推荐）；SKIP_FLASH_ATTN=1 可跳过（SDPA 兜底，慢）
-# 注意必须真 import 验证:预编译 wheel 可能装上却因 glibc 版本不足无法加载
-if [ "${SKIP_FLASH_ATTN:-0}" = "1" ]; then
-    echo "    SKIP_FLASH_ATTN=1，跳过 flash_attn（SDPA 兜底，帧率会降）"
-elif python -c "import flash_attn" > /dev/null 2>&1; then
-    echo "    flash_attn 已安装"
-else
-    pip uninstall -y flash-attn > /dev/null 2>&1 || true  # 清掉装上了但加载不了的残件
-    FA_OK=1
-    # 官方预编译 wheel(torch2.7 cu12 abiTRUE cp310)需 glibc≥2.32,够新才试(走学术加速)
-    if python -c "import platform,sys;p=platform.libc_ver()[1].split('.');sys.exit(0 if (int(p[0]),int(p[1]))>=(2,32) else 1)"; then
-        FA_WHEEL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.0.post2/flash_attn-2.8.0.post2+cu12torch2.7cxx11abiTRUE-cp310-cp310-linux_x86_64.whl"
-        if (source /etc/network_turbo > /dev/null 2>&1 || true; pip install "$FA_WHEEL") \
-            && python -c "import flash_attn" > /dev/null 2>&1; then
-            echo "    flash_attn 预编译 wheel 安装成功"
-            FA_OK=0
-        fi
-    else
-        echo "    glibc<2.32,预编译 wheel 不可用,本地编译（30-60 分钟）"
-    fi
-    if [ "$FA_OK" = "1" ]; then
-        # 系统 nvcc 是 CUDA 11.6 太老;从 conda 官方 nvidia channel 装 cuda-nvcc 12.8
-        # (+cudart-dev/cccl 头文件)进 py310 环境当编译工具链(pip 的 nvcc 包只有
-        # ptxas 没有编译器驱动,不可用);只编 4090D 的 sm89 内核省时间
-        if ! "$CONDA_BASE/envs/py310/bin/nvcc" -V 2>/dev/null | grep -q "release 12\.8"; then
-            "$CONDA_BASE/bin/conda" install -y -n py310 -c nvidia \
-                cuda-nvcc=12.8 cuda-cudart-dev=12.8 cuda-cccl=12.8
-        fi
-        # PATH 追加而非前置:conda 环境自带 pip,前置会抢掉 venv 的 pip(报 No module named 'torch')
-        export CUDA_HOME="$CONDA_BASE/envs/py310"
-        export PATH="$PATH:$CUDA_HOME/bin"
-        export TORCH_CUDA_ARCH_LIST="8.9"
-        # MAX_JOBS 限 4:16 核全并行曾把内存(60G)干到 56G+、sshd 挤死 3 小时无法登录
-        pip install ninja
-        MAX_JOBS=4 pip install flash_attn==2.8.0.post2 --no-build-isolation || \
-            echo "    WARN: flash_attn 编译失败，将用 SDPA 兜底（可下预编译 wheel 重试）"
-    fi
-fi
-deactivate
 
 echo "==> [4/7] 预下载模型（HF_HOME=${HF_HOME:-默认}）"
 # hf download 幂等（已下载会校验后跳过）;VoxCPM2 / Qwen3-ASR 走 HF 缓存（管线按 repo id 加载）
 .venv/bin/hf download openbmb/VoxCPM2
-.venv/bin/hf download Qwen/Qwen3-ASR-1.7B-hf
-# 本地目录加载的模型走 ModelScope（实例连阿里 CDN ~13MB/s,hf-mirror 仅 ~0.7MB/s）
+# STT（SenseVoiceSmall）与记忆 embedder（bge-m3）：ModelScope/HF 缓存（首次启动自动下载亦可）
 .venv/bin/pip install -q modelscope
-# 数字人只要 Lite 权重 + LTX VAE（~8GB；Pro 权重不下）
-.venv/bin/modelscope download --model Soul-AILab/SoulX-FlashHead-1_3B \
-    --include "Model_Lite/*" "VAE_LTX/*" --local_dir models/SoulX-FlashHead-1_3B
-.venv/bin/modelscope download --model AI-ModelScope/wav2vec2-base-960h \
-    --local_dir models/wav2vec2-base-960h
+.venv/bin/modelscope download --model iic/SenseVoiceSmall
+.venv/bin/hf download BAAI/bge-m3 --exclude "imgs/*"
 
 echo "==> [5/7] 检查配置"
 if [ ! -f .env.local ]; then

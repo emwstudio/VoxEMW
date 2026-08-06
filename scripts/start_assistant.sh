@@ -18,6 +18,8 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-4}"
 # HF_HOME 必须显式指到数据盘——非 setup 上下文启动时默认 ~/.cache/huggingface 是空的
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 [ -d /root/autodl-tmp ] && export HF_HOME="${HF_HOME:-/root/autodl-tmp/hf}"
+# nltk 等启动期检查会连 GitHub raw（直连被墙会卡死管线启动），开学术加速兜底
+source /etc/network_turbo >/dev/null 2>&1 || true
 
 if [ "${1:-}" = "stop" ]; then
     pkill -f "voxemw.avatar.service" 2>/dev/null || true
@@ -34,22 +36,15 @@ pkill -f "voxemw.pipeline.launch" 2>/dev/null || true
 pkill -f "voxemw.avatar.orchestrator" 2>/dev/null || true
 sleep 2
 
-AVTR_BACKEND=$(awk '/^avatar:/{f=1} f && /^  backend:/{print $2; exit}' "$VOXEMW_CONFIG")
-if [ "$AVTR_BACKEND" = "avtr1" ]; then
-    # AVTR-1：pixi env python 直调（勿 pixi run——会按 lock 重同步 env，
-    # 把 pip 降级的 onnxruntime-gpu 1.22 还原成 1.28）
-    AVTR_ENV=/root/autodl-tmp/avtr-1/.pixi/envs/renderer
-    SP=$AVTR_ENV/lib/python3.12/site-packages
-    export LD_LIBRARY_PATH="$(echo $SP/nvidia/*/lib | tr " " ":"):${LD_LIBRARY_PATH:-}"
-    export AVTR1_LOCAL_STORAGE="${AVTR1_LOCAL_STORAGE:-/root/autodl-tmp/avtr1_storage}"
-    echo "==> 启动数字人服务（AVTR-1，pixi env，:8767）"
-    nohup "$AVTR_ENV/bin/python" -m voxemw.avatar.service --config "$VOXEMW_CONFIG" \
-        > logs/avatar.log 2>&1 &
-else
-    echo "==> 启动数字人服务（FlashHead，.venv-avatar，:8767）"
-    nohup .venv-avatar/bin/python -m voxemw.avatar.service --config "$VOXEMW_CONFIG" \
-        > logs/avatar.log 2>&1 &
-fi
+# AVTR-1：pixi env python 直调（勿 pixi run——会按 lock 重同步 env，
+# 把 pip 降级的 onnxruntime-gpu 1.22 还原成 1.28）
+AVTR_ENV=/root/autodl-tmp/avtr-1/.pixi/envs/renderer
+SP=$AVTR_ENV/lib/python3.12/site-packages
+export LD_LIBRARY_PATH="$(echo $SP/nvidia/*/lib | tr " " ":"):${LD_LIBRARY_PATH:-}"
+export AVTR1_LOCAL_STORAGE="${AVTR1_LOCAL_STORAGE:-/root/autodl-tmp/avtr1_storage}"
+echo "==> 启动数字人服务（AVTR-1，pixi env，:8767）"
+nohup "$AVTR_ENV/bin/python" -m voxemw.avatar.service --config "$VOXEMW_CONFIG" \
+    > logs/avatar.log 2>&1 &
 echo "    PID=$!，日志 logs/avatar.log（预热要数分钟，耐心等）"
 
 echo "==> 启动语音管线（.venv，:8765）"
