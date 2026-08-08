@@ -43,7 +43,7 @@ stt:
 # 不要配 reasoning_effort: none——DeepSeek 只认 high/low/medium/max/xhigh，none 会 400。
 # ---------------------------------------------------------------------------
 llm:
-  backend: chat-completions
+  backend: chat-completions-rag      # chat-completions | chat-completions-rag（带知识库检索注入）
   model_name: deepseek-v4-flash
   base_url: https://api.deepseek.com/v1
   api_key_env: DEEPSEEK_API_KEY    # 从环境变量读 key（启动时加载 .env.local），缺失即报错
@@ -95,6 +95,26 @@ avatar:
   host: 127.0.0.1
 
 # ---------------------------------------------------------------------------
+# WebRTC 音画轨（2026-08-07，对标 AVTR-1 官方 demo）：下行音画走 RTP
+# （VP8 720p25 + Opus 48k），浏览器按时间戳原生音画同步；带宽比 WS 推 JPEG
+# 省一个数量级。enabled: false 回退 WS 手搓同步（?rtc=0 可单会话临时回退）。
+# 传输：SSH 隧道用户需 TURN（媒体过不了 TCP 隧道）——实例跑 coturn
+# （configs/turnserver.conf，loopback :3478），隧道用 scripts/tunnel.sh（含 3478）；
+# LAN 直连走 host candidate，无需 TURN。前端 ?vbr=kbps 可临时调码率。
+# ---------------------------------------------------------------------------
+rtc:
+  enabled: true
+  video_bitrate: 2000000               # VP8 目标码率（720p25 数字人最佳画质档）
+  turn_url: "turn:127.0.0.1:3478?transport=udp"
+  turn_username: "voxemw"
+  turn_credential: "voxemw-turn-2026"
+  # 下发给浏览器的 ICE 配置（SSH 隧道场景：浏览器 → turn localhost:3478 TCP）
+  browser_ice_servers:
+    - urls: ["turn:localhost:3478?transport=tcp"]
+      username: "voxemw"
+      credential: "voxemw-turn-2026"
+
+# ---------------------------------------------------------------------------
 # Filler：垫音（已弃用，2026-08-02）。曾用于转写完成即播预渲染口头禅盖住 LLM 首句
 # 空白，实测衔接自然度不达标。代码保留（orchestrator 垫音管线 + fillers/ 素材 +
 # 情绪分组），重开即 true。
@@ -106,7 +126,6 @@ filler:
 # Memory：记忆积木（第七块）。Mem0 内嵌模式——LLM 抽取走 DeepSeek（OpenAI 兼容），
 # embedding 本地 bge-m3（DeepSeek 无 embedding API），向量库内嵌 qdrant 文件落盘。
 # 会话开始时召回注入 instructions（一次性）；response.done 后异步写入（不占语音延迟）。
-# 默认关，验收后开。
 # ---------------------------------------------------------------------------
 memory:
   enabled: true
@@ -116,13 +135,19 @@ memory:
   embedder_model: BAAI/bge-m3
 
 # ---------------------------------------------------------------------------
-# Weibo：峰哥动态积木。scripts/weibo_collector.py 经 WebBridge 抓微博入 SQLite，
-# 会话开始把最近 top_n 条注入人设（峰哥「记得」自己今天在忙啥）。
+# Knowledge：PDF 知识库 RAG（第八积木）。管理页 /knowledge（orchestrator :8000）
+# 上传/删除文档；检索在 pipeline 的 LLM handler（chat-completions-rag 后端）里做
+# ——orchestrator 注入赶不上 VAD 自动响应。SQLite+numpy 暴力余弦（几千块毫秒级；
+# 不用 qdrant：本地文件模式单进程锁，写读双进程打架）。
+# 默认关，验收后开（enabled: true + llm.backend 改 chat-completions-rag 才生效）。
+# 扫描件 PDF（无文字层）自动走 Kimi 视觉转写（缺 key 则扫描件入库为空）。
 # ---------------------------------------------------------------------------
-weibo:
+knowledge:
   enabled: true
-  db_path: data/weibo.db
-  top_n: 8
+  db_path: data/knowledge.db
+  top_k: 3
+  threshold: 0.45       # 余弦阈值：低于则不注入。实测：相关知识 0.68 命中，闲聊杂讯 0.359——0.35 会被压线杂讯越过，0.45 稳
+  vision_api_key_env: KIMI_API_KEY
 
 # ---------------------------------------------------------------------------
 # 人设注册表：key = persona id（前端切换、TTS 音色名都用它），

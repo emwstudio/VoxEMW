@@ -48,8 +48,10 @@ def render_s2s_argv(config: dict, env: dict | None = None) -> list[str]:
             argv += [f"--{key}", str(vad[key])]
 
     backend = llm.get("backend", "chat-completions")
-    argv += ["--llm_backend", backend, "--model_name", str(llm["model_name"])]
-    if backend in ("chat-completions", "responses-api"):
+    # chat-completions-rag 是我们的自定义后端（launch 运行时注册），对上游 CLI 渲染为 chat-completions
+    cli_backend = "chat-completions" if backend == "chat-completions-rag" else backend
+    argv += ["--llm_backend", cli_backend, "--model_name", str(llm["model_name"])]
+    if backend in ("chat-completions", "chat-completions-rag", "responses-api"):
         argv += [
             "--responses_api_base_url", str(llm["base_url"]),
             "--responses_api_api_key", resolve_api_key(llm, env),

@@ -32,6 +32,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -68,6 +69,10 @@ async def _serve(ws, engine, jpeg_quality: int) -> None:
     loop = asyncio.get_running_loop()
     out_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=TGT_FPS * 4)
     raw_queue: _queue.Queue = _queue.Queue(maxsize=TGT_FPS * 2)
+    stat = {"t0": time.monotonic(), "produced": 0, "dropped": 0}  # 产出自检
+    # raw 模式（orchestrator RTC 链路协商开启）：跳过 JPEG 编解码，
+    # 直接发 tag + RGB 裸帧（loopback 带宽无压力，省两端 CPU）
+    raw_mode = {"on": False}
 
     def on_frames(frames, is_idle: bool) -> None:
         # 推理线程只入队原始帧（满则丢最旧）；JPEG 编码在专用线程，
@@ -77,14 +82,25 @@ async def _serve(ws, engine, jpeg_quality: int) -> None:
             if raw_queue.full():
                 try:
                     raw_queue.get_nowait()
+                    stat["dropped"] += 1
                 except _queue.Empty:
                     pass
             raw_queue.put_nowait((frame, tag))
+            stat["produced"] += 1
+        now = time.monotonic()
+        if now - stat["t0"] >= 10:
+            logger.info("帧产出: %.1f fps（10s 产 %d，挤队丢 %d）",
+                        stat["produced"] / (now - stat["t0"]),
+                        stat["produced"], stat["dropped"])
+            stat["t0"], stat["produced"], stat["dropped"] = now, 0, 0
 
     def _encoder() -> None:
         while True:
             frame, tag = raw_queue.get()
-            data = bytes([tag]) + _encode_jpeg(frame, jpeg_quality)
+            if raw_mode["on"]:
+                data = bytes([tag]) + frame.tobytes()
+            else:
+                data = bytes([tag]) + _encode_jpeg(frame, jpeg_quality)
             loop.call_soon_threadsafe(_offer, data)
 
     def _offer(data: bytes) -> None:
@@ -118,6 +134,8 @@ async def _serve(ws, engine, jpeg_quality: int) -> None:
             if etype == "audio":
                 pcm = np.frombuffer(base64.b64decode(event["pcm"]), dtype=np.int16)
                 engine.feed_audio(pcm.astype(np.float32) / 32768.0)
+            elif etype == "raw_frames":
+                raw_mode["on"] = bool(event.get("on"))
             elif etype == "listen":
                 # 用户麦克风音频（active listening）
                 pcm = np.frombuffer(base64.b64decode(event["pcm"]), dtype=np.int16)
@@ -132,7 +150,10 @@ async def _serve(ws, engine, jpeg_quality: int) -> None:
                 engine.set_idle_mode(str(event.get("mode", "calm")))
     finally:
         send_task.cancel()
-        engine.on_frames = None
+        # 只清自己的回调：旧连接断开若误清，会把新连接刚接管的帧流杀死
+        #（刷新页面顶会话的时序：新连接先接管，旧连接 finally 后跑）
+        if engine.on_frames is on_frames:
+            engine.on_frames = None
 
 
 def main() -> None:
@@ -186,7 +207,10 @@ def main() -> None:
         thread.start()
         engine.warmup(on_frames)
         async with websockets.serve(
-            lambda ws: _serve(ws, engine, jpeg_quality), host, port
+            lambda ws: _serve(ws, engine, jpeg_quality), host, port,
+            # 裸帧 2.76MB/帧×25fps：默认开启的 permessage-deflate 压缩根本压不动
+            #（实测发送端只剩 ~10fps，缓冲堆出 30-60s 延迟），必须关
+            compression=None,
         ):
             logger.info("数字人服务就绪: ws://%s:%d", host, port)
             await asyncio.Future()  # 永久运行

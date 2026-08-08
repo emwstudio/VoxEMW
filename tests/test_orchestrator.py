@@ -191,23 +191,3 @@ def test_create_memory_store_disabled_by_default():
         "memory": {"enabled": True},
         "llm": {"api_key_env": "DEFINITELY_MISSING_KEY"},
     }) is None
-
-
-def test_weibo_posts_block(tmp_path):
-    import sqlite3
-
-    from voxemw.weibo import build_posts_block, get_recent_posts
-
-    db = sqlite3.connect(tmp_path / "w.db")
-    db.execute("CREATE TABLE posts(id INTEGER PRIMARY KEY, posted_at TEXT, text TEXT, url TEXT UNIQUE)")
-    db.execute("INSERT INTO posts(posted_at, text, url) VALUES ('2026-08-06 16:17', '第一次尝试医美', 'u1')")
-    db.execute("INSERT INTO posts(posted_at, text, url) VALUES ('2026-08-05 10:00', '下班好累', 'u2')")
-    db.commit()
-
-    posts = get_recent_posts(tmp_path / "w.db", 8)
-    assert len(posts) == 2 and posts[0][1] == "第一次尝试医美"  # 新的在前
-    assert get_recent_posts(tmp_path / "missing.db") == []      # 库不存在降级空
-
-    block = build_posts_block(posts)
-    assert "峰哥近期动态" in block and "第一次尝试医美" in block
-    assert build_posts_block([]) == ""

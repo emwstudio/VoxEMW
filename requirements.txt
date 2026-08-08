@@ -20,6 +20,9 @@ qdrant-client           # 记忆向量库（内嵌文件模式）
 # 编排与服务
 aiohttp                 # orchestrator（Web 静态页 + ws）
 websockets              # orchestrator → s2s / avatar service 的 ws 客户端
+aiortc                  # orchestrator → 浏览器 WebRTC 音画轨（VP8+Opus）
+av                      # aiortc 编解码依赖（manylinux 轮自带 ffmpeg）
+Pillow                  # RTC 视频轨 JPEG 解码
 
 # 基础
 numpy

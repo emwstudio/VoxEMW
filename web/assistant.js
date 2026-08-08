@@ -1,18 +1,18 @@
 /* VoxEMW 数字人语音助手前端。
  *
- * 一路 ws（/ws，orchestrator）承载三种流量：
- *   上行 JSON：OpenAI Realtime 事件（input_audio_buffer.append / response.cancel）
- *              + 自定义 {"type":"vox.persona","id":...} 人设切换
- *   下行 JSON：Realtime 事件透传（转写/音频 delta/打断）+ {"type":"vox.status",...}
- *   下行二进制：0x01 + tag(1B) + JPEG 数字人视频帧
- *               （tag 0x00=idle 待机微动；0x01=speech 说话帧；合流同队列沿音频时钟连播）
+ * 下行音画两种模式（vox.status 的 rtc.enabled 决定）：
+ *   WebRTC（默认）：POST /rtc/offer 建连，音频（Opus）+ 视频（VP8）走 RTP 轨，
+ *                   浏览器按时间戳原生音画同步，<video> 直挂远程流，零补偿参数
+ *   WS 兜底：一路 /ws 承载——上行 JSON 麦克风/控制事件；下行 JSON 转写/音频 delta
+ *            （AudioContext 拼接播放）；下行二进制 JPEG 帧（沿音频时钟调度上屏）
  *
- * 音频：麦克风 AudioWorklet 16kHz int16 上行；TTS PCM16 delta 在 AudioContext
- * 时间轴上无缝拼接播放；speech_started（打断）时清空播放队列。
- * 视频：JPEG 帧到就画；数字人缺席时显示 persona 静态肖像（纯语音模式）。
+ * 数字人缺席时显示 persona 静态肖像（纯语音模式）。
  */
 
 "use strict";
+
+const VOX_JS_VERSION = "20260808e";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
 const FRAME_TYPE_JPEG = 0x01;       // 下行：数字人视频帧
@@ -22,6 +22,7 @@ const FRAME_TAG_SPEECH = 0x01;      // 视频帧 tag：真实音频驱动
 const els = {
   status: document.getElementById("status"),
   canvas: document.getElementById("avatar-canvas"),
+  avatarVideo: document.getElementById("avatar-video"),
   still: document.getElementById("avatar-still"),
   avatarWrap: document.querySelector(".avatar-wrap"),
   fallback: document.getElementById("avatar-fallback"),
@@ -42,6 +43,8 @@ let personas = [];
 let currentPersona = null;
 let avatarOn = false;
 let assistantLine = null; // 正在流式累积的助手文本行
+let rtcEnabled = false;   // vox.status 下发：下行音画走 WebRTC
+let pc = null;            // RTCPeerConnection（RTC 模式）
 // solo 模式（?solo=1）：demo 录制用，隐藏用户画面、数字人单栏居中、不开摄像头
 const SOLO_MODE = new URLSearchParams(location.search).has("solo");
 if (SOLO_MODE) document.body.classList.add("solo");
@@ -148,6 +151,122 @@ function flushPlayback() {
     player.ctx.close();
     player = null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// WebRTC 音画（rtc.enabled 时）：RTP 轨原生音画同步，<video> 直挂远程流
+// ---------------------------------------------------------------------------
+
+async function startRTC() {
+  if (pc) return;  // 一次 WS 会话只建一路
+  // ICE 配置现取：服务端下发本地 coturn 凭证
+  let iceServers = [];
+  try {
+    iceServers = (await (await fetch("/rtc/ice")).json()).ice_servers || [];
+  } catch (_) { /* 取不到就裸 host candidate，LAN 还能用 */ }
+  // SSH 隧道场景（页面在 localhost）：强制 relay——host candidate 是双方各自的
+  // 私网/环回地址，互指必败；媒体走 coturn TCP 中继（隧道转发 3478）。
+  // LAN 直连场景用默认 all：host candidate 直配，无需 TURN。
+  const isTunnel = ["localhost", "127.0.0.1"].includes(location.hostname);
+  const conn = new RTCPeerConnection({
+    iceServers,
+    iceTransportPolicy: isTunnel ? "relay" : "all",
+  });
+  pc = conn;
+  const rtcStream = new MediaStream();  // aiortc 音/视分两个 stream 发，收进同一个
+  const trackKinds = [];
+  conn.ontrack = (e) => {
+    rtcStream.addTrack(e.track);
+    trackKinds.push(e.track.kind);
+    els.avatarVideo.srcObject = rtcStream;
+    els.avatarWrap.classList.add("webrtc", "streaming");
+    els.still.classList.add("hidden");
+    // Chrome 自动播放策略：带音轨的 <video> 无用户手势不许出声自动播。
+    // 元素先 muted 自动播（画面能出），用户点了开始对话（有手势）再开声音
+    els.avatarVideo.play().catch(() => {});
+  };
+  conn.onconnectionstatechange = () => {
+    if (["failed", "closed"].includes(conn.connectionState)) {
+      // 媒体链路断了（隧道抖动等）：2s 后自动重建，跟 WS 重连一个思路。
+      // 用局部变量 conn 判定/操作——全局 pc 可能被重入的新连接占用
+      if (pc === conn) {
+        pc = null;
+        els.avatarVideo.srcObject = null;
+        els.avatarWrap.classList.remove("webrtc", "streaming");
+      }
+      conn.close();
+      setTimeout(() => {
+        if (ws && ws.readyState === WebSocket.OPEN && rtcEnabled && !pc) {
+          startRTC().catch(() => {});
+        }
+      }, 2000);
+    }
+  };
+  const offer = await conn.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+  await conn.setLocalDescription(offer);
+  // aiortc 不支持 trickle：offer 必须带齐候选。TURN 走 TCP 隧道可能较慢，给足 15s
+  await Promise.race([
+    new Promise((resolve) => {
+      if (conn.iceGatheringState === "complete") return resolve();
+      conn.addEventListener("icegatheringstatechange", () => {
+        if (conn.iceGatheringState === "complete") resolve();
+      });
+    }),
+    new Promise((resolve) => setTimeout(resolve, 15000)),
+  ]);
+  if (pc !== conn) { conn.close(); return; }  // 建连期间被断开回收，直接放弃
+  const res = await fetch("/rtc/offer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sdp: conn.localDescription.sdp,
+      type: conn.localDescription.type,
+      vbr: parseInt(new URLSearchParams(location.search).get("vbr") || "0", 10) || undefined,
+    }),
+  });
+  if (!res.ok) {
+    addLine("sys", "", `⚠ WebRTC 建连失败（HTTP ${res.status}），回退 WS 模式看静态图`);
+    if (pc === conn) pc = null;
+    conn.close();
+    return;
+  }
+  if (pc !== conn) { conn.close(); return; }
+  await conn.setRemoteDescription(await res.json());
+  // 排障：12s 后把 ICE 状态+候选回传服务端日志（隧道/TURN 链路黑盒开灯）
+  setTimeout(() => {
+    if (pc !== conn) return;
+    const cands = (conn.localDescription ? conn.localDescription.sdp : "")
+      .split("\n")
+      .filter((l) => l.includes("candidate:"))
+      .map((l) => l.trim().slice(0, 120));
+    fetch("/rtc/debug", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        js: VOX_JS_VERSION,
+        tunnel: isTunnel,
+        iceGatheringState: conn.iceGatheringState,
+        iceConnectionState: conn.iceConnectionState,
+        connectionState: conn.connectionState,
+        tracks: trackKinds,
+        video: {
+          readyState: els.avatarVideo.readyState,
+          paused: els.avatarVideo.paused,
+          muted: els.avatarVideo.muted,
+          size: `${els.avatarVideo.videoWidth}x${els.avatarVideo.videoHeight}`,
+        },
+        candidates: cands,
+      }),
+    }).catch(() => {});
+  }, 12000);
+}
+
+function stopRTC() {
+  if (!pc) return;
+  pc.close();
+  pc = null;
+  els.avatarVideo.srcObject = null;
+  els.avatarWrap.classList.remove("webrtc", "streaming");
 }
 
 // ---------------------------------------------------------------------------
@@ -338,7 +457,23 @@ if (new URLSearchParams(location.search).has("debug")) {
     "position:fixed;right:8px;bottom:8px;background:#000c;color:#0f0;" +
     "font:12px monospace;padding:6px 10px;border-radius:6px;z-index:99;white-space:pre";
   document.body.appendChild(dbg);
-  setInterval(() => {
+  setInterval(async () => {
+    if (rtcEnabled) {
+      // RTC 模式：WebRTC 原生统计（到帧率/抖动/码率）
+      if (!pc) { dbg.textContent = "RTC 未建连"; return; }
+      let text = "";
+      const stats = await pc.getStats();
+      stats.forEach((r) => {
+        if (r.type === "inbound-rtp" && r.kind === "video") {
+          text =
+            `视频: ${(r.framesPerSecond || 0).toFixed(1)}fps 解码:${r.framesDecoded || 0} 丢包:${r.packetsLost || 0}\n` +
+            `抖动: ${((r.jitter || 0) * 1000).toFixed(0)}ms 累计: ${((r.bytesReceived || 0) / 131072).toFixed(1)}Mb\n` +
+            `连接: ${pc.connectionState}`;
+        }
+      });
+      dbg.textContent = text || "RTC 统计等待中";
+      return;
+    }
     const now = performance.now();
     const fps = frameRecvCount / ((now - frameRecvWindowStart) / 1000);
     frameRecvCount = 0;
@@ -393,11 +528,14 @@ function setAvatarState(state) {
 
 const realtimeHandlers = {
   "input_audio_buffer.speech_started"() {
-    // 用户开口（打断）：本地播放队列清空，助手文本行封口
-    flushPlayback();
-    frameQueue.length = 0;  // 视频帧队列一并清空，嘴型跟着归位
-    idleQueue.length = 0;
-    needVideoBase = true;
+    // 用户开口（打断）。RTC 模式：服务端 flush 音画队列，本地无需动作；
+    // WS 模式：本地播放队列+帧队列清空，嘴型跟着归位
+    if (!rtcEnabled) {
+      flushPlayback();
+      frameQueue.length = 0;
+      idleQueue.length = 0;
+      needVideoBase = true;
+    }
     assistantLine = null;
     setAvatarState("listening");
   },
@@ -430,16 +568,13 @@ const realtimeHandlers = {
     assistantLine = null;
   },
   "response.output_audio.delta"(event) {
-    if (event.delta) {
-      if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
-      playPCM(int16FromBase64(event.delta));
-    }
+    // RTC 模式事件被剥了音频体（音频走音轨），但事件本身仍标志「开口」
+    if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
+    if (event.delta && !rtcEnabled) playPCM(int16FromBase64(event.delta));
   },
   "response.audio.delta"(event) {
-    if (event.delta) {
-      if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
-      playPCM(int16FromBase64(event.delta));
-    }
+    if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
+    if (event.delta && !rtcEnabled) playPCM(int16FromBase64(event.delta));
   },
   "response.done"() {
     assistantLine = null;
@@ -470,6 +605,15 @@ function handleTextMessage(data) {
     els.fallback.classList.toggle("hidden", avatarOn);
     updatePersonaBar();
     showStill(currentPersona);
+    // 下行音画模式：RTC（原生同步）或 WS 兜底（手搓帧调度）
+    rtcEnabled = !!(event.rtc && event.rtc.enabled);
+    if (rtcEnabled) {
+      startRTC().catch((e) =>
+        addLine("sys", "", `⚠ WebRTC 建连异常: ${e.message}`)
+      );
+    } else {
+      startFramePlayback();
+    }
     return;
   }
   const handler = realtimeHandlers[event.type];
@@ -511,16 +655,24 @@ function switchPersona(id) {
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  // ?rtc=0：本会话回退纯 WS 模式（弱网 A/B 对比用，丢帧式降级比 RTC 卡死体感好）
+  // ?alead=毫秒：音频压后量（音画对齐补偿，服务端调度器执行），默认 250
+  const q = new URLSearchParams(location.search);
+  const params = new URLSearchParams();
+  if (q.get("rtc") === "0") params.set("rtc", "0");
+  if (q.get("alead")) params.set("alead", q.get("alead"));
+  const qs = params.toString();
+  ws = new WebSocket(`${proto}://${location.host}/ws${qs ? "?" + qs : ""}`);
   ws.binaryType = "arraybuffer";
   ws.onopen = () => {
     setStatus("已连接", "live");
     els.micBtn.disabled = false;
-    startFramePlayback();
+    // 帧播放/RTC 建连等 vox.status 到了按模式启动
   };
   ws.onclose = () => {
     setStatus("已断开", "warn");
     els.micBtn.disabled = true;
+    stopRTC();
     els.avatarWrap.classList.remove("streaming");
     // 简单重连：对话中断后 3s 重试
     setTimeout(() => {
@@ -585,6 +737,9 @@ els.micBtn.onclick = async () => {
     els.micBtn.textContent = "■ 结束对话";
     els.micBtn.classList.add("live");
     setStatus("聆听中", "live");
+    // 用户手势已发生：给数字人视频开声音（页面加载时只能 muted 自动播）
+    els.avatarVideo.muted = false;
+    els.avatarVideo.play().catch(() => {});
   } catch (e) {
     addLine("sys", "", `⚠ 麦克风不可用: ${e.message}`);
     return;

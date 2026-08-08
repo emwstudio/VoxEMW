@@ -6,11 +6,14 @@
               └→ avatar ws（:8767，voxemw.avatar.service 起的数字人服务，可缺席）
 
 职责：
-- 下行：s2s 的 TTS 音频 delta 双写 → 浏览器（播放）+ avatar（驱动口型）
+- 下行：s2s 的 TTS 音频 delta 双写 → 浏览器（播放）+ avatar（驱动口型）；
+  rtc.enabled 时音画改走 WebRTC 音画轨（AVSyncScheduler 打戳对齐，
+  浏览器 RTP 原生同步，见 voxemw/avatar/rtc.py），WS 只留控制/转写
 - 上行：浏览器麦克风音频/控制消息 → 转发 s2s
 - persona：浏览器发 {"type": "vox.persona", "id": ...} 切换人设，
   本进程把人设正文/音色/肖像注入三路（s2s instructions、TTS voice、avatar 肖像）
-- 打断：s2s 报 speech_started → 通知 avatar 丢弃未消费音频、运动上下文归位
+- 打断：s2s 报 speech_started → 通知 avatar 丢弃未消费音频、运动上下文归位；
+  RTC 模式下同步 flush 音画调度器
 - 对话状态下发：由 s2s 事件推导 speech_active（说话期间 avatar 禁 idle 生成，
   防句间停顿插入 idle 帧卡画面）与 idle_mode（listening/thinking/calm，
   决定待机驱动音频），见 avatar_state_transition
@@ -21,15 +24,17 @@
 - 单用户单会话：新浏览器连接顶掉旧会话（s2s 只有 1 个管线槽位，
   换网络产生的僵尸会话被新连接立即踢掉，无需等超时/刷新两次）
 
-浏览器侧协议（/ws）：
-  文本帧（JSON）：
+浏览器侧协议：
+  /ws 文本帧（JSON）：
     → {"type": "vox.persona", "id": "<persona_id>"}   切换人设
-    → {"type": "vox.drained"}                          播放排空信号（帧合流时序用）
     → OpenAI Realtime 事件原样透传（input_audio_buffer.append / response.cancel 等）
-    ← OpenAI Realtime 事件原样透传（transcription / response.done 等）
-    ← {"type": "vox.status", "avatar": "on"|"off", "persona": "<id>", ...}
-  二进制帧：
+    ← OpenAI Realtime 事件透传（transcription / response.done 等；
+      RTC 模式下音频 delta 事件剥掉 base64 音频体，只留事件）
+    ← {"type": "vox.status", "avatar": "on"|"off", "persona": "<id>",
+       "rtc": {"enabled": bool, "ice_servers": [...]}}
+  /ws 二进制帧（仅 RTC 未启用时）：
     ← 0x01 + tag(1B) + JPEG：数字人视频帧（tag 0x00=idle 直画 / 0x01=speech 进队列）
+  POST /rtc/offer（RTC 模式）：WebRTC 信令，body {"sdp", "type"} → answer
 """
 
 from __future__ import annotations
@@ -43,6 +48,7 @@ import os
 import random
 import sys
 import tempfile
+import time
 import wave
 from pathlib import Path
 
@@ -52,6 +58,7 @@ sys.path.insert(0, str(REPO_ROOT))
 logger = logging.getLogger(__name__)
 
 FRAME_TYPE_JPEG = 0x01
+FRAME_TAG_SPEECH = 0x01  # avatar service 下行帧 tag：0x00=idle / 0x01=speech
 SAMPLE_RATE_16K = 16000  # 管线全程 16kHz（垫音/音频 delta 均为 int16 mono）
 
 # s2s 事件 → 编排动作（纯函数分类，便于单测）
@@ -214,17 +221,17 @@ class Session:
     def __init__(self, browser_ws, s2s_url: str, avatar_url: str | None,
                  personas: dict, default_persona: str,
                  filler_enabled: bool = True, avatar_backend: str = "avtr1",
-                 memory_store=None, weibo_cfg: dict | None = None):
+                 memory_store=None, rtc_sched=None, rtc_ice_servers: list | None = None):
         self.browser = browser_ws
         self.s2s_url = s2s_url
         self.avatar_url = avatar_url
         self.avatar_backend = avatar_backend  # 前端据此选口型延迟默认值（adelay）
+        # WebRTC 音画轨：调度器存在时下行音画走 RTC，WS 只留控制/转写
+        self.sched = rtc_sched
+        self._rtc_ice_servers = rtc_ice_servers or []
         self.personas = personas
         self.persona_id = default_persona
         self.memory = memory_store  # 记忆积木（None = 未启用/降级）
-        weibo_cfg = weibo_cfg or {}
-        self.weibo_db = weibo_cfg.get("db_path") if weibo_cfg.get("enabled") else None
-        self.weibo_top_n = int(weibo_cfg.get("top_n", 8))
         self._turn_user_text = ""       # 本轮用户转写（记忆写入用）
         self._turn_assistant_text = ""  # 本轮峰哥回复（记忆写入用）
         self._user_speaking = False  # server VAD 判定的用户说话段（listen 轨转发门控）
@@ -244,8 +251,12 @@ class Session:
             if self.avatar_url:
                 try:
                     self.avatar = await websockets.connect(
-                        self.avatar_url, max_size=16 * 1024 * 1024
+                        self.avatar_url, max_size=16 * 1024 * 1024,
+                        compression=None,  # 裸帧大消息，压缩是吞吐杀手（见 service 侧注释）
                     )
+                    if self.sched is not None:
+                        # RTC 链路：协商裸帧直发（跳过两端 JPEG 编解码，省 CPU 供帧更稳）
+                        await self.avatar.send(json.dumps({"type": "raw_frames", "on": True}))
                 except OSError as e:
                     logger.warning("avatar 服务不可达，降级纯语音: %s", e)
                     self.avatar = None
@@ -256,9 +267,15 @@ class Session:
                 asyncio.create_task(self._s2s_to_browser()),
             ]
             if self.avatar is not None:
-                tasks.append(asyncio.create_task(self._avatar_to_browser()))
+                avatar_task = (
+                    self._avatar_to_rtc() if self.sched is not None
+                    else self._avatar_to_browser()
+                )
+                tasks.append(asyncio.create_task(avatar_task))
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             self._cancel_filler()
+            if self.sched is not None:
+                self.sched.close()  # 唤醒 RTC 取帧协程退出
             for task in pending:
                 task.cancel()
             for task in done:
@@ -281,6 +298,7 @@ class Session:
             "avatar": "on" if self.avatar is not None else "off",
             "avatar_backend": self.avatar_backend if self.avatar is not None else "off",
             "persona": self.persona_id,
+            "rtc": {"enabled": self.sched is not None, "ice_servers": self._rtc_ice_servers},
         }))
 
     async def _apply_persona(self, persona_id: str) -> None:
@@ -299,16 +317,6 @@ class Session:
                     logger.info("记忆注入 %d 条", len(memories))
             except Exception as e:
                 logger.warning("记忆召回失败（跳过）: %s", e)
-        if self.weibo_db:
-            from voxemw.weibo import build_posts_block, get_recent_posts
-
-            posts = await asyncio.to_thread(
-                get_recent_posts, self.weibo_db, self.weibo_top_n
-            )
-            block = build_posts_block(posts)
-            if block:
-                instructions = instructions + "\n\n" + block
-                logger.info("动态注入 %d 条", len(posts))
         await self.s2s.send(json.dumps(build_session_update(persona_id, instructions)))
         if self.avatar is not None:
             image = persona.get("ref_image")
@@ -382,6 +390,8 @@ class Session:
             chunk = SAMPLE_RATE_16K * 2 * 2 // 5  # 0.4s int16 一块
             for i in range(0, len(clip), chunk):
                 b64 = base64.b64encode(clip[i:i + chunk]).decode()
+                if self.sched is not None:
+                    self.sched.feed_audio(clip[i:i + chunk])  # RTC 音频轨
                 await self.browser.send_str(
                     json.dumps({"type": "response.output_audio.delta", "delta": b64}))
                 if self.avatar is not None:
@@ -444,6 +454,8 @@ class Session:
             relay, reset_avatar, pcm = classify_s2s_event(event)
             if pcm is not None:
                 self._cancel_filler()  # 真音频抢先到达：停发垫音余量，防结尾误切待机
+                if self.sched is not None:
+                    self.sched.feed_audio(pcm)  # RTC 音频轨（与喂 avatar 同一股流）
             if self.avatar is not None:
                 self._avatar_speaking, ctrl_msgs = avatar_state_transition(
                     event, self._avatar_speaking
@@ -457,8 +469,15 @@ class Session:
                 }))
             if reset_avatar and self.avatar is not None:
                 await self.avatar.send(json.dumps({"type": "reset"}))
+            if reset_avatar and self.sched is not None:
+                self.sched.flush()  # 打断：清 RTC 音画队列
             if relay:
-                await self.browser.send_str(raw)
+                if pcm is not None and self.sched is not None:
+                    # RTC 模式：音频走音轨，WS 只留事件本身（剥掉 base64 音频体省带宽）
+                    event = {k: v for k, v in event.items() if k != "delta"}
+                    await self.browser.send_str(json.dumps(event))
+                else:
+                    await self.browser.send_str(raw)
 
     def _track_dialog_state(self, event: dict) -> None:
         etype = event.get("type", "")
@@ -466,6 +485,24 @@ class Session:
             self._user_speaking = True
         elif etype == "input_audio_buffer.speech_stopped":
             self._user_speaking = False
+
+    async def _avatar_to_rtc(self) -> None:
+        """avatar 帧 → AVSyncScheduler（RTC 模式）：tag 0x01=speech / 0x00=idle。
+        无需 WS 时代的中转丢帧队列——调度器/浏览器 jitter buffer 各自消化抖动。"""
+        assert self.sched is not None
+        stat = {"t0": time.monotonic(), "speech": 0, "idle": 0}
+        async for raw in self.avatar:
+            if isinstance(raw, bytes) and len(raw) > 1:
+                is_speech = raw[0] == FRAME_TAG_SPEECH
+                self.sched.feed_frame(bytes(raw[1:]), is_speech)
+                stat["speech" if is_speech else "idle"] += 1
+                now = time.monotonic()
+                if now - stat["t0"] >= 10:
+                    logger.info("帧接收: speech=%d idle=%d（10s）队列=%d 丢尾帧=%d 杀陈旧=%d",
+                                stat["speech"], stat["idle"],
+                                self.sched.queued_frames, self.sched.tail_dropped,
+                                self.sched.stale_dropped)
+                    stat["t0"], stat["speech"], stat["idle"] = now, 0, 0
 
     async def _avatar_to_browser(self) -> None:
         # 中转队列 + 独立发送任务：浏览器/隧道抖动时丢最旧帧，
@@ -514,6 +551,103 @@ def create_app(config: dict):
 
     memory_store = create_memory_store(config)
 
+    # ── knowledge 积木（第八块）：PDF 知识库管理页 + 入库后台线程 ──
+    knowledge_cfg = config.get("knowledge") or {}
+    knowledge_store = None
+    if knowledge_cfg.get("enabled"):
+        from voxemw.knowledge import KnowledgeStore
+
+        knowledge_store = KnowledgeStore(knowledge_cfg.get("db_path", "data/knowledge.db"))
+    vision_key_env = str(knowledge_cfg.get("vision_api_key_env", "KIMI_API_KEY"))
+    ingest_jobs: dict[str, str] = {}  # doc_name → 进度文案（页面轮询）
+
+    def _ingest_pdf(doc_name: str, tmp_path: str) -> None:
+        """后台线程：解析 → 切块 → 嵌入 → 入库。任何失败只记状态，不拖垮 orchestrator。"""
+        import threading
+
+        def _run() -> None:
+            try:
+                from voxemw.knowledge import chunk_text, embed_texts, parse_pdf_smart
+
+                def _progress(msg: str) -> None:
+                    ingest_jobs[doc_name] = msg
+
+                ingest_jobs[doc_name] = "解析 PDF…"
+                text = parse_pdf_smart(
+                    tmp_path,
+                    api_key=os.environ.get(vision_key_env, ""),
+                    on_progress=_progress,
+                )
+                texts = chunk_text(text)
+                if not texts:
+                    ingest_jobs[doc_name] = "失败：没解析出文字"
+                    return
+                chunks_total = len(texts)
+                all_vecs = []
+                batch = 32
+                for i in range(0, chunks_total, batch):
+                    ingest_jobs[doc_name] = f"嵌入中 {i}/{chunks_total}…"
+                    all_vecs.append(embed_texts(texts[i : i + batch]))
+                import numpy as np
+
+                ingest_jobs[doc_name] = "入库…"
+                knowledge_store.upsert_document(
+                    doc_name, texts, np.concatenate(all_vecs)
+                )
+                ingest_jobs[doc_name] = f"完成（{chunks_total} 块）"
+            except Exception as e:
+                logger.exception("知识库入库失败: %s", doc_name)
+                ingest_jobs[doc_name] = f"失败：{e}"
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    async def knowledge_page(_request):
+        return web.FileResponse(REPO_ROOT / "web" / "knowledge.html")
+
+    async def api_knowledge_list(_request):
+        if knowledge_store is None:
+            return web.json_response({"docs": [], "jobs": {}, "enabled": False})
+        return web.json_response({
+            "enabled": True,
+            "docs": knowledge_store.list_documents(),
+            "jobs": {k: v for k, v in ingest_jobs.items()},
+        })
+
+    async def api_knowledge_upload(request):
+        if knowledge_store is None:
+            return web.json_response({"error": "knowledge 未启用"}, status=400)
+        form = await request.post()
+        field = form.get("file")
+        if field is None or not getattr(field, "filename", ""):
+            return web.json_response({"error": "缺少文件（字段名 file）"}, status=400)
+        doc_name = Path(field.filename).name
+        if not doc_name.lower().endswith(".pdf"):
+            return web.json_response({"error": "只支持 PDF"}, status=400)
+        tmp = tempfile.NamedTemporaryFile(
+            prefix="kb_", suffix=".pdf", dir=tempfile.gettempdir(), delete=False
+        )
+        tmp.write(field.file.read())
+        tmp.close()
+        ingest_jobs[doc_name] = "排队中…"
+        _ingest_pdf(doc_name, tmp.name)
+        return web.json_response({"doc_name": doc_name, "status": "ingesting"})
+
+    async def api_knowledge_delete(request):
+        if knowledge_store is None:
+            return web.json_response({"error": "knowledge 未启用"}, status=400)
+        body = await request.json()
+        doc_name = (body or {}).get("doc_name", "")
+        if not doc_name:
+            return web.json_response({"error": "缺 doc_name"}, status=400)
+        ok = knowledge_store.delete_document(doc_name)
+        ingest_jobs.pop(doc_name, None)
+        return web.json_response({"deleted": ok})
+
     async def index(_request):
         return web.FileResponse(REPO_ROOT / "web" / "index.html")
 
@@ -542,8 +676,42 @@ def create_app(config: dict):
         # 肖像可能被用户换图,禁缓存避免浏览器一直显示旧照片
         return web.FileResponse(image, headers={"Cache-Control": "no-cache, must-revalidate"})
 
+    # ── WebRTC 音画轨（对标 AVTR-1 官方 demo：RTP 时间戳原生音画同步）──
+    rtc_cfg = config.get("rtc") or {}
+    rtc_manager = None
+    rtc_ice_servers: list = []
+    if rtc_cfg.get("enabled", False):
+        from voxemw.avatar.avsync import AVSyncScheduler
+        from voxemw.avatar.rtc import RTCManager
+
+        rtc_manager = RTCManager(rtc_cfg)
+        rtc_ice_servers = rtc_manager.browser_ice_servers
+        logger.info("WebRTC 音画轨启用（VP8 + Opus）")
+
     # 单用户产品：新浏览器连接顶掉旧会话（换网络/僵尸会话不再需要刷新两次）
     current_session: dict = {"session": None}
+
+    async def api_rtc_offer(request):
+        if rtc_manager is None:
+            return web.json_response({"error": "rtc 未启用"}, status=404)
+        session = current_session["session"]
+        if session is None or session.sched is None:
+            return web.json_response({"error": "无活跃会话，先连 /ws"}, status=409)
+        offer = await request.json()
+        answer = await rtc_manager.handle_offer(offer, session.sched)
+        return web.json_response(answer)
+
+    async def api_rtc_ice(request):
+        # 前端每次建连现取 ICE 配置（本地 coturn）
+        if rtc_manager is None:
+            return web.json_response({"ice_servers": []})
+        return web.json_response({"ice_servers": rtc_manager.browser_ice_servers})
+
+    async def api_rtc_debug(request):
+        # 前端 12s 后回传的 ICE 诊断（候选/连接状态），排查隧道 TURN 链路
+        body = await request.json()
+        logger.info("RTC 前端诊断: %s", json.dumps(body, ensure_ascii=False))
+        return web.json_response({"ok": True})
 
     async def ws_handler(request):
         ws = web.WebSocketResponse(max_msg_size=16 * 1024 * 1024)
@@ -552,10 +720,22 @@ def create_app(config: dict):
         if old is not None:
             logger.info("新连接到达，顶掉旧会话（释放管线槽位）")
             await old.close()
+        # ?rtc=0：本会话回退纯 WS 模式（音画走 WS 二进制+音频 delta，丢帧式降级，
+        # 弱网对比测试用——RTC over TURN-TCP 在烂网络下延迟会累积，WS 丢帧保活）
+        rtc_off = request.query.get("rtc") == "0"
+        # ?alead=毫秒：音频压后量（等 avatar 渲染追赶，音画对齐的关键补偿，可调）
+        try:
+            lead = float(request.query.get("alead", "250")) / 1000.0
+        except ValueError:
+            lead = 0.25
+        sched = (
+            AVSyncScheduler(audio_lead=lead)
+            if (rtc_manager is not None and not rtc_off) else None
+        )
         session = Session(ws, s2s_url, avatar_url, personas, default_persona,
                           filler_enabled=filler_enabled,
                           avatar_backend=avatar_backend, memory_store=memory_store,
-                          weibo_cfg=config.get("weibo"))
+                          rtc_sched=sched, rtc_ice_servers=rtc_ice_servers)
         current_session["session"] = session
         try:
             await session.run()
@@ -566,10 +746,27 @@ def create_app(config: dict):
                 await session.avatar.close()
         return ws
 
-    app = web.Application()
+    app = web.Application(client_max_size=64 * 1024 * 1024)  # PDF 上传可能几十 MB
+
+    @web.middleware
+    async def _no_cache(request, handler):
+        # 前端 JS/HTML 迭代频繁，禁缓存防浏览器跑旧版（新旧协议不匹配会静默失声）
+        resp = await handler(request)
+        if request.path == "/" or request.path.startswith("/static"):
+            resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return resp
+
+    app.middlewares.append(_no_cache)
     app.router.add_get("/", index)
+    app.router.add_get("/knowledge", knowledge_page)
+    app.router.add_get("/api/knowledge/list", api_knowledge_list)
+    app.router.add_post("/api/knowledge/upload", api_knowledge_upload)
+    app.router.add_post("/api/knowledge/delete", api_knowledge_delete)
     app.router.add_get("/api/personas", api_personas)
     app.router.add_get("/api/personas/{pid}/image", api_persona_image)
+    app.router.add_post("/rtc/offer", api_rtc_offer)
+    app.router.add_get("/rtc/ice", api_rtc_ice)
+    app.router.add_post("/rtc/debug", api_rtc_debug)
     app.router.add_get("/ws", ws_handler)
     app.router.add_static("/static", REPO_ROOT / "web")
     return app

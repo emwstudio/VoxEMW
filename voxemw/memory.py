@@ -18,6 +18,18 @@ logger = logging.getLogger(__name__)
 
 MAX_MEMORY_CHARS = 80  # 单条注入截断（防人设正文被稀释）
 
+# 自定义抽取规则：只记用户（非助手）的事实/偏好/计划。
+# 默认 prompt 不区分说话人，会把助手侃大山的内容也记进去（实测踩过）。
+# 注意：mem0 把它作为 custom_instructions 拼进系统 prompt（规则层最高优先级），
+# 输出格式由系统 prompt 定为 {"memory": [{"text": ...}]} ——这里绝不能另写输出格式，
+# 否则模型按我们的格式输出、mem0 解析 get("memory") 为空，静默不落库（实测踩过）。
+_EXTRACT_PROMPT = """抽取规则（最高优先级，与上面默认规则冲突时以本规则为准）：
+- 只记录用户（user 角色）透露的事实、偏好、习惯、计划、个人信息
+- 绝不记录助手（assistant 角色）的任何内容：它的故事、观点、推荐、玩笑都不是用户记忆
+- 只记有长期价值的信息；寒暄、一次性话题、纯提问本身不记
+- 没有可记的内容就输出空的 memory 列表
+- 事实用中文，简短具体（如「用户在减脂」「用户做短视频」）"""
+
 
 def build_memory_block(memories: list[str]) -> str:
     """记忆条目 → 注入 instructions 的文本块（纯函数，便于单测）。"""
@@ -72,14 +84,16 @@ class MemoryStore:
         return [r["memory"] for r in (results.get("results") or []) if r.get("memory")]
 
     def add_turn(self, user_text: str, assistant_text: str, agent_id: str) -> None:
-        """一轮对话 → Mem0 抽取/去重/更新（内部调 LLM，阻塞）。"""
+        """一轮对话 → Mem0 抽取/去重/更新（内部调 LLM，阻塞）。
+        自定义抽取 prompt：只记用户侧事实，忽略助手输出。"""
         messages = []
         if user_text:
             messages.append({"role": "user", "content": user_text})
         if assistant_text:
             messages.append({"role": "assistant", "content": assistant_text})
         if messages:
-            self._m.add(messages, user_id=self.user_id, agent_id=agent_id)
+            self._m.add(messages, user_id=self.user_id, agent_id=agent_id,
+                        prompt=_EXTRACT_PROMPT)
 
 
 def create_memory_store(config: dict) -> MemoryStore | None:

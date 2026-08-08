@@ -32,11 +32,12 @@ DEFAULT_CONFIG = "configs/assistant.yaml"
 
 
 def _install_custom_handlers(config: dict) -> None:
-    """monkeypatch s2s_pipeline 的 STT/TTS 工厂，注册自定义积木。"""
+    """monkeypatch s2s_pipeline 的 STT/TTS/LLM 工厂，注册自定义积木。"""
     import speech_to_speech.s2s_pipeline as s2s
 
     orig_get_stt = s2s.get_stt_handler
     orig_get_tts = s2s.get_tts_handler
+    orig_get_llm = s2s.get_llm_handler
 
     def get_stt_handler(module_kwargs, stop_event, queue_in, queue_out, speculative_turns, *kwargs):
         stt_cls = None
@@ -77,7 +78,26 @@ def _install_custom_handlers(config: dict) -> None:
             setup_kwargs=setup,
         )
 
+    def get_llm_handler(module_kwargs, stop_event, text_prompt_queue, lm_response_queue,
+                        language_model_handler_kwargs, responses_api_language_model_handler_kwargs):
+        if module_kwargs.llm_backend != "chat-completions-rag":
+            return orig_get_llm(module_kwargs, stop_event, text_prompt_queue, lm_response_queue,
+                                language_model_handler_kwargs,
+                                responses_api_language_model_handler_kwargs)
+        from voxemw.pipeline.llm_rag import RagChatCompletionsHandler
+
+        return RagChatCompletionsHandler(
+            stop_event,
+            queue_in=text_prompt_queue,
+            queue_out=lm_response_queue,
+            setup_kwargs={
+                **vars(responses_api_language_model_handler_kwargs),
+                "knowledge": config.get("knowledge"),
+            },
+        )
+
     s2s.get_stt_handler = get_stt_handler
+    s2s.get_llm_handler = get_llm_handler
     s2s.get_tts_handler = get_tts_handler
 
 
@@ -198,6 +218,7 @@ def main() -> None:
     # 自定义积木：parse 用默认值过 Literal 校验，这里改写成我们的 backend 名
     parsed.module_kwargs.stt = config["stt"]["backend"]
     parsed.module_kwargs.tts = config["tts"]["backend"]
+    parsed.module_kwargs.llm_backend = config["llm"].get("backend", "chat-completions")
 
     _install_custom_handlers(config)
     _patch_deepseek_thinking()

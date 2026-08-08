@@ -25,6 +25,7 @@ if [ "${1:-}" = "stop" ]; then
     pkill -f "voxemw.avatar.service" 2>/dev/null || true
     pkill -f "voxemw.pipeline.launch" 2>/dev/null || true
     pkill -f "voxemw.avatar.orchestrator" 2>/dev/null || true
+    pkill -f "turnserver.*turnserver.conf" 2>/dev/null || true
     echo "已停止全部服务"
     exit 0
 fi
@@ -34,7 +35,14 @@ mkdir -p logs
 pkill -f "voxemw.avatar.service" 2>/dev/null || true
 pkill -f "voxemw.pipeline.launch" 2>/dev/null || true
 pkill -f "voxemw.avatar.orchestrator" 2>/dev/null || true
+pkill -f "turnserver.*turnserver.conf" 2>/dev/null || true
 sleep 2
+
+# TURN（coturn）：WebRTC 媒体中继，SSH 隧道用户必经（UDP 过不了隧道，
+# 浏览器走 turn:localhost:3478?transport=tcp，隧道需加 -L 3478:localhost:3478）
+echo "==> 启动 TURN（coturn，loopback :3478）"
+nohup turnserver -c configs/turnserver.conf > logs/turn.log 2>&1 &
+echo "    PID=$!，日志 logs/turn.log"
 
 # AVTR-1：pixi env python 直调（勿 pixi run——会按 lock 重同步 env，
 # 把 pip 降级的 onnxruntime-gpu 1.22 还原成 1.28）
