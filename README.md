@@ -4,6 +4,7 @@
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6)](https://space.bilibili.com/492428186)
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000)](https://www.youtube.com/@emw_studio)
+[![X](https://img.shields.io/badge/X-@emwstudio-000000)](https://x.com/emwstudio)
 
 对着浏览器说话，屏幕里的数字人开口回答你。人设、音色、形象三位一体，
 单卡 RTX 4090D 即可运行，**你说完到听到第一声 ≈ 2.4s**。
@@ -21,6 +22,7 @@
 
 - B站：https://space.bilibili.com/492428186
 - YouTube：https://www.youtube.com/@emw_studio
+- X：https://x.com/emwstudio
 
 ## 架构
 
