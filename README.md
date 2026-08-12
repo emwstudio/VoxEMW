@@ -1,5 +1,10 @@
 # VoxEMW · 数字人实时语音聊天助手
 
+[![version](https://img.shields.io/badge/version-v1.3.1-blue)](https://github.com/emwstudio/VoxEMW/tags)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6)](https://space.bilibili.com/492428186)
+[![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000)](https://www.youtube.com/@emw_studio)
+
 对着浏览器说话，屏幕里的数字人开口回答你。人设、音色、形象三位一体，
 单卡 RTX 4090D 即可运行，**你说完到听到第一声 ≈ 2.4s**。
 
@@ -8,6 +13,14 @@
 + [AVTR-1](https://github.com/avaturn-live/avtr-1) 数字人形象（TensorRT，0.2s 生成粒度）。
 音画下行走 **WebRTC**（VP8 + Opus），浏览器按 RTP 时间戳原生对齐口型。
 人设来自女娲蒸馏（`personas/<id>.md`）。
+
+## 开发日记（视频）
+
+本项目的开发过程记录在 **电磁波Studio**——延迟优化、模型选型、踩坑全程都有视频，
+看不懂代码可以先看视频：
+
+- B站：https://space.bilibili.com/492428186
+- YouTube：https://www.youtube.com/@emw_studio
 
 ## 架构
 
@@ -100,14 +113,6 @@ python3 -m venv .venv && .venv/bin/python -m pip install pytest pyyaml numpy aio
 - `personas/` / `skills/` — 人设与女娲造人 skill 包
 - `docs/upgrade-regression.md` — 上游升级回归方案
 - `tests/` — 纯逻辑单测
-
-## 开发日记（视频）
-
-本项目的开发过程记录在 **电磁波Studio**——延迟优化、模型选型、踩坑全程都有视频，
-看不懂代码可以先看视频：
-
-- B站：https://space.bilibili.com/492428186
-- YouTube：https://www.youtube.com/@emw_studio
 
 ## 合规
 
