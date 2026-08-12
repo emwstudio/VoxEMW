@@ -341,6 +341,33 @@ def create_app(config: dict):
         # 肖像可能被用户换图,禁缓存避免浏览器一直显示旧照片
         return web.FileResponse(image, headers={"Cache-Control": "no-cache, must-revalidate"})
 
+    async def api_persona_image_upload(request):
+        """换图免重启：覆盖 persona 肖像文件，并热推到当前会话的 avatar 服务
+        （引擎 set_image 本就支持运行时换肖像——人设切换走的就是它）。"""
+        pid = request.match_info["pid"]
+        persona = personas.get(pid)
+        image = (persona or {}).get("ref_image")
+        if not image:
+            return web.json_response({"error": "persona 不存在或无肖像"}, status=404)
+        form = await request.post()
+        field = form.get("file")
+        if field is None or not getattr(field, "filename", ""):
+            return web.json_response({"error": "缺少文件（字段名 file）"}, status=400)
+        data = field.file.read()
+        if len(data) > 20 * 1024 * 1024:
+            return web.json_response({"error": "图片过大（>20MB）"}, status=400)
+        with open(image, "wb") as f:
+            f.write(data)
+        # 热推到当前会话（无活跃会话也行——下次连接 _apply_persona 会发）
+        session = current_session["session"]
+        hot = False
+        if session is not None and session.avatar is not None:
+            await session.avatar.send(json.dumps({"type": "set_image", "path": image}))
+            await session.avatar.send(json.dumps({"type": "reset"}))
+            hot = True
+        logger.info("persona %s 换图: %s（热推=%s）", pid, image, hot)
+        return web.json_response({"ok": True, "hot": hot})
+
     # ── WebRTC 音画轨（对标 AVTR-1 官方 demo：RTP 时间戳原生音画同步）──
     rtc_cfg = config.get("rtc") or {}
     rtc_manager = None
@@ -419,6 +446,7 @@ def create_app(config: dict):
     app.router.add_get("/", index)
     app.router.add_get("/api/personas", api_personas)
     app.router.add_get("/api/personas/{pid}/image", api_persona_image)
+    app.router.add_post("/api/personas/{pid}/image", api_persona_image_upload)
     app.router.add_post("/rtc/offer", api_rtc_offer)
     app.router.add_get("/rtc/ice", api_rtc_ice)
     app.router.add_post("/rtc/debug", api_rtc_debug)

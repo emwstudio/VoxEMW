@@ -81,6 +81,21 @@ def _install_custom_handlers(config: dict) -> None:
     s2s.get_tts_handler = get_tts_handler
 
 
+def _patch_torch_flex_attention_compat() -> None:
+    """transformers 5.13 的 flex_attention 集成模块顶层 import torch 2.9 才有的
+    AuxRequest，torch 2.8 没有 → ImportError 炸在 import 链上（我们的模型根本不用
+    flex attention，占位即可）。"""
+    try:
+        from torch.nn.attention.flex_attention import AuxRequest  # noqa: F401
+    except ImportError:
+        import torch.nn.attention.flex_attention as _fa
+
+        class AuxRequest:  # 占位：torch 2.9 才有真身；flex attention 不会被调用
+            pass
+
+        _fa.AuxRequest = AuxRequest
+
+
 def _patch_deepseek_thinking() -> None:
     """DeepSeek 的关 thinking 协议是 extra_body {"thinking": {"type": "disabled"}}；
     上游只懂 vLLM 风格 chat_template_kwargs / reasoning_effort。只在 base_url
@@ -201,6 +216,7 @@ def main() -> None:
     parsed.module_kwargs.llm_backend = config["llm"].get("backend", "chat-completions")
 
     _install_custom_handlers(config)
+    _patch_torch_flex_attention_compat()
     _patch_deepseek_thinking()
     _patch_torch_hub_offline_fallback()
     _patch_speechable_keep_cjk_punct()

@@ -6,7 +6,7 @@
 set -euo pipefail
 
 VOX_HOST="${VOX_HOST:-connect.bjb2.seetacloud.com}"
-VOX_PORT="${VOX_PORT:-49103}"
+VOX_PORT="${VOX_PORT:-34567}"
 
 echo "隧道 → ${VOX_HOST}:${VOX_PORT}（本地 8000=网页，3478=媒体）"
 exec ssh -CNg \

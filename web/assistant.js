@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260811a";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260812a";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -27,6 +27,8 @@ const els = {
   personaBar: document.getElementById("persona-bar"),
   transcript: document.getElementById("transcript"),
   micBtn: document.getElementById("mic-btn"),
+  imgUploadBtn: document.getElementById("img-upload-btn"),
+  imgUpload: document.getElementById("img-upload"),
 };
 
 let ws = null;
@@ -491,6 +493,30 @@ async function init() {
   setAvatarState("idle");
   connect();
 }
+
+// 换图免重启：上传新肖像 → 服务端覆盖文件并热推 avatar 服务（引擎 set_image）
+els.imgUploadBtn.onclick = () => els.imgUpload.click();
+els.imgUpload.onchange = async () => {
+  const file = els.imgUpload.files[0];
+  els.imgUpload.value = "";
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file, "ref.png");
+  try {
+    const r = await (await fetch(`/api/personas/${currentPersona}/image`, {
+      method: "POST", body: fd,
+    })).json();
+    if (r.ok) {
+      addLine("sys", "", r.hot ? "🖼 新形象已生效" : "🖼 已保存，下次连接生效");
+      // 刷新静态图（服务端 no-cache + 查询参数双保险）
+      els.still.src = `/api/personas/${currentPersona}/image?t=${Date.now()}`;
+    } else {
+      addLine("sys", "", `⚠ 换图失败: ${r.error || "未知错误"}`);
+    }
+  } catch (e) {
+    addLine("sys", "", `⚠ 换图失败: ${e.message}`);
+  }
+};
 
 els.micBtn.onclick = async () => {
   if (mic) {

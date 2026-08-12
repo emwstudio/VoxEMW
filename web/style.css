@@ -109,6 +109,21 @@ body.solo .avatar-wrap { aspect-ratio: 16 / 9; }
 .avatar-wrap video { display: none; }
 /* WebRTC 模式：video 上屏（DOM 序 video 在 img 后，天然置顶） */
 .avatar-wrap.webrtc.streaming video { display: block; }
+/* 换图按钮：数字人画面右下角 */
+.img-upload {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  background: rgba(13, 17, 23, 0.6);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 12px;
+  cursor: pointer;
+  z-index: 5;
+}
+.img-upload:hover { color: var(--text); border-color: var(--muted); }
 .avatar-fallback {
   position: absolute;
   left: 0; right: 0; bottom: 0;
