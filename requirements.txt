@@ -10,11 +10,8 @@ speech-to-speech @ git+https://github.com/huggingface/speech-to-speech.git@5b443
 
 # 自定义积木依赖
 voxcpm                  # TTS：openbmb/VoxCPM2
-transformers            # STT：SenseVoice（FunASR 另装）/ Qwen3-ASR 备选
+transformers            # STT：SenseVoice
 funasr                  # STT：iic/SenseVoiceSmall（ModelScope）
-mem0ai                  # 记忆积木（第七块）：LLM 抽取走 DeepSeek
-sentence-transformers   # 记忆 embedding：本地 bge-m3（DeepSeek 无 embedding API）
-qdrant-client           # 记忆向量库（内嵌文件模式）
 # 注意：torchcodec 与 transformers 5.x 共存会炸（libnvrtc.so.13），装上了请卸载
 
 # 编排与服务

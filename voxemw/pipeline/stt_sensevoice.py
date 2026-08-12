@@ -6,16 +6,11 @@
 # SenseVoiceSmall ~0.1s（GPU 170x 实时，官方中文 CER 7.81% 优于 Whisper-large-v3），
 # 且无需流式 ASR 的复杂度——说完即出字，等效流式。
 # 输出带 FunASR 元标签（<|zh|><|HAPPY|><|Speech|> 等），文本统一走
-# rich_transcription_postprocess 剥掉；情绪标签（HAPPY/SAD/ANGRY/…）是同一次推理的
-# 副产品（零成本），写到 /tmp 侧信道文件供 orchestrator 按情绪选垫音
-# （上游 Transcription 消息/ws 事件均为固定字段，无其他传话通道）。
+# rich_transcription_postprocess 剥掉。
 
 from __future__ import annotations
 
 import logging
-import os
-import re
-import tempfile
 from typing import Any, Iterator
 
 import numpy as np
@@ -30,30 +25,6 @@ console = Console()
 
 # SenseVoiceSmall 要求 16 kHz 单声道输入，与管线 VAD 输出采样率一致
 TARGET_SAMPLE_RATE = 16000
-
-# 情绪侧信道：orchestrator 在转写完成事件时读它选垫音分组（STT 进程写于 yield 前，
-# 时序上必然先于 orchestrator 读到事件）
-EMOTION_SIDECAR_PATH = os.path.join(tempfile.gettempdir(), "voxemw_stt_emotion")
-
-# SenseVoice 的情绪标签（取第一个非 NEUTRAL 优先？否——按出现顺序第一个即为整段情绪）
-_EMOTION_RE = re.compile(r"<\|(HAPPY|SAD|ANGRY|NEUTRAL|DISGUSTED|FEARFUL|SURPRISED)\|>")
-
-
-def extract_emotion(raw_text: str) -> str:
-    """从 SenseVoice 原始输出提取情绪标签（纯函数，便于单测）。无标签回退 NEUTRAL。"""
-    m = _EMOTION_RE.search(raw_text)
-    return m.group(1) if m else "NEUTRAL"
-
-
-def write_emotion_sidecar(emotion: str, path: str = EMOTION_SIDECAR_PATH) -> None:
-    """原子写情绪侧信道文件（tmp + replace，避免 orchestrator 读到半截）。"""
-    try:
-        tmp = f"{path}.tmp"
-        with open(tmp, "w") as f:
-            f.write(emotion)
-        os.replace(tmp, path)
-    except OSError as e:
-        logger.warning("情绪侧信道写入失败: %s", e)
 
 
 class SenseVoiceSTTHandler(BaseSTTHandler):
@@ -96,7 +67,6 @@ class SenseVoiceSTTHandler(BaseSTTHandler):
         if not res:
             return ""
         raw = res[0]["text"]
-        write_emotion_sidecar(extract_emotion(raw))
         # 剥掉 <|zh|><|HAPPY|><|Speech|> 等元标签，只留文本
         return rich_transcription_postprocess(raw).strip()
 

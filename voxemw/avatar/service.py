@@ -1,7 +1,7 @@
 """Avatar 积木：数字人服务（AVTR-1 流式说话头，TensorRT）。
 
 独立 GPU 进程。输入：参考肖像（persona 的 ref_image，16:9 横版胸像）+
-16kHz int16 PCM 音频流；输出：JPEG 视频帧流（1280×720，25fps 节奏）。
+16kHz int16 PCM 音频流；输出：裸 RGB 视频帧流（1280×720，25fps 节奏）。
 引擎实现见 voxemw/avatar/avtr1_engine.py（须在 pixi env 直调启动，勿 pixi run
 ——会按 lock 重同步 env 覆盖 pip 降级；start_assistant.sh 已内置）。
 
@@ -17,9 +17,13 @@
     {"type": "idle_mode", "mode": "listening"|"thinking"|"calm"}
                                                             待机模式（listening 时启用 listen 轨）
   出：
-    二进制帧：tag(1B) + JPEG 图片（一帧一条）。tag：0x00=idle（待机微动/倾听反应）、
-              0x01=speech（真实音频驱动）；前端合流同队列沿音频时钟连播
+    二进制帧：tag(1B) + 裸 RGB（1280×720×3 字节，一帧一条）。tag：0x00=idle
+              （待机微动/倾听反应）、0x01=speech（真实音频驱动）
     JSON 文本帧：{"type": "ready"} / {"type": "error", "message": ...}
+
+  注：裸帧直发是踩坑后的选择——JPEG 编解码双端白烧 CPU；ws 默认的
+  permessage-deflate 压缩压不动 69MB/s 裸流（吞吐塌到 10fps、缓冲堆积
+  出 30-60s 延迟），必须 compression=None（orchestrator 侧同样设置）。
 """
 
 from __future__ import annotations
@@ -47,21 +51,8 @@ FRAME_TAG_IDLE = 0x00    # 待机微动 / 倾听反应
 FRAME_TAG_SPEECH = 0x01  # 真实音频驱动（含句尾淡出闭嘴帧）
 
 
-def _encode_jpeg(frame_rgb, quality: int) -> bytes:
-    import cv2
-
-    bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-    # 轻量锐化(unsharp mask):找回 JPEG 压缩丢掉的边缘,半径小强度低不过曝
-    blur = cv2.GaussianBlur(bgr, (0, 0), 1.0)
-    bgr = cv2.addWeighted(bgr, 1.35, blur, -0.35, 0)
-    ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
-    if not ok:
-        raise RuntimeError("cv2.imencode failed")
-    return buf.tobytes()
-
-
-async def _serve(ws, engine, jpeg_quality: int) -> None:
-    """单个 orchestrator 连接：收音频/控制消息，推 JPEG 帧。"""
+async def _serve(ws, engine) -> None:
+    """单个 orchestrator 连接：收音频/控制消息，推裸 RGB 帧。"""
     import queue as _queue
 
     import numpy as np
@@ -70,13 +61,10 @@ async def _serve(ws, engine, jpeg_quality: int) -> None:
     out_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=TGT_FPS * 4)
     raw_queue: _queue.Queue = _queue.Queue(maxsize=TGT_FPS * 2)
     stat = {"t0": time.monotonic(), "produced": 0, "dropped": 0}  # 产出自检
-    # raw 模式（orchestrator RTC 链路协商开启）：跳过 JPEG 编解码，
-    # 直接发 tag + RGB 裸帧（loopback 带宽无压力，省两端 CPU）
-    raw_mode = {"on": False}
 
     def on_frames(frames, is_idle: bool) -> None:
-        # 推理线程只入队原始帧（满则丢最旧）；JPEG 编码在专用线程，
-        # 避免编码耗时阻塞下一 chunk 生成
+        # 推理线程只入队原始帧（满则丢最旧）；转发在专用线程，
+        # 避免耗时阻塞下一 chunk 生成
         tag = FRAME_TAG_IDLE if is_idle else FRAME_TAG_SPEECH
         for frame in frames:
             if raw_queue.full():
@@ -97,10 +85,7 @@ async def _serve(ws, engine, jpeg_quality: int) -> None:
     def _encoder() -> None:
         while True:
             frame, tag = raw_queue.get()
-            if raw_mode["on"]:
-                data = bytes([tag]) + frame.tobytes()
-            else:
-                data = bytes([tag]) + _encode_jpeg(frame, jpeg_quality)
+            data = bytes([tag]) + frame.tobytes()
             loop.call_soon_threadsafe(_offer, data)
 
     def _offer(data: bytes) -> None:
@@ -134,8 +119,6 @@ async def _serve(ws, engine, jpeg_quality: int) -> None:
             if etype == "audio":
                 pcm = np.frombuffer(base64.b64decode(event["pcm"]), dtype=np.int16)
                 engine.feed_audio(pcm.astype(np.float32) / 32768.0)
-            elif etype == "raw_frames":
-                raw_mode["on"] = bool(event.get("on"))
             elif etype == "listen":
                 # 用户麦克风音频（active listening）
                 pcm = np.frombuffer(base64.b64decode(event["pcm"]), dtype=np.int16)
@@ -181,7 +164,6 @@ def main() -> None:
     if not image:
         sys.exit(f"默认 persona 缺 ref_image，无法启动数字人服务: {config['personas']['default']}")
 
-    jpeg_quality = int(avatar.get("jpeg_quality", 80))
     host = str(avatar.get("host", "127.0.0.1"))
     port = int(avatar.get("port", 8767))
 
@@ -207,7 +189,7 @@ def main() -> None:
         thread.start()
         engine.warmup(on_frames)
         async with websockets.serve(
-            lambda ws: _serve(ws, engine, jpeg_quality), host, port,
+            lambda ws: _serve(ws, engine), host, port,
             # 裸帧 2.76MB/帧×25fps：默认开启的 permessage-deflate 压缩根本压不动
             #（实测发送端只剩 ~10fps，缓冲堆出 30-60s 延迟），必须关
             compression=None,

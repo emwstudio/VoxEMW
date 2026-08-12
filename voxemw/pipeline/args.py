@@ -48,10 +48,8 @@ def render_s2s_argv(config: dict, env: dict | None = None) -> list[str]:
             argv += [f"--{key}", str(vad[key])]
 
     backend = llm.get("backend", "chat-completions")
-    # chat-completions-rag 是我们的自定义后端（launch 运行时注册），对上游 CLI 渲染为 chat-completions
-    cli_backend = "chat-completions" if backend == "chat-completions-rag" else backend
-    argv += ["--llm_backend", cli_backend, "--model_name", str(llm["model_name"])]
-    if backend in ("chat-completions", "chat-completions-rag", "responses-api"):
+    argv += ["--llm_backend", backend, "--model_name", str(llm["model_name"])]
+    if backend in ("chat-completions", "responses-api"):
         argv += [
             "--responses_api_base_url", str(llm["base_url"]),
             "--responses_api_api_key", resolve_api_key(llm, env),
@@ -88,14 +86,6 @@ def stt_setup_kwargs(config: dict) -> dict:
         for key, value in stt.items()
         if key.startswith("gen_")
     }
-    if backend == "qwen3asr":
-        return {
-            "model_name": stt.get("model_name", "Qwen/Qwen3-ASR-1.7B-hf"),
-            "device": stt.get("device", "cuda"),
-            "torch_dtype": stt.get("torch_dtype", "bfloat16"),
-            "language": stt.get("language", "Chinese"),
-            "gen_kwargs": gen_kwargs,
-        }
     if backend == "sensevoice":
         return {
             "model_name": stt.get("model_name", "iic/SenseVoiceSmall"),
@@ -107,14 +97,13 @@ def stt_setup_kwargs(config: dict) -> dict:
 
 
 def tts_setup_kwargs(config: dict) -> dict:
-    """voxcpm TTS handler 的 setup_kwargs（由 launch 的自定义工厂使用）。
+    """TTS handler 的 setup_kwargs（由 launch 的自定义工厂使用）。
 
-    voices：personas 注册表全员（key = persona id），启动时预编码 prompt cache，
+    voices：personas 注册表全员（key = persona id），启动时预编码/登记，
     session.update 的 audio.output.voice 热切换；默认音色 = personas.default。
     """
     tts = config["tts"]
-    if tts.get("backend") != "voxcpm":
-        raise ValueError(f"不支持的 tts.backend: {tts.get('backend')!r}")
+    backend = tts.get("backend")
     personas = config["personas"]["resolved"]
     default_id = config["personas"]["default"]
     default = personas[default_id]
@@ -125,6 +114,8 @@ def tts_setup_kwargs(config: dict) -> dict:
         pid: {"ref_audio": p["ref_wav"], "ref_text": p["ref_text"]}
         for pid, p in personas.items()
     }
+    if backend != "voxcpm":
+        raise ValueError(f"不支持的 tts.backend: {backend!r}")
     return {
         "model_name": tts.get("model_name", "openbmb/VoxCPM2"),
         "device": tts.get("device", "cuda"),

@@ -32,7 +32,7 @@ def _write_config(tmp_path, assets, extra_personas=""):
     cfg.write_text(
         f"""
 vad: {{ backend: silero, min_silence_ms: 600 }}
-stt: {{ backend: qwen3asr, model_name: Qwen/Qwen3-ASR-1.7B-hf }}
+stt: {{ backend: sensevoice, model_name: iic/SenseVoiceSmall }}
 llm:
   backend: chat-completions
   model_name: deepseek-v4-flash

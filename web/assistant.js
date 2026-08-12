@@ -1,27 +1,21 @@
 /* VoxEMW 数字人语音助手前端。
  *
- * 下行音画两种模式（vox.status 的 rtc.enabled 决定）：
- *   WebRTC（默认）：POST /rtc/offer 建连，音频（Opus）+ 视频（VP8）走 RTP 轨，
- *                   浏览器按时间戳原生音画同步，<video> 直挂远程流，零补偿参数
- *   WS 兜底：一路 /ws 承载——上行 JSON 麦克风/控制事件；下行 JSON 转写/音频 delta
- *            （AudioContext 拼接播放）；下行二进制 JPEG 帧（沿音频时钟调度上屏）
- *
+ * 下行音画：WebRTC——POST /rtc/offer 建连，音频（Opus）+ 视频（VP8）走 RTP 轨，
+ *           浏览器按时间戳原生音画同步，<video> 直挂远程流，零补偿参数。
+ *           音画对齐在服务端 AVSyncScheduler（?alead=毫秒 调音频压后量）。
+ * WS /ws：上行麦克风/控制事件；下行转写/状态事件（音频体已剥离，走音轨）。
  * 数字人缺席时显示 persona 静态肖像（纯语音模式）。
  */
 
 "use strict";
 
-const VOX_JS_VERSION = "20260808e";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260811a";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
-const FRAME_TYPE_JPEG = 0x01;       // 下行：数字人视频帧
-const FRAME_TAG_IDLE = 0x00;        // 视频帧 tag：静音驱动的待机微动
-const FRAME_TAG_SPEECH = 0x01;      // 视频帧 tag：真实音频驱动
 
 const els = {
   status: document.getElementById("status"),
-  canvas: document.getElementById("avatar-canvas"),
   avatarVideo: document.getElementById("avatar-video"),
   still: document.getElementById("avatar-still"),
   avatarWrap: document.querySelector(".avatar-wrap"),
@@ -38,20 +32,19 @@ const els = {
 let ws = null;
 let mic = null;
 let camStream = null;
-let player = null;
 let personas = [];
 let currentPersona = null;
 let avatarOn = false;
 let assistantLine = null; // 正在流式累积的助手文本行
 let rtcEnabled = false;   // vox.status 下发：下行音画走 WebRTC
-let pc = null;            // RTCPeerConnection（RTC 模式）
+let pc = null;            // RTCPeerConnection
 // solo 模式（?solo=1）：demo 录制用，隐藏用户画面、数字人单栏居中、不开摄像头
 const SOLO_MODE = new URLSearchParams(location.search).has("solo");
 if (SOLO_MODE) document.body.classList.add("solo");
 
 
 // ---------------------------------------------------------------------------
-// PCM 编解码
+// PCM 编解码（麦克风上行）
 // ---------------------------------------------------------------------------
 
 function floatTo16BitPCM(float32) {
@@ -70,91 +63,8 @@ function base64FromInt16(int16) {
   return btoa(binary);
 }
 
-function int16FromBase64(b64) {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new Int16Array(bytes.buffer);
-}
-
 // ---------------------------------------------------------------------------
-// 播放（无缝拼接 + 打断清空）
-// ---------------------------------------------------------------------------
-
-function ensurePlayer() {
-  if (!player) {
-    player = { ctx: new AudioContext({ sampleRate: SAMPLE_RATE }), nextStartTime: 0 };
-  }
-  if (player.ctx.state === "suspended") player.ctx.resume();
-  return player;
-}
-
-// 口型同步模型:TTS 以 ~2x 实时速度流式送音频,播放链会积压(实测 3-4s),
-// 各自计时必然漂移 → 视频帧节奏从属于音频播放时钟:音频播到第几秒就放第几帧。
-// AVATAR_AUDIO_DELAY 保留基础延迟,保证音频播放位置始终落后于视频供帧点,
-// 视频始终有帧可放。AVTR-1 0.2s chunk + 0.2s 前瞻 + 生成 ≈ 实测 0.35s 最佳。
-// 可用 ?adelay=N 覆盖(?debug=1 看帧队列深度,经常见底就调回去)
-const ADELAY_OVERRIDE = (() => {
-  const v = parseFloat(new URLSearchParams(location.search).get("adelay"));
-  return Number.isFinite(v) && v >= 0 ? v : null;
-})();
-const BACKEND_ADELAY = { avtr1: 0.35 };  // 数字人 = AVTR-1（flashhead 已下线）
-let avatarAudioDelay = ADELAY_OVERRIDE ?? 0.35;
-
-// 口型-语音时间偏移补偿（帧数）：AVTR-1 模型固有口型滞后（音频包络 vs 唇部开合
-// 互相关实测：爆破音段 +3 帧/120ms、自然语音段 +2 帧/80ms，官方 generate_offline
-// 同幅——模型属性非链路错位），视频提前 3 帧（120ms）补偿。
-// 可用 ?vlag=N 覆盖（正负号：target = pos*25 - videoLagFrames）
-const VLAG_OVERRIDE = (() => {
-  const v = parseInt(new URLSearchParams(location.search).get("vlag") || "", 10);
-  return Number.isFinite(v) ? v : null;
-})();
-const BACKEND_VLAG = { avtr1: -3 };
-let videoLagFrames = VLAG_OVERRIDE ?? 0;
-
-function playPCM(int16) {
-  const p = ensurePlayer();
-  const buf = p.ctx.createBuffer(1, int16.length, SAMPLE_RATE);
-  const data = buf.getChannelData(0);
-  for (let i = 0; i < int16.length; i++) data[i] = int16[i] / 0x8000;
-  const src = p.ctx.createBufferSource();
-  src.buffer = buf;
-  src.connect(p.ctx.destination);
-  const prevEnd = p.nextStartTime;  // 本 delta 排程前的音频链尾（= 上一段回复的播放结束点）
-  const start = Math.max(p.ctx.currentTime + (avatarOn ? avatarAudioDelay : 0.02), prevEnd);
-  src.start(start);
-  p.nextStartTime = start + buf.duration;
-  if (needVideoBase) {
-    if (prevEnd - p.ctx.currentTime < 0.3) {
-      // 常规：上一段回复已播完。本 response 首个音频 delta:记录它在 ctx 时间轴上的
-      // 起点作为视频对齐基准。同时清空队列:里面滞留的是上一回复的"闭嘴尾帧"
-      // (句尾零填充生成),不清掉会被当作本回复的开头播出,嘴型整体慢 ~1s
-      responseAudioBase = start;
-      videoFrameIdx = 0;
-      frameQueue.length = 0;
-    } else {
-      // 注入式连续回复（垫场→打分）：生成远快于播放，新回复 delta 到达时上一段
-      // 还在播。此时绝不能重锚+清队——上一段的真帧被扔掉、数字人又不会补发，
-      // 视频就会半路定格（音频还在放）。音频链是连续的，帧按到达顺序从属同一
-      // 时钟即可；只砍掉旧回复的"闭嘴尾帧"（零填充生成，对应播放中不存在的静音段）
-      const oldTotalFrames = Math.floor((prevEnd - responseAudioBase) * 25);
-      const keep = Math.max(0, oldTotalFrames - videoFrameIdx);
-      if (frameQueue.length > keep) frameQueue.length = keep;
-    }
-    needVideoBase = false;
-  }
-}
-
-function flushPlayback() {
-  // 打断：整个 AudioContext 关掉重建，已排程的音频全部作废
-  if (player) {
-    player.ctx.close();
-    player = null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// WebRTC 音画（rtc.enabled 时）：RTP 轨原生音画同步，<video> 直挂远程流
+// WebRTC 音画：RTP 轨原生音画同步，<video> 直挂远程流
 // ---------------------------------------------------------------------------
 
 async function startRTC() {
@@ -225,7 +135,7 @@ async function startRTC() {
     }),
   });
   if (!res.ok) {
-    addLine("sys", "", `⚠ WebRTC 建连失败（HTTP ${res.status}），回退 WS 模式看静态图`);
+    addLine("sys", "", `⚠ WebRTC 建连失败（HTTP ${res.status}），看静态图`);
     if (pc === conn) pc = null;
     conn.close();
     return;
@@ -365,129 +275,8 @@ function appendAssistantDelta(delta) {
 }
 
 // ---------------------------------------------------------------------------
-// 数字人画面
+// 数字人画面（RTC 模式：<video> 挂远程流；未连接时显示静态肖像）
 // ---------------------------------------------------------------------------
-
-// 画布上下文一次性创建：alpha:false 跳过上屏混合、desynchronized 降撕裂
-//（浏览器不支持会自动忽略）；平滑质量拉满——移动端糊就是默认平滑质量太低
-const avatarCtx = els.canvas.getContext("2d", { alpha: false, desynchronized: true });
-avatarCtx.imageSmoothingEnabled = true;
-avatarCtx.imageSmoothingQuality = "high";
-
-let frameDecodeMs = 0;
-let frameDecodeCount = 0;
-
-async function drawFrame(jpegBytes) {
-  try {
-    const t0 = performance.now();
-    const bitmap = await createImageBitmap(new Blob([jpegBytes], { type: "image/jpeg" }));
-    frameDecodeMs += performance.now() - t0;
-    frameDecodeCount++;
-    avatarCtx.drawImage(bitmap, 0, 0, els.canvas.width, els.canvas.height);
-    bitmap.close();
-    els.avatarWrap.classList.add("streaming");
-  } catch {
-    /* 坏帧丢弃 */
-  }
-}
-
-// 视频帧队列 + 音画对齐：帧按到达顺序编号（每个 response 从 0 起），
-// 播放计时器按"音频已播秒数 × 25fps"放帧；视频落后音频 >1s 时跳帧追赶
-const FRAME_QUEUE_MAX = 1000;  // ~40s 内容。供帧天然快于播放(TTS 1.5x 流式),
-                               // 队列会持续增长,必须给足深度;丢帧绝不递增序号
-                               // (否则嘴型整体超前,越丢越乱)
-const frameQueue = [];
-let frameTimer = null;
-let responseAudioBase = 0;   // 当前 response 音频在 ctx 时间轴上的起点
-let videoFrameIdx = 0;       // 当前 response 已消费（播放或丢弃）的帧序号
-let needVideoBase = true;    // 下一个音频 delta 是 response 起点（response.done/打断后置位）
-const idleQueue = [];        // idle 帧缓冲（无音频时钟，按 ~25fps 均匀释放）
-let lastIdleDraw = 0;
-
-function enqueueFrame(jpegBytes) {
-  frameRecvCount++;
-  if (frameQueue.length >= FRAME_QUEUE_MAX) {
-    frameQueue.shift();  // 极端情况丢最旧帧:嘴型最多滞后,绝不超前(滞后比超前自然)
-    return;
-  }
-  frameQueue.push(jpegBytes);
-}
-
-function startFramePlayback() {
-  if (frameTimer) return;
-  // rAF 驱动(60Hz,跟屏幕刷新):setInterval(40ms) 在 iOS 上漂移严重,
-  // 放帧跟不上音频时钟,越落越多再跳帧,表现为一卡一卡
-  const tick = () => {
-    frameTimer = requestAnimationFrame(tick);
-    // 音频播放排空：「说话」结束回待机（角标隐藏；句尾后的 idle 帧已排在
-    // 说话帧队列尾沿时钟连播，见下行二进制 handler 的注释，无需在此切换通道）
-    if (avatarState === "speaking" && player && player.nextStartTime <= player.ctx.currentTime) {
-      setAvatarState("idle");
-    }
-    // idle 帧均匀释放：服务端 0.2s 一簇 5 帧推流，到就画会成簇卡顿
-    //（说话结束从时钟播放切换到直画的那一刻尤其明显）
-    const now = performance.now();
-    if (idleQueue.length > 0 && now - lastIdleDraw >= 38) {
-      lastIdleDraw = now;
-      drawFrame(idleQueue.shift());
-    }
-    if (!player || frameQueue.length === 0) return;
-    const pos = player.ctx.currentTime - responseAudioBase;  // 本 response 已播音频秒数
-    if (pos < 0) return;
-    const target = Math.floor(pos * 25) - videoLagFrames;
-    // 落后 >1s：跳到最新，保同步优先于完整
-    while (frameQueue.length > 0 && videoFrameIdx < target - 25) {
-      frameQueue.shift();
-      videoFrameIdx++;
-    }
-    if (frameQueue.length > 0 && videoFrameIdx <= target) {
-      drawFrame(frameQueue.shift());
-      videoFrameIdx++;
-    }
-  };
-  frameTimer = requestAnimationFrame(tick);
-}
-
-// 调试角标（URL 加 ?debug=1 开启）：音频缓冲时长 / 帧队列深度 / 实际到帧率
-let frameRecvCount = 0;
-let frameRecvWindowStart = performance.now();
-if (new URLSearchParams(location.search).has("debug")) {
-  const dbg = document.createElement("div");
-  dbg.style.cssText =
-    "position:fixed;right:8px;bottom:8px;background:#000c;color:#0f0;" +
-    "font:12px monospace;padding:6px 10px;border-radius:6px;z-index:99;white-space:pre";
-  document.body.appendChild(dbg);
-  setInterval(async () => {
-    if (rtcEnabled) {
-      // RTC 模式：WebRTC 原生统计（到帧率/抖动/码率）
-      if (!pc) { dbg.textContent = "RTC 未建连"; return; }
-      let text = "";
-      const stats = await pc.getStats();
-      stats.forEach((r) => {
-        if (r.type === "inbound-rtp" && r.kind === "video") {
-          text =
-            `视频: ${(r.framesPerSecond || 0).toFixed(1)}fps 解码:${r.framesDecoded || 0} 丢包:${r.packetsLost || 0}\n` +
-            `抖动: ${((r.jitter || 0) * 1000).toFixed(0)}ms 累计: ${((r.bytesReceived || 0) / 131072).toFixed(1)}Mb\n` +
-            `连接: ${pc.connectionState}`;
-        }
-      });
-      dbg.textContent = text || "RTC 统计等待中";
-      return;
-    }
-    const now = performance.now();
-    const fps = frameRecvCount / ((now - frameRecvWindowStart) / 1000);
-    frameRecvCount = 0;
-    frameRecvWindowStart = now;
-    const audioBuf = player ? Math.max(0, player.nextStartTime - player.ctx.currentTime) : 0;
-    const pos = player ? Math.max(0, player.ctx.currentTime - responseAudioBase) : 0;
-    const decodeAvg = frameDecodeCount ? (frameDecodeMs / frameDecodeCount) : 0;
-    frameDecodeMs = 0;
-    frameDecodeCount = 0;
-    dbg.textContent =
-      `audio缓冲: ${audioBuf.toFixed(2)}s\n帧队列: ${frameQueue.length}\n到帧率: ${fps.toFixed(1)}fps\n` +
-      `解码: ${decodeAvg.toFixed(0)}ms/帧\n音频位置: ${pos.toFixed(2)}s\n帧序号: ${videoFrameIdx} (目标 ${Math.floor(pos * 25)})`;
-  }, 1000);
-}
 
 function showStill(personaId) {
   els.avatarWrap.classList.remove("streaming");
@@ -528,14 +317,7 @@ function setAvatarState(state) {
 
 const realtimeHandlers = {
   "input_audio_buffer.speech_started"() {
-    // 用户开口（打断）。RTC 模式：服务端 flush 音画队列，本地无需动作；
-    // WS 模式：本地播放队列+帧队列清空，嘴型跟着归位
-    if (!rtcEnabled) {
-      flushPlayback();
-      frameQueue.length = 0;
-      idleQueue.length = 0;
-      needVideoBase = true;
-    }
+    // 用户开口（打断）：服务端 flush 音画队列，本地只需更新状态
     assistantLine = null;
     setAvatarState("listening");
   },
@@ -568,17 +350,14 @@ const realtimeHandlers = {
     assistantLine = null;
   },
   "response.output_audio.delta"(event) {
-    // RTC 模式事件被剥了音频体（音频走音轨），但事件本身仍标志「开口」
+    // 事件被服务端剥了音频体（音频走 RTC 音轨），但事件本身仍标志「开口」
     if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
-    if (event.delta && !rtcEnabled) playPCM(int16FromBase64(event.delta));
   },
   "response.audio.delta"(event) {
     if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
-    if (event.delta && !rtcEnabled) playPCM(int16FromBase64(event.delta));
   },
   "response.done"() {
     assistantLine = null;
-    needVideoBase = true;  // 下一个音频 delta 开启新 response,重设视频对齐基准
     if (avatarState === "thinking") setAvatarState("idle");  // 无音频回复的兜底
   },
   error(event) {
@@ -596,28 +375,45 @@ function handleTextMessage(data) {
   if (event.type === "vox.status") {
     avatarOn = event.avatar === "on";
     currentPersona = event.persona;
-    if (ADELAY_OVERRIDE == null && event.avatar_backend) {
-      avatarAudioDelay = BACKEND_ADELAY[event.avatar_backend] ?? 0.8;
-    }
-    if (VLAG_OVERRIDE == null && event.avatar_backend) {
-      videoLagFrames = BACKEND_VLAG[event.avatar_backend] ?? 0;
-    }
     els.fallback.classList.toggle("hidden", avatarOn);
     updatePersonaBar();
     showStill(currentPersona);
-    // 下行音画模式：RTC（原生同步）或 WS 兜底（手搓帧调度）
     rtcEnabled = !!(event.rtc && event.rtc.enabled);
     if (rtcEnabled) {
       startRTC().catch((e) =>
         addLine("sys", "", `⚠ WebRTC 建连异常: ${e.message}`)
       );
-    } else {
-      startFramePlayback();
     }
     return;
   }
   const handler = realtimeHandlers[event.type];
   if (handler) handler(event);
+}
+
+// ---------------------------------------------------------------------------
+// 调试角标（URL 加 ?debug=1 开启）：WebRTC 原生统计（到帧率/抖动/丢包/码率）
+// ---------------------------------------------------------------------------
+
+if (new URLSearchParams(location.search).has("debug")) {
+  const dbg = document.createElement("div");
+  dbg.style.cssText =
+    "position:fixed;right:8px;bottom:8px;background:#000c;color:#0f0;" +
+    "font:12px monospace;padding:6px 10px;border-radius:6px;z-index:99;white-space:pre";
+  document.body.appendChild(dbg);
+  setInterval(async () => {
+    if (!pc) { dbg.textContent = "RTC 未建连"; return; }
+    let text = "";
+    const stats = await pc.getStats();
+    stats.forEach((r) => {
+      if (r.type === "inbound-rtp" && r.kind === "video") {
+        text =
+          `视频: ${(r.framesPerSecond || 0).toFixed(1)}fps 解码:${r.framesDecoded || 0} 丢包:${r.packetsLost || 0}\n` +
+          `抖动: ${((r.jitter || 0) * 1000).toFixed(0)}ms 累计: ${((r.bytesReceived || 0) / 131072).toFixed(1)}Mb\n` +
+          `连接: ${pc.connectionState}`;
+      }
+    });
+    dbg.textContent = text || "RTC 统计等待中";
+  }, 1000);
 }
 
 // ---------------------------------------------------------------------------
@@ -655,19 +451,14 @@ function switchPersona(id) {
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  // ?rtc=0：本会话回退纯 WS 模式（弱网 A/B 对比用，丢帧式降级比 RTC 卡死体感好）
   // ?alead=毫秒：音频压后量（音画对齐补偿，服务端调度器执行），默认 250
   const q = new URLSearchParams(location.search);
-  const params = new URLSearchParams();
-  if (q.get("rtc") === "0") params.set("rtc", "0");
-  if (q.get("alead")) params.set("alead", q.get("alead"));
-  const qs = params.toString();
-  ws = new WebSocket(`${proto}://${location.host}/ws${qs ? "?" + qs : ""}`);
-  ws.binaryType = "arraybuffer";
+  const qs = q.get("alead") ? `?alead=${encodeURIComponent(q.get("alead"))}` : "";
+  ws = new WebSocket(`${proto}://${location.host}/ws${qs}`);
   ws.onopen = () => {
     setStatus("已连接", "live");
     els.micBtn.disabled = false;
-    // 帧播放/RTC 建连等 vox.status 到了按模式启动
+    // RTC 建连等 vox.status 到了启动
   };
   ws.onclose = () => {
     setStatus("已断开", "warn");
@@ -683,29 +474,8 @@ function connect() {
   ws.onmessage = (msg) => {
     if (typeof msg.data === "string") {
       handleTextMessage(msg.data);
-    } else {
-      const bytes = new Uint8Array(msg.data);
-      if (bytes[0] === FRAME_TYPE_JPEG) {
-        // tag 0x00=idle：无音频时钟（待机微动/倾听反应），进 idleQueue 按
-        // ~25fps 均匀释放（成簇直画会卡）；tag 0x01=speech：照常排队
-        if (bytes[1] === FRAME_TAG_IDLE) {
-          // 句尾平滑（2026-08-04 终版）：说话帧队列未空（或音频仍在播）时，idle 帧
-          // 排进同一队列、沿音频时钟 25fps 连播——引擎内容本就连贯（尾帧回落→idle
-          // 微动），按到达顺序播即无跳变也无断供。这正是官方 demo 的播放模型
-          // （帧按内容顺序持续上屏）。完全空闲（无音频时钟）才走 idleQueue 直画。
-          // 旧实现两处败笔：①积压期丢 idle 帧→接管瞬间姿态跳变；②drain 后才
-          // flush→队列耗尽到尾帧到达之间定格。
-          if (frameQueue.length > 0 || (player && player.nextStartTime > player.ctx.currentTime)) {
-            enqueueFrame(bytes.subarray(2));
-          } else {
-            if (idleQueue.length >= 10) idleQueue.shift();  // 满则丢最旧
-            idleQueue.push(bytes.subarray(2));
-          }
-        } else {
-          enqueueFrame(bytes.subarray(2));
-        }
-      }
     }
+    // 服务端不再发二进制帧（音画全走 RTC），忽略任何二进制消息
   };
 }
 
@@ -744,7 +514,7 @@ els.micBtn.onclick = async () => {
     addLine("sys", "", `⚠ 麦克风不可用: ${e.message}`);
     return;
   }
-  if (SOLO_MODE) return;  // solo 模式不开摄像头（画面隐藏，截帧打分也不可用）
+  if (SOLO_MODE) return;  // solo 模式不开摄像头
   try {
     await startCamera();
   } catch (e) {

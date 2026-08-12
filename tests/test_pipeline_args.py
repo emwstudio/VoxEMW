@@ -11,11 +11,10 @@ def _config():
     return {
         "vad": {"backend": "silero", "min_silence_ms": 600},
         "stt": {
-            "backend": "qwen3asr",
-            "model_name": "Qwen/Qwen3-ASR-1.7B-hf",
+            "backend": "sensevoice",
+            "model_name": "iic/SenseVoiceSmall",
             "device": "cuda",
-            "torch_dtype": "bfloat16",
-            "language": "Chinese",
+            "language": "zh",
             "gen_max_new_tokens": 256,
         },
         "llm": {
@@ -109,8 +108,8 @@ def test_render_s2s_argv_transformers_llm():
 
 def test_stt_setup_kwargs():
     kwargs = stt_setup_kwargs(_config())
-    assert kwargs["model_name"] == "Qwen/Qwen3-ASR-1.7B-hf"
-    assert kwargs["language"] == "Chinese"
+    assert kwargs["model_name"] == "iic/SenseVoiceSmall"
+    assert kwargs["language"] == "zh"
     assert kwargs["gen_kwargs"] == {"max_new_tokens": 256}
 
 

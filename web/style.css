@@ -99,7 +99,6 @@ body.solo .avatar-wrap { aspect-ratio: 16 / 9; }
   background: rgba(13, 17, 23, 0.6);
 }
 .avatar-wrap img,
-.avatar-wrap canvas,
 .avatar-wrap video {
   position: absolute;
   inset: 0;
@@ -107,11 +106,8 @@ body.solo .avatar-wrap { aspect-ratio: 16 / 9; }
   height: 100%;
   object-fit: cover;
 }
-.avatar-wrap canvas,
 .avatar-wrap video { display: none; }
-.avatar-wrap.streaming canvas { display: block; }
-/* WebRTC 模式：video 上屏，canvas 让位（DOM 序 video 在 canvas 后，天然置顶） */
-.avatar-wrap.webrtc canvas { display: none; }
+/* WebRTC 模式：video 上屏（DOM 序 video 在 img 后，天然置顶） */
 .avatar-wrap.webrtc.streaming video { display: block; }
 .avatar-fallback {
   position: absolute;

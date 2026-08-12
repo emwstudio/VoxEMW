@@ -33,7 +33,7 @@ class AVSyncScheduler:
     音频若到达即播，每段回复开头嘴都比声音慢半拍（WS 时代前端用
     AVATAR_AUDIO_DELAY=0.35s 补偿）。这里在服务端压后音频：队列从空到非空
     （新回复/打断后）时，音频等 lead 秒再播，让渲染追上来。
-    连续积压的多段回复（垫音→正式）队列不空，无额外等待。
+    连续积压的多段回复队列不空，无额外等待。
     """
 
     def __init__(self, audio_lead: float = DEFAULT_AUDIO_LEAD) -> None:
@@ -67,6 +67,10 @@ class AVSyncScheduler:
             # 一律丢弃——否则会触发丢尾规则误清空队列（误杀新回复的真帧）
             self.stale_dropped += 1
             return
+        # 无消费者（RTC 未建连/断开）时防无限堆积：裸帧 2.76MB/帧，
+        # 不加帽就是内存泄漏。超帽丢最旧——反正没人看
+        while len(self._frames) >= 125:
+            self._frames.popleft()
         self._frames.append((jpeg, is_speech))
         self._frame_event.set()
 

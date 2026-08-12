@@ -5,7 +5,7 @@
 
 - 不 vendor、不打源码补丁：pip 包 speech-to-speech 作依赖，启动时在进程内
   monkeypatch 两个工厂函数（get_stt_handler/get_tts_handler）注册自定义积木
-  （qwen3asr/sensevoice STT、voxcpm TTS），再复刻上游 main() 的启动流程。
+  （sensevoice STT、voxcpm TTS），再复刻上游 main() 的启动流程。
 - stt/tts 不在上游 CLI 的 Literal 选项里：先让 parse_arguments() 用默认值通过
   校验，之后直接改写 module_kwargs.stt/tts（Literal 只是类型注解，运行期不查）。
 - DeepSeek 关 thinking：上游 disable_thinking 发的是 vLLM 风格
@@ -32,18 +32,15 @@ DEFAULT_CONFIG = "configs/assistant.yaml"
 
 
 def _install_custom_handlers(config: dict) -> None:
-    """monkeypatch s2s_pipeline 的 STT/TTS/LLM 工厂，注册自定义积木。"""
+    """monkeypatch s2s_pipeline 的 STT/TTS 工厂，注册自定义积木。"""
     import speech_to_speech.s2s_pipeline as s2s
 
     orig_get_stt = s2s.get_stt_handler
     orig_get_tts = s2s.get_tts_handler
-    orig_get_llm = s2s.get_llm_handler
 
     def get_stt_handler(module_kwargs, stop_event, queue_in, queue_out, speculative_turns, *kwargs):
         stt_cls = None
-        if module_kwargs.stt == "qwen3asr":
-            from voxemw.pipeline.stt_qwen3asr import Qwen3ASRSTTHandler as stt_cls
-        elif module_kwargs.stt == "sensevoice":
+        if module_kwargs.stt == "sensevoice":
             from voxemw.pipeline.stt_sensevoice import SenseVoiceSTTHandler as stt_cls
         if stt_cls is None:
             return orig_get_stt(module_kwargs, stop_event, queue_in, queue_out, speculative_turns, *kwargs)
@@ -58,9 +55,11 @@ def _install_custom_handlers(config: dict) -> None:
         return handler
 
     def get_tts_handler(module_kwargs, stop_event, queue_in, queue_out, should_listen, *kwargs):
-        if module_kwargs.tts != "voxcpm":
+        tts_cls = None
+        if module_kwargs.tts == "voxcpm":
+            from voxemw.pipeline.tts_voxcpm import VoxCPMTTSHandler as tts_cls
+        if tts_cls is None:
             return orig_get_tts(module_kwargs, stop_event, queue_in, queue_out, should_listen, *kwargs)
-        from voxemw.pipeline.tts_voxcpm import VoxCPMTTSHandler
 
         setup = tts_setup_kwargs(config)
         # realtime 模式在 _build_realtime_pipeline_unit 里把 cancel_scope /
@@ -70,7 +69,7 @@ def _install_custom_handlers(config: dict) -> None:
             for key in ("cancel_scope", "speculative_turns"):
                 if key in injected:
                     setup.setdefault(key, injected[key])
-        return VoxCPMTTSHandler(
+        return tts_cls(
             stop_event,
             queue_in=queue_in,
             queue_out=queue_out,
@@ -78,26 +77,7 @@ def _install_custom_handlers(config: dict) -> None:
             setup_kwargs=setup,
         )
 
-    def get_llm_handler(module_kwargs, stop_event, text_prompt_queue, lm_response_queue,
-                        language_model_handler_kwargs, responses_api_language_model_handler_kwargs):
-        if module_kwargs.llm_backend != "chat-completions-rag":
-            return orig_get_llm(module_kwargs, stop_event, text_prompt_queue, lm_response_queue,
-                                language_model_handler_kwargs,
-                                responses_api_language_model_handler_kwargs)
-        from voxemw.pipeline.llm_rag import RagChatCompletionsHandler
-
-        return RagChatCompletionsHandler(
-            stop_event,
-            queue_in=text_prompt_queue,
-            queue_out=lm_response_queue,
-            setup_kwargs={
-                **vars(responses_api_language_model_handler_kwargs),
-                "knowledge": config.get("knowledge"),
-            },
-        )
-
     s2s.get_stt_handler = get_stt_handler
-    s2s.get_llm_handler = get_llm_handler
     s2s.get_tts_handler = get_tts_handler
 
 
