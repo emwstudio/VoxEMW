@@ -101,6 +101,14 @@ python3 -m venv .venv && .venv/bin/python -m pip install pytest pyyaml numpy aio
 - `docs/upgrade-regression.md` — 上游升级回归方案
 - `tests/` — 纯逻辑单测
 
+## 开发日记（视频）
+
+本项目的开发过程记录在 **电磁波Studio**——延迟优化、模型选型、踩坑全程都有视频，
+看不懂代码可以先看视频：
+
+- B站：https://space.bilibili.com/492428186
+- YouTube：https://www.youtube.com/@emw_studio
+
 ## 合规
 
 音色与肖像素材由使用者本人提供/授权；AI 生成内容需标注，不得用于冒充、欺诈。
