@@ -3,9 +3,6 @@
 [![version](https://img.shields.io/badge/version-v1.3.1-blue)](https://github.com/emwstudio/VoxEMW/tags)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6)](https://space.bilibili.com/492428186)
-[![抖音](https://img.shields.io/badge/抖音-电磁波Studio-000000)](https://v.douyin.com/PlI1sZaaboA/)
-[![小红书](https://img.shields.io/badge/小红书-电磁波Studio-ff2442)](https://xhslink.cn/m/2B0XSJKDWBg)
-[![微博](https://img.shields.io/badge/微博-电磁波Studio-ff8200)](https://weibo.com/u/1765053862)
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000)](https://www.youtube.com/@emw_studio)
 [![X](https://img.shields.io/badge/X-@emwstudio-1d9bf0)](https://x.com/emwstudio)
 
@@ -21,9 +18,6 @@
 本项目的开发过程记录在 **电磁波Studio**，看不懂代码可以先看视频：
 
 - B站：https://space.bilibili.com/492428186
-- 抖音：https://v.douyin.com/PlI1sZaaboA/
-- 小红书：https://xhslink.cn/m/2B0XSJKDWBg
-- 微博：https://weibo.com/u/1765053862
 - YouTube：https://www.youtube.com/@emw_studio
 - X：https://x.com/emwstudio
 
