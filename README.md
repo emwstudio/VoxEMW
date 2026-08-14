@@ -14,7 +14,7 @@
 [![Instagram](https://img.shields.io/badge/Instagram-@emwstudio.ai-e4405f?logo=instagram&logoColor=white)](https://www.instagram.com/emwstudio.ai)
 
 对着浏览器说话，屏幕里的数字人开口回答你。单卡 RTX 4090 即可运行，
-**你说完到听到第一声 ≈ 2.4s**。还能点舞——说「给我跳个冰摇」，
+**你说完到听到第一声 ≈ 2.4s**。还能点舞——说「给我跳个q冰摇」，
 他会回你一句开场白，然后灯光亮起、全屏开跳。
 
 链路：[huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech)
