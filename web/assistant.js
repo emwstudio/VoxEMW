@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260812a";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260813c";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -29,6 +29,8 @@ const els = {
   micBtn: document.getElementById("mic-btn"),
   imgUploadBtn: document.getElementById("img-upload-btn"),
   imgUpload: document.getElementById("img-upload"),
+  danceStage: document.getElementById("dance-stage"),
+  danceVideo: document.getElementById("dance-video"),
 };
 
 let ws = null;
@@ -314,6 +316,59 @@ function setAvatarState(state) {
 }
 
 // ---------------------------------------------------------------------------
+// 跳舞舞台：orchestrator 捕获点舞标记 → 回复播完发 vox.dance → 全屏播放素材
+// 播完/点击关闭后回执 vox.dance_done → 峰哥说收场白
+// ---------------------------------------------------------------------------
+
+let currentDance = null;
+
+// 大舞台跑马灯口号（梦想大舞台风格）：拼成两条首尾相接做无缝滚动
+const DANCE_SLOGANS = [
+  "有梦想你就来",
+  "峰哥大舞台，会跳你就来",
+  "只要舞步不停，梦想就不会停",
+  "今晚的舞台，为峰哥点亮",
+  "人生处处是舞台",
+];
+
+function initTicker() {
+  const track = document.getElementById("ticker-track");
+  const line = DANCE_SLOGANS.join("　✦　") + "　✦　";
+  track.textContent = line + line;  // 双份拼接，translateX(-50%) 无缝循环
+}
+
+function closeDance(notify = true) {
+  els.danceStage.classList.add("hidden");
+  els.danceStage.classList.remove("lights-on");
+  els.danceVideo.pause();
+  els.danceVideo.removeAttribute("src");
+  els.danceVideo.load();
+  if (notify && currentDance && ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "vox.dance_done", name: currentDance }));
+  }
+  currentDance = null;
+}
+
+function playDance(name) {
+  currentDance = name;
+  // 海报做模糊背景（竖屏视频两侧不虚黑）
+  els.danceStage.style.backgroundImage =
+    `url(/dance_media/${encodeURIComponent(name)}.jpg)`;
+  els.danceVideo.src = `/dance_media/${encodeURIComponent(name)}.mp4`;
+  // 服务端已等音频播干，这里只留 RTC 抖动缓冲的小尾巴
+  setTimeout(() => {
+    els.danceStage.classList.remove("hidden");
+    els.danceStage.classList.add("lights-on");
+    initTicker();
+    els.danceVideo.muted = false;  // 用户已有点麦手势，可出声
+    els.danceVideo.play().catch(() => {});
+  }, 400);
+}
+
+els.danceStage.onclick = () => closeDance(true);
+els.danceVideo.onended = () => closeDance(true);
+
+// ---------------------------------------------------------------------------
 // Realtime 事件处理
 // ---------------------------------------------------------------------------
 
@@ -386,6 +441,10 @@ function handleTextMessage(data) {
         addLine("sys", "", `⚠ WebRTC 建连异常: ${e.message}`)
       );
     }
+    return;
+  }
+  if (event.type === "vox.dance") {
+    playDance(event.name);
     return;
   }
   const handler = realtimeHandlers[event.type];

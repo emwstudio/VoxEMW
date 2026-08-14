@@ -298,6 +298,8 @@ class VoxCPMTTSHandler(BaseHandler[TTSIn, TTSOut]):
 
         # 与 voxcpm core.py 一致的文本预处理（换行/空白折叠）
         text = re.sub(r"\s+", " ", text.replace("\n", " ")).strip()
+        # 点舞标记 [[dance:舞名]] 只触发前端舞台，绝不朗读
+        text = re.sub(r"\[\[dance:[^\]]*\]\]", " ", text)
         # 滤掉括号动作/旁白（（笑）（拍大腿）等）:人设禁止朗读动作,但 LLM 仍偶尔输出;
         # 限 20 字内的短括号段,避免误伤正常括注。只影响 TTS,转写显示保留原文
         text = re.sub(r"[（(][^（）()]{1,20}[)）]", " ", text)

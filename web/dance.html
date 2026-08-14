@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>跳舞素材库 · VoxEMW</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260813c" />
+  <style>
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+    .panel h2 { font-size: 15px; margin-bottom: 12px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+    .row label { font-size: 13px; color: var(--muted); min-width: 72px; }
+    input[type=text], textarea, select {
+      flex: 1; background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px;
+    }
+    textarea { min-height: 64px; resize: vertical; font-family: inherit; }
+    input[type=file] { font-size: 12px; color: var(--muted); flex: none; }
+    .btn {
+      background: var(--accent); color: #fff; border: none; border-radius: 8px;
+      padding: 9px 22px; font-size: 14px; cursor: pointer;
+    }
+    .btn:disabled { opacity: .5; cursor: default; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    .card video { width: 100%; aspect-ratio: 16/9; background: #000; }
+    .card .meta { padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; }
+    .card .name { font-size: 14px; }
+    .card .del { font-size: 12px; color: var(--muted); background: none; border: none; cursor: pointer; }
+    .card .del:hover { color: #f85149; }
+    .card .status { padding: 18px 12px; font-size: 13px; color: var(--warn); text-align: center; }
+    .card .seed { font-size: 11px; color: var(--muted); margin-left: auto; margin-right: 8px; }
+    .hint { font-size: 12px; color: var(--muted); line-height: 1.7; }
+    .back { font-size: 13px; color: var(--accent); text-decoration: none; }
+    .fullbody-img { max-height: 160px; border-radius: 8px; border: 1px solid var(--border); }
+    .drv { padding: 0 12px 8px; font-size: 12px; color: var(--muted); }
+    .drv summary { cursor: pointer; }
+    .drv video { width: 100%; margin-top: 6px; border-radius: 8px; background: #000; }
+    .drv-video { flex: none; width: auto; max-width: 320px; max-height: 220px; border-radius: 8px; border: 1px solid var(--border); background: #000; }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <header class="topbar">
+      <h1>跳舞素材库</h1>
+      <a class="back" href="/">← 返回通话</a>
+    </header>
+
+    <section class="panel">
+      <h2>排新舞</h2>
+      <div class="row"><label>舞蹈名</label><input type="text" id="name" placeholder="如：科目三" /></div>
+      <div class="row"><label>驱动视频</label><input type="file" id="video" accept="video/*" /></div>
+      <div class="row" id="video-row" style="display:none">
+        <label>驱动视频预览</label>
+        <video id="video-preview" class="drv-video" controls preload="metadata"></video>
+      </div>
+      <div class="row"><label>全身照</label><input type="file" id="photo" accept="image/*" /><span class="hint" id="fullbody-hint"></span></div>
+      <div class="row" id="fullbody-row" style="display:none">
+        <label>全身照预览</label>
+        <img id="fullbody-preview" class="fullbody-img" alt="全身照" />
+      </div>
+      <div class="row">
+        <label>模式</label>
+        <select id="mode">
+          <option value="move">move（动画：照片按驱动视频动起来）</option>
+          <option value="mix" disabled>mix（替换模式，diffusers 管线暂未支持）</option>
+        </select>
+      </div>
+      <div class="row"><label>Prompt</label><textarea id="prompt"></textarea></div>
+      <div class="row"><label>Seed</label><input type="text" id="seed" placeholder="留空 = 随机抽卡；填数字 = 复现同一张卡" /></div>
+      <div class="row">
+        <button class="btn" id="submit">开始生成</button>
+        <span class="hint">生成期间数字人服务会暂停，完成后自动恢复。耗时≈每 5 秒视频 8 分钟（30 秒素材约 1 小时）</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>素材</h2>
+      <div class="cards" id="cards"></div>
+      <p class="hint" id="empty-hint">还没有素材。通话中对数字人说「给我跳个 XXX」即可点舞。</p>
+    </section>
+  </main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const DEFAULT_PROMPT = "人物外观描述：一位成年男性，短发微翘，蓄有山羊胡，神态放松。身穿卡其色宽松短袖T恤，下着黑色束脚运动裤，脚穿白色休闲板鞋，双手插在裤兜里。背景描述：纯白色背景，无其他杂物，光线均匀明亮。";
+$("prompt").value = DEFAULT_PROMPT;
+
+let lastSig = "";
+async function refresh() {
+  const data = await (await fetch("/api/dance/list")).json();
+  $("fullbody-hint").textContent = data.has_fullbody ? "" : "（首次必须上传）";
+  if (data.has_fullbody && !$("photo").files[0]) {
+    $("fullbody-row").style.display = "";
+    const img = $("fullbody-preview");
+    if (!img.src.includes("_fullbody")) img.src = "/dance_media/_fullbody.png";
+  }
+  // 数据没变就不重绘——否则 5s 轮询会把正在播的视频 DOM 冲掉（一直"加载"的元凶）
+  const sig = JSON.stringify([data.dances, data.jobs, data.driving]);
+  if (sig === lastSig) return;
+  lastSig = sig;
+  const cards = $("cards");
+  cards.innerHTML = "";
+  $("empty-hint").style.display = data.dances.length || Object.keys(data.jobs).length ? "none" : "";
+  for (const name of data.dances) {
+    const card = document.createElement("div");
+    card.className = "card";
+    const drv = data.driving && data.driving[name]
+      ? `<details class="drv"><summary>驱动视频</summary><video src="/dance_media/${encodeURIComponent(data.driving[name])}" poster="/dance_media/${encodeURIComponent(name)}.driving.jpg" controls preload="none"></video></details>`
+      : "";
+    // 同名重排时作业状态叠加在卡片上（否则用户以为没反应）
+    const job = data.jobs && data.jobs[name];
+    const busy = job && job !== "完成" ? `<div class="status"></div>` : "";
+    const seed = data.seeds && data.seeds[name] ? `<span class="seed">seed: ${data.seeds[name]}</span>` : "";
+    card.innerHTML = `<video src="/dance_media/${encodeURIComponent(name)}.mp4" poster="/dance_media/${encodeURIComponent(name)}.jpg" controls preload="metadata"></video>
+      ${drv}
+      ${busy}
+      <div class="meta"><span class="name"></span>${seed}<button class="del">删除</button></div>`;
+    if (busy) card.querySelector(".status").textContent = job;
+    card.querySelector(".name").textContent = name;
+    card.querySelector(".del").onclick = async () => {
+      if (!confirm(`删除「${name}」？`)) return;
+      await fetch("/api/dance/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+      refresh();
+    };
+    cards.appendChild(card);
+  }
+  for (const [name, status] of Object.entries(data.jobs)) {
+    if (data.dances.includes(name)) continue;
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `<div class="status"></div><div class="meta"><span class="name"></span></div>`;
+    card.querySelector(".status").textContent = status;
+    card.querySelector(".name").textContent = name;
+    cards.appendChild(card);
+  }
+}
+
+$("submit").onclick = async () => {
+  const name = $("name").value.trim();
+  const video = $("video").files[0];
+  if (!name || !video) { alert("舞蹈名和驱动视频必填"); return; }
+  const fd = new FormData();
+  fd.append("name", name);
+  fd.append("video", video, video.name);
+  if ($("photo").files[0]) fd.append("photo", $("photo").files[0], "fullbody.png");
+  fd.append("mode", $("mode").value);
+  fd.append("prompt", $("prompt").value);
+  fd.append("seed", $("seed").value.trim());
+  $("submit").disabled = true;
+  try {
+    const r = await (await fetch("/api/dance/upload", { method: "POST", body: fd })).json();
+    if (r.error) alert("失败：" + r.error);
+    $("name").value = ""; $("video").value = ""; $("photo").value = "";
+    $("fullbody-preview").src = "";  // 强制下轮 refresh 重拉库存全身照
+    $("video-row").style.display = "none"; $("video-preview").src = "";
+    refresh();
+  } finally {
+    $("submit").disabled = false;
+  }
+};
+
+$("photo").onchange = () => {
+  const f = $("photo").files[0];
+  if (f) {
+    $("fullbody-row").style.display = "";
+    $("fullbody-preview").src = URL.createObjectURL(f);
+  }
+};
+
+$("video").onchange = () => {
+  const f = $("video").files[0];
+  if (f) {
+    $("video-row").style.display = "";
+    $("video-preview").src = URL.createObjectURL(f);
+  }
+};
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

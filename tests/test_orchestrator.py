@@ -94,3 +94,22 @@ def test_transition_ignores_empty_delta():
     speaking, msgs = avatar_state_transition(
         {"type": "response.output_audio.delta", "delta": ""}, speaking=False)
     assert speaking is False and msgs == []
+
+
+def test_split_dance_marker():
+    from voxemw.avatar.orchestrator import split_dance_marker
+
+    assert split_dance_marker("[[dance:科目三]] 看好了啊") == ("科目三", " 看好了啊")
+    assert split_dance_marker("  [[dance:鬼步舞]]瞧你的")[0] == "鬼步舞"
+    assert split_dance_marker("没有标记的回复") == (None, "没有标记的回复")
+    assert split_dance_marker("[[dance:]][[dance: x") == (None, "[[dance:]][[dance: x")
+
+
+def test_is_marker_prefix():
+    from voxemw.avatar.orchestrator import is_marker_prefix
+
+    assert is_marker_prefix("[")
+    assert is_marker_prefix("[[dance:科目")
+    assert not is_marker_prefix("[[dance:科目三]]")  # 已完结不是前缀
+    assert not is_marker_prefix("正常说话")
+    assert not is_marker_prefix("x" * 60)  # 超长不可能
