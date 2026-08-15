@@ -1,6 +1,6 @@
 # VoxEMW · 数字人实时语音聊天助手
 
-[![version](https://img.shields.io/badge/version-v1.4.0-blue)](https://github.com/emwstudio/VoxEMW/tags)
+[![version](https://img.shields.io/badge/version-v1.5.0-blue)](https://github.com/emwstudio/VoxEMW/tags)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6?logo=bilibili&logoColor=white)](https://space.bilibili.com/492428186)
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000?logo=youtube&logoColor=white)](https://www.youtube.com/@emw_studio)
@@ -13,9 +13,8 @@
 [![TikTok](https://img.shields.io/badge/TikTok-@emw.studio-fe2c55?logo=tiktok&logoColor=white)](https://www.tiktok.com/@emw.studio)
 [![Instagram](https://img.shields.io/badge/Instagram-@emwstudio.ai-e4405f?logo=instagram&logoColor=white)](https://www.instagram.com/emwstudio.ai)
 
-对着浏览器说话，屏幕里的数字人开口回答你。单卡 RTX 4090 即可运行，
-**你说完到听到第一声 ≈ 2.4s**。还能点舞——说「给我跳个q冰摇」，
-他会回你一句开场白，然后灯光亮起、全屏开跳。
+对着浏览器说话，屏幕里的数字人开口回答你。**完全离线**（零 API 调用），
+单卡 RTX 4090 48G 全本地运行，**你说完到听到第一声 ≈ 2.0s**。
 
 链路：[huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech)
 实时语音管线 + [AVTR-1](https://github.com/avaturn-live/avtr-1) 数字人形象，
@@ -36,7 +35,7 @@
 - TikTok：https://www.tiktok.com/@emw.studio
 - Instagram：https://www.instagram.com/emwstudio.ai
 
-## 架构
+## 架构（五块积木）
 
 ```
 浏览器
@@ -44,37 +43,36 @@
   │  WS 控制/麦克风/转写（:8000）
   ▼
 orchestrator（CPU，:8000）
-  ├─→ s2s 语音管线（:8765）   VAD → STT SenseVoice → LLM DeepSeek → TTS VoxCPM2
-  ├─→ avatar 数字人服务（:8767） AVTR-1（TensorRT，说话 + 倾听双流）
-  └─→ 跳舞生成工人（离线子进程） Wan-Animate-2 蒸馏版（DiffSynth 管线，分段 + 超分）
+  ├─→ s2s 语音管线（:8765）   ①VAD → ②STT → ③LLM → ④TTS
+  ├─→ avatar 数字人服务（:8767） ⑤AVTR-1（TensorRT，说话 + 倾听双流）
+  └─→ llama-server（:8081）   本地 LLM（Qwen3.8-27B + MTP 投机解码）
 ```
 
-## 跳舞积木（Wan-Animate-2）
+| 积木 | 模型 | 说明 |
+|---|---|---|
+| ① VAD 判停 | Silero | 400ms 静默判停 |
+| ② STT 语音转写 | SenseVoiceSmall（FunASR） | ~0.1s |
+| ③ LLM 大脑 | Qwen3.8-27B（UD-Q6_K_XL + MTP） | llama.cpp 本地服务，首句 ~1s |
+| ④ TTS 语音合成 | VoxCPM2（音色克隆，流式） | 首音 ~0.1s |
+| ⑤ Avatar 数字人 | AVTR-1（TensorRT） | 唇同步 + 倾听/思考表情 |
 
-素材页 `/dance` 上传驱动视频 + 全身照 → 离线排队生成 → 通话中点舞即播：
-
-- **先排舞、后点舞**：生成是重活（14B 模型独占显卡，期间通话暂停，完成自动恢复）
-- **语音点舞**：说「给我跳个 XX」，他说完开场白 → 全屏舞台开播 → 播完自动回通话
-- **自动高清**：原生 416×736 生成后 Real-ESRGAN 超分到 720p 档
-- **抽卡**：Seed 留空随机（卡片上固化显示，填回即可复现）
-- **4090 实测**：81 帧/段 ≈ 6 分钟，15 秒成片 ≈ 45 分钟 + 超分 2.5 分钟
-
-## 延迟分解（4090 实测）
+## 延迟分解（4090 48G 全离线实测）
 
 | 环节 | 耗时 |
 |---|---|
-| VAD 判停 | ~0.5s |
+| VAD 判停 | ~0.4s |
 | STT（SenseVoiceSmall） | ~0.1s |
-| LLM 首句（DeepSeek v4-flash 流式） | ~1.4s |
+| LLM 首句（Qwen3.8-27B 本地流式） | ~1.0s |
 | TTS 首音（VoxCPM2 流式） | ~0.1s |
-| 唇同步（AVTR-1） | ~0.45s |
+| 唇同步缓冲（AVTR-1） | ~0.4s |
+| **合计** | **≈ 2.0s** |
 
-## 部署（AutoDL 单卡 4090）
+## 部署（AutoDL 单卡 4090 48G）
 
 ```bash
-cp .env.example .env.local        # 填 DEEPSEEK_API_KEY
+cp .env.example .env.local        # 在线回退时填 DEEPSEEK_API_KEY（离线版不需要）
 bash scripts/autodl_setup.sh      # 装环境 + 下模型（幂等）
-bash scripts/start_assistant.sh   # 起服务
+bash scripts/start_assistant.sh   # 一键起全栈（含本地 LLM llama-server）
 ```
 
 本地开隧道并打开页面：
@@ -91,9 +89,9 @@ bash scripts/tunnel.sh        # 转发 8000（网页）+ 3478（WebRTC 媒体）
 
 ## 特性
 
+- **完全离线**：本地 Qwen3.8-27B 当大脑（MTP 投机解码 41.7 tok/s），零 API 费用零外网依赖
 - **倾听反应**：你说话时数字人实时注视/微表情回应（AVTR-1 双流）
 - **待机微动**：无语音时眨眼/轻摇头，画面永远活着
-- **语音点舞**：跳舞积木接入通话链路，开场白 → 灯光舞台 → 播完回通话
 - **人设切换**：前端点 chip，人设 / 音色 / 肖像三路同切
 - **换图免重启**：页面右下角「换图」按钮，即传即换
 
@@ -107,7 +105,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install pytest pyyaml numpy aio
 ## 合规与许可
 
 - 代码以 [MIT](LICENSE) 发布；第三方模型遵循各自协议（speech-to-speech Apache-2.0、
-  VoxCPM2 Apache-2.0、AVTR-1 Community License、Wan-Animate-2 Apache-2.0 等），
+  VoxCPM2 Apache-2.0、Qwen3.8 Apache-2.0、AVTR-1 Community License 等），
   商用前请自行确认各模型协议
 - 音色与肖像素材由使用者本人提供/授权；AI 生成内容需标注，不得用于冒充、欺诈
 
@@ -115,8 +113,8 @@ python3 -m venv .venv && .venv/bin/python -m pip install pytest pyyaml numpy aio
 
 - speech-to-speech: https://github.com/huggingface/speech-to-speech
 - AVTR-1: https://github.com/avaturn-live/avtr-1
-- Wan-Animate-2: https://github.com/Wan-Video/Wan-Animate-2
-- DiffSynth-Studio: https://github.com/modelscope/DiffSynth-Studio
 - VoxCPM2: https://huggingface.co/openbmb/VoxCPM2
+- Qwen3.8（GGUF 量化）: https://huggingface.co/unsloth/Qwen3.8-27B-GGUF
+- llama.cpp: https://github.com/ggml-org/llama.cpp
 - FunASR（SenseVoice）: https://github.com/modelscope/FunASR
-- DeepSeek API: https://platform.deepseek.com
+- DeepSeek API（在线回退）: https://platform.deepseek.com

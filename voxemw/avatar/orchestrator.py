@@ -94,26 +94,6 @@ def classify_s2s_event(event: dict) -> tuple[bool, bool, bytes | None]:
     return True, etype in AVATAR_RESET_EVENTS, pcm
 
 
-DANCE_MARKER_RE = re.compile(r"\s*\[\[dance:([^\]]+)\]\]")
-
-
-def split_dance_marker(text: str) -> tuple[str | None, str]:
-    """回复开头的 [[dance:舞名]] 标记 → (舞名|None, 剥除后的文本)。纯函数便于单测。"""
-    m = DANCE_MARKER_RE.match(text)
-    if m:
-        return m.group(1).strip(), text[m.end():]
-    return None, text
-
-
-def is_marker_prefix(text: str) -> bool:
-    """text 是否仍可能是 [[dance:...]] 标记的未完结前缀（流式攒批用）。"""
-    t = text.lstrip()
-    if "]]" in t or len(t) > 48:
-        return False
-    prefix = "[[dance:"
-    return prefix.startswith(t) if len(t) <= len(prefix) else t.startswith(prefix)
-
-
 def avatar_state_transition(event: dict, speaking: bool) -> tuple[bool, list[dict]]:
     """s2s 事件 → avatar 状态控制消息（纯函数，便于单测）。
 
@@ -151,8 +131,7 @@ class Session:
     def __init__(self, browser_ws, s2s_url: str, avatar_url: str | None,
                  personas: dict, default_persona: str,
                  avatar_backend: str = "avtr1",
-                 rtc_sched=None, rtc_ice_servers: list | None = None,
-                 get_dances=None):
+                 rtc_sched=None, rtc_ice_servers: list | None = None):
         self.browser = browser_ws
         self.s2s_url = s2s_url
         self.avatar_url = avatar_url
@@ -166,11 +145,6 @@ class Session:
         self.s2s = None
         self.avatar = None
         self._avatar_speaking = False  # 是否已向 avatar 下发 speech_active=on
-        self._get_dances = get_dances or (lambda: [])  # 素材库舞名（点舞用）
-        self._dance_buf = ""          # 回复开头攒批（点舞标记探测）
-        self._dance_checked = False   # 本回复标记探测是否已结论
-        self._pending_dance = None    # 捕获到的舞名，等他说完（response.done）再起舞台
-        self._dance_epoch = 0         # 点舞代际：用户开口即+1，作废等待中的起播任务
 
     async def run(self) -> None:
         import websockets
@@ -226,17 +200,6 @@ class Session:
         persona = self.personas[persona_id]
         self.persona_id = persona_id
         instructions = persona["text"]
-        dances = self._get_dances()
-        if dances:
-            instructions += (
-                "\n\n# 隐藏技能：跳舞（系统指令，优先级最高）\n"
-                "你是会跳舞的——素材库里已经排好了你的跳舞视频：" + "、".join(dances)
-                + "。用户点舞且舞名在列表中时，回复必须以 [[dance:舞名]] 开头"
-                  "（精确用列表名，该标记会被系统吃掉、不会播出），然后正常说开场白；"
-                  "你说完后系统会自动全屏播放你的跳舞视频。不要说自己不会跳。"
-                  "列表没有的舞就按你的风格调侃回绝，让用户去素材库排新舞。"
-            )
-            logger.info("点舞列表已注入人设: %s", dances)
         await self.s2s.send(json.dumps(build_session_update(persona_id, instructions)))
         if self.avatar is not None:
             image = persona.get("ref_image")
@@ -262,10 +225,6 @@ class Session:
                 continue
             if event.get("type") == "vox.drained":
                 continue  # 帧合流后该信号仅作时序参考，无需动作
-            if event.get("type") == "vox.dance_done":
-                # 舞台播完静默回通话（试过自动收场白，用户反馈多余，2026-08-13 去掉）
-                logger.info("舞蹈播完: %s", event.get("name", ""))
-                continue
             # listen 轨 tee：用户说话段（server VAD 门控，防环境噪音/回声引起多余反应）
             # 的麦克风音频转发给 avatar 做 active listening（官方 listen 轨常开，
             # 这里按段转发是 deliberate 的门控收敛）
@@ -285,19 +244,6 @@ class Session:
                 await self.browser.send_str(raw)
                 continue
             self._track_dialog_state(event)
-            etype = event.get("type", "")
-            # 回复播完：有 pending 点舞则等音频播干再通知前端起舞台（先说后跳）
-            if etype == "response.done" and self._pending_dance:
-                name = self._pending_dance
-                self._pending_dance = None
-                asyncio.create_task(self._fire_dance_when_drained(name, self._dance_epoch))
-            # 点舞标记捕获：[[dance:舞名]] 在回复开头的转写流里——剥掉不上字幕，
-            # 转成 vox.dance 事件给前端（舞台播放）
-            if etype in ("response.output_audio_transcript.delta",
-                         "response.output_text.delta",
-                         "response.output_audio_transcript.done"):
-                if await self._handle_transcript_event(event):
-                    continue
             relay, reset_avatar, pcm = classify_s2s_event(event)
             if pcm is not None and self.sched is not None:
                 self.sched.feed_audio(pcm)  # RTC 音频轨（与喂 avatar 同一股流）
@@ -324,62 +270,12 @@ class Session:
                 else:
                     await self.browser.send_str(raw)
 
-    async def _fire_dance_when_drained(self, name: str, epoch: int) -> None:
-        """等回复音频在 RTC 轨道播干（buffered≈0）再发 vox.dance——response.done
-        时末句音频还在缓冲里，直接起舞台会打断他说话。用户开口（epoch 变）则作废。"""
-        try:
-            for _ in range(150):  # 0.1s × 150 = 15s 兜底
-                if epoch != self._dance_epoch:
-                    return
-                if self.sched is None or self.sched.buffered_audio_seconds < 0.15:
-                    break
-                await asyncio.sleep(0.1)
-            if epoch != self._dance_epoch:
-                return
-            await self.browser.send_str(json.dumps({"type": "vox.dance", "name": name}))
-        except Exception:
-            logger.debug("舞台通知失败（连接已断？）", exc_info=True)
-
     def _track_dialog_state(self, event: dict) -> None:
         etype = event.get("type", "")
         if etype == "input_audio_buffer.speech_started":
             self._user_speaking = True
-            # 新一轮对话开始：重置点舞标记探测（防打断残留状态泄漏到下轮）
-            self._dance_checked = False
-            self._dance_buf = ""
-            self._pending_dance = None  # 打断时舞台未起，作废
-            self._dance_epoch += 1      # 作废等待中的起播任务
         elif etype == "input_audio_buffer.speech_stopped":
             self._user_speaking = False
-
-    async def _handle_transcript_event(self, event: dict) -> bool:
-        """转写事件拦截：探测/剥除回复开头的 [[dance:舞名]] 点舞标记。
-        返回 True = 已处理（调用方 continue）。标记在开头 48 字内，
-        未完结前缀先攒批不转发（防标记碎在多个 delta 里漏到字幕）。
-        注意：本管线按整句发 transcript.done（无 delta），检测必须在 done 路径生效。"""
-        etype = event.get("type", "")
-        is_done = etype.endswith(".done")
-        key = "transcript" if is_done else "delta"
-        text = event.get(key) or ""
-
-        if not self._dance_checked:
-            self._dance_buf += text
-            if is_marker_prefix(self._dance_buf):
-                return True  # 还在标记窗口，攒着
-            name, rest = split_dance_marker(self._dance_buf)
-            self._dance_checked = True
-            self._dance_buf = ""
-            if name and name in set(self._get_dances()):
-                logger.info("点舞: %s（等回复播完再起舞台）", name)
-                self._pending_dance = name
-            text = rest
-
-        if not text:
-            return True  # 标记剥完后无内容，不再转发
-        event = dict(event)
-        event[key] = text
-        await self.browser.send_str(json.dumps(event, ensure_ascii=False))
-        return True
 
     async def _avatar_to_rtc(self) -> None:
         """avatar 帧 → AVSyncScheduler（RTC 模式）：tag 0x01=speech / 0x00=idle。
@@ -512,161 +408,6 @@ def create_app(config: dict):
         logger.info("RTC 前端诊断: %s", json.dumps(body, ensure_ascii=False))
         return web.json_response({"ok": True})
 
-    # ── 跳舞素材库（Wan-Animate-2 离线生成 + 语音点舞）──
-    import queue as _queue
-    import subprocess
-    import threading
-
-    dance_dir = REPO_ROOT / "data" / "dance"
-    dance_dir.mkdir(parents=True, exist_ok=True)
-    fullbody_path = dance_dir / "_fullbody.png"  # 全身照（素材库级资产）
-    dance_jobs: dict[str, str] = {}              # 舞名 → 状态文案（页面轮询）
-    dance_queue: _queue.Queue = _queue.Queue()
-
-    def _dance_names() -> list[str]:
-        return sorted(p.stem for p in dance_dir.glob("*.mp4")
-                      if not p.stem.endswith(".driving"))
-
-    def _driving_map() -> dict[str, str]:
-        # 保留的驱动视频（预览用）：舞名 → 文件名（排除同名的 .driving.jpg 封面）
-        return {p.name.split(".driving")[0]: p.name
-                for p in dance_dir.glob("*.driving.*")
-                if p.suffix.lower() in (".mp4", ".mov", ".webm", ".mkv")}
-
-    def _dance_worker_loop() -> None:
-        """串行生成：14B 模型要整张卡，先停 avatar + pipeline，完成后拉起。"""
-        while True:
-            job = dance_queue.get()
-            name, ref_image, driving, mode, prompt, seed = job
-            try:
-                dance_jobs[name] = "停数字人服务…"
-                subprocess.run(["pkill", "-f", "voxemw.avatar.service"], check=False)
-                subprocess.run(["pkill", "-f", "voxemw.pipeline.launch"], check=False)
-                time.sleep(6)
-                dance_jobs[name] = "生成中（数分钟，勿通话）…"
-                out = str(dance_dir / f"{name}.mp4")
-                # 实例内存限流偶发 SIGKILL，失败自动重试一次
-                for attempt in (1, 2):
-                    try:
-                        subprocess.run([
-                            str(REPO_ROOT / ".venv/bin/python"), "-m", "voxemw.dance_worker",
-                            "--ref-image", ref_image, "--driving-video", driving,
-                            "--name", name, "--mode", mode, "--prompt", prompt,
-                            "--seed", seed,
-                            "--out", out,
-                        ], cwd=str(REPO_ROOT), check=True, timeout=7200)
-                        break
-                    except subprocess.CalledProcessError:
-                        if attempt == 2:
-                            raise
-                        logger.warning("生成被中断，自动重试: %s", name)
-                        dance_jobs[name] = "被系统中断，自动重试中…"
-                        time.sleep(10)
-                # 自动超分（Real-ESRGAN anime6B，~3min）：原生 416x736 → 720p 档成片
-                dance_jobs[name] = "超分出高清版…"
-                hd = str(dance_dir / f"{name}.hd_tmp.mp4")
-                try:
-                    subprocess.run([
-                        str(REPO_ROOT / ".venv/bin/python"), "scripts/upscale_video.py",
-                        out, hd,
-                    ], cwd=str(REPO_ROOT), check=True, timeout=1200)
-                    os.replace(hd, out)  # 原子替换：HD 覆盖原生分辨率
-                except Exception:
-                    logger.exception("超分失败，保留原生分辨率版: %s", name)
-                    try:
-                        os.unlink(hd)
-                    except OSError:
-                        pass
-                # 生成封面图（页面卡片 poster）
-                subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", out,
-                                "-frames:v", "1", "-vf", "scale=480:-1",
-                                str(dance_dir / f"{name}.jpg")], check=False)
-                dance_jobs[name] = "完成"
-            except Exception as e:
-                logger.exception("跳舞素材生成失败: %s", name)
-                dance_jobs[name] = f"失败：{e}"
-            finally:
-                # 拉起 pipeline（STT/LLM/TTS），再拉起 avatar 服务（无论成败）
-                config = os.environ.get("VOXEMW_CONFIG", "configs/assistant.yaml")
-                subprocess.Popen(
-                    [str(REPO_ROOT / ".venv/bin/python"), "-m", "voxemw.pipeline.launch",
-                     "--config", config],
-                    cwd=str(REPO_ROOT), env={**os.environ},
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.Popen(["bash", "scripts/restart_avatar.sh"],
-                                 cwd=str(REPO_ROOT),
-                                 env={**os.environ},
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                # 驱动视频保留在素材目录（name.driving.mp4），供页面预览对照
-
-    threading.Thread(target=_dance_worker_loop, daemon=True).start()
-
-    async def dance_page(_request):
-        return web.FileResponse(REPO_ROOT / "web" / "dance.html")
-
-    async def api_dance_list(_request):
-        return web.json_response({
-            "dances": _dance_names(),
-            "jobs": dict(dance_jobs),
-            "driving": _driving_map(),
-            "seeds": {p.stem: p.read_text().strip()
-                      for p in dance_dir.glob("*.seed")},
-            "has_fullbody": fullbody_path.is_file(),
-        })
-
-    async def api_dance_upload(request):
-        form = await request.post()
-        video = form.get("video")
-        name = (form.get("name") or "").strip()
-        mode = str(form.get("mode", "move"))
-        prompt = str(form.get("prompt", "")).strip()
-        if video is None or not getattr(video, "filename", ""):
-            return web.json_response({"error": "缺少驱动视频（字段名 video）"}, status=400)
-        if not name:
-            return web.json_response({"error": "缺舞蹈名（字段名 name）"}, status=400)
-        if mode not in ("move", "mix"):
-            return web.json_response({"error": "mode 只能是 move/mix"}, status=400)
-        # 全身照：随单上传则更新库级资产；没传用库存
-        photo = form.get("photo")
-        if photo is not None and getattr(photo, "filename", ""):
-            fullbody_path.write_bytes(photo.file.read())
-        if not fullbody_path.is_file():
-            return web.json_response({"error": "缺少全身照（首次必须上传）"}, status=400)
-        # 驱动视频存进素材目录（生成完保留，供页面预览对照）+ 封面图
-        driving_path = dance_dir / f"{name}.driving{Path(video.filename).suffix or '.mp4'}"
-        driving_path.write_bytes(video.file.read())
-        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(driving_path),
-                        "-frames:v", "1", "-vf", "scale=480:-1",
-                        str(dance_dir / f"{name}.driving.jpg")], check=False)
-        dance_jobs[name] = "排队中…"
-        seed = str(form.get("seed", "")).strip() or "-1"  # 空=随机抽卡
-        if seed == "-1":
-            # 主动重抽：清掉旧 seed 卡，worker 会抽新的并重新固化
-            # （.seed 复用只为同一任务内的断点续跑/被杀重试服务）
-            (dance_dir / f"{name}.seed").unlink(missing_ok=True)
-        dance_queue.put((name, str(fullbody_path), str(driving_path), mode, prompt, seed))
-        return web.json_response({"name": name, "status": "queued"})
-
-    async def api_dance_delete(request):
-        body = await request.json()
-        name = (body or {}).get("name", "")
-        target = dance_dir / f"{name}.mp4"
-        ok = target.is_file()
-        if ok:
-            target.unlink()
-        thumb = dance_dir / f"{name}.jpg"
-        if thumb.is_file():
-            thumb.unlink()
-        seed_f = dance_dir / f"{name}.seed"
-        if seed_f.is_file():
-            seed_f.unlink()
-        for p in dance_dir.glob(f"{name}.driving.*"):
-            p.unlink()
-        import shutil
-        shutil.rmtree(dance_dir / ".segments" / name, ignore_errors=True)
-        dance_jobs.pop(name, None)
-        return web.json_response({"deleted": ok})
-
     async def ws_handler(request):
         ws = web.WebSocketResponse(max_msg_size=16 * 1024 * 1024)
         await ws.prepare(request)
@@ -682,8 +423,7 @@ def create_app(config: dict):
         sched = AVSyncScheduler(audio_lead=lead) if rtc_manager is not None else None
         session = Session(ws, s2s_url, avatar_url, personas, default_persona,
                           avatar_backend=avatar_backend,
-                          rtc_sched=sched, rtc_ice_servers=rtc_ice_servers,
-                          get_dances=_dance_names)
+                          rtc_sched=sched, rtc_ice_servers=rtc_ice_servers)
         current_session["session"] = session
         try:
             await session.run()
@@ -694,23 +434,18 @@ def create_app(config: dict):
                 await session.avatar.close()
         return ws
 
-    app = web.Application(client_max_size=256 * 1024 * 1024)  # 驱动视频/换图上传可达几十 MB
+    app = web.Application(client_max_size=64 * 1024 * 1024)  # 换图上传可达几十 MB
 
     @web.middleware
     async def _no_cache(request, handler):
         # 前端 JS/HTML 迭代频繁，禁缓存防浏览器跑旧版（新旧协议不匹配会静默失声）
         resp = await handler(request)
-        if request.path in ("/", "/dance") or request.path.startswith("/static"):
+        if request.path == "/" or request.path.startswith("/static"):
             resp.headers["Cache-Control"] = "no-cache, must-revalidate"
         return resp
 
     app.middlewares.append(_no_cache)
     app.router.add_get("/", index)
-    app.router.add_get("/dance", dance_page)
-    app.router.add_get("/api/dance/list", api_dance_list)
-    app.router.add_post("/api/dance/upload", api_dance_upload)
-    app.router.add_post("/api/dance/delete", api_dance_delete)
-    app.router.add_static("/dance_media", dance_dir)  # 成片播放
     app.router.add_get("/api/personas", api_personas)
     app.router.add_get("/api/personas/{pid}/image", api_persona_image)
     app.router.add_post("/api/personas/{pid}/image", api_persona_image_upload)

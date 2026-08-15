@@ -37,6 +37,8 @@ command -v gcc    > /dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS build-essentia
 command -v ffmpeg > /dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS ffmpeg"
 command -v git    > /dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS git"
 command -v curl   > /dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS curl"
+# coturn：WebRTC 音画下行过 SSH 隧道的 TURN 服务（缺了页面只剩文字，无音画）
+command -v turnserver > /dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS coturn"
 if [ -n "$MISSING_PKGS" ]; then
     apt-get update -qq
     # shellcheck disable=SC2086
