@@ -145,6 +145,8 @@ class Session:
         self.s2s = None
         self.avatar = None
         self._avatar_speaking = False  # 是否已向 avatar 下发 speech_active=on
+        self._resp_had_content = False  # 本轮回复是否有任何文本/音频产出（空回复兜底用）
+        self._empty_nudged = False      # 本轮是否已追问过（防追问死循环）
 
     async def run(self) -> None:
         import websockets
@@ -244,6 +246,31 @@ class Session:
                 await self.browser.send_str(raw)
                 continue
             self._track_dialog_state(event)
+            # 空回复兜底追踪：本轮有任何文本/音频产出即视为有内容
+            etype = event.get("type", "")
+            if etype == "response.created":
+                self._resp_had_content = False
+            elif pcm is not None or (
+                etype in ("response.output_audio_transcript.delta",
+                          "response.output_text.delta",
+                          "response.output_audio_transcript.done")
+                and (event.get("delta") or event.get("transcript"))
+            ):
+                self._resp_had_content = True
+            elif etype == "response.done":
+                status = (event.get("response") or {}).get("status")
+                if (not self._resp_had_content and not self._empty_nudged
+                        and status in (None, "completed")):
+                    # LLM 偶发只吐 1 个 token（Qwen 本地版实测两次）→ 清理后无声。
+                    # 追问一次让模型重答，把抽风变成一句话的事
+                    self._empty_nudged = True
+                    logger.warning("空回复兜底：本轮无文本/音频产出，追问重答")
+                    await self.s2s.send(json.dumps({
+                        "type": "conversation.item.create",
+                        "item": {"type": "message", "role": "user", "content": [{
+                            "type": "input_text",
+                            "text": "（你刚才的回复是空的，用一句符合你人设的话接上——比如假装清了清嗓子——然后正常回答我刚才的问题。别提这条提示）"}]}}))
+                    await self.s2s.send(json.dumps({"type": "response.create"}))
             relay, reset_avatar, pcm = classify_s2s_event(event)
             if pcm is not None and self.sched is not None:
                 self.sched.feed_audio(pcm)  # RTC 音频轨（与喂 avatar 同一股流）
@@ -274,6 +301,7 @@ class Session:
         etype = event.get("type", "")
         if etype == "input_audio_buffer.speech_started":
             self._user_speaking = True
+            self._empty_nudged = False  # 新一轮对话，重置追问名额
         elif etype == "input_audio_buffer.speech_stopped":
             self._user_speaking = False
 

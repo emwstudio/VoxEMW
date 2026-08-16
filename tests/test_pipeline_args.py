@@ -67,8 +67,8 @@ def _pairs(argv):
 def test_render_s2s_argv():
     argv = render_s2s_argv(_config(), env={"TEST_LLM_KEY": "sk-test"})
     pairs = _pairs(argv)
-    assert pairs["--mode"] == "realtime"
-    assert pairs["--ws_port"] == "8765"
+    assert pairs["--host"] == "127.0.0.1"
+    assert pairs["--port"] == "8765"
     assert pairs["--min_silence_ms"] == "600"
     assert pairs["--llm_backend"] == "chat-completions"
     assert pairs["--model_name"] == "deepseek-v4-flash"
@@ -78,9 +78,9 @@ def test_render_s2s_argv():
     assert pairs["--chat_size"] == "30"
     assert pairs["--enable_live_transcription"] == "false"
     assert pairs["--num_pipelines"] == "1"
-    # 自定义积木不进 CLI（Literal 校验过不了），由 launch 运行时注册
-    assert "--stt" not in pairs
-    assert "--tts" not in pairs
+    # 上游 2026-08 重构后 CLI choices 由注册表生成——自定义积木先注册即合法
+    assert pairs["--stt"] == "sensevoice"
+    assert pairs["--tts"] == "voxcpm"
 
 
 def test_render_s2s_argv_streaming_llm():

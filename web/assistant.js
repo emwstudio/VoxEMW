@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260813c";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260816a";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -38,6 +38,7 @@ let personas = [];
 let currentPersona = null;
 let avatarOn = false;
 let assistantLine = null; // 正在流式累积的助手文本行
+let lineGotDeltas = false; // 当前行已收到逐字 delta（新上游 delta+done 双发，done 只收尾不重复上屏）
 let rtcEnabled = false;   // vox.status 下发：下行音画走 WebRTC
 let pc = null;            // RTCPeerConnection
 // solo 模式（?solo=1）：demo 录制用，隐藏用户画面、数字人单栏居中、不开摄像头
@@ -333,23 +334,27 @@ const realtimeHandlers = {
   },
   "response.output_audio_transcript.delta"(event) {
     if (event.delta) {
+      lineGotDeltas = true;
       appendAssistantDelta(event.delta);
     }
   },
   "response.output_text.delta"(event) {
     if (event.delta) {
+      lineGotDeltas = true;
       appendAssistantDelta(event.delta);
     }
   },
   "response.output_audio_transcript.done"(event) {
-    // 音频模式下上游不发 delta,只在 done 里带整段文本——必须在这里显示
-    if (event.transcript) {
+    // delta 流过的行 done 只收尾；没 delta 的老协议才在 done 里补整段
+    if (event.transcript && !lineGotDeltas) {
       appendAssistantDelta(event.transcript);
     }
     assistantLine = null;
+    lineGotDeltas = false;
   },
   "response.output_text.done"() {
     assistantLine = null;
+    lineGotDeltas = false;
   },
   "response.output_audio.delta"(event) {
     // 事件被服务端剥了音频体（音频走 RTC 音轨），但事件本身仍标志「开口」

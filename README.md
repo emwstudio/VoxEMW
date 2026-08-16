@@ -1,6 +1,6 @@
 # VoxEMW · 数字人实时语音聊天助手
 
-[![version](https://img.shields.io/badge/version-v1.5.0-blue)](https://github.com/emwstudio/VoxEMW/tags)
+[![version](https://img.shields.io/badge/version-v1.6.0-blue)](https://github.com/emwstudio/VoxEMW/tags)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6?logo=bilibili&logoColor=white)](https://space.bilibili.com/492428186)
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000?logo=youtube&logoColor=white)](https://www.youtube.com/@emw_studio)
@@ -14,7 +14,7 @@
 [![Instagram](https://img.shields.io/badge/Instagram-@emwstudio.ai-e4405f?logo=instagram&logoColor=white)](https://www.instagram.com/emwstudio.ai)
 
 对着浏览器说话，屏幕里的数字人开口回答你。**完全离线**（零 API 调用），
-单卡 RTX 4090 48G 全本地运行，**你说完到听到第一声 ≈ 2.0s**。
+单卡 RTX 4090 48G 全本地运行，**你说完到听到第一声 ≈ 1.5s**。
 
 链路：[huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech)
 实时语音管线 + [AVTR-1](https://github.com/avaturn-live/avtr-1) 数字人形象，
@@ -50,9 +50,9 @@ orchestrator（CPU，:8000）
 
 | 积木 | 模型 | 说明 |
 |---|---|---|
-| ① VAD 判停 | Silero | 400ms 静默判停 |
+| ① VAD 判停 | Silero + SmartTurn v3.2 | 64ms 软判停 + 语义复核 + 800ms 重开宽限（停顿不抢答） |
 | ② STT 语音转写 | SenseVoiceSmall（FunASR） | ~0.1s |
-| ③ LLM 大脑 | Qwen3.8-27B（UD-Q6_K_XL + MTP） | llama.cpp 本地服务，首句 ~1s |
+| ③ LLM 大脑 | Qwen3.8-27B（UD-Q6_K_XL + MTP） | llama.cpp 本地服务，首句 ~0.9s |
 | ④ TTS 语音合成 | VoxCPM2（音色克隆，流式） | 首音 ~0.1s |
 | ⑤ Avatar 数字人 | AVTR-1（TensorRT） | 唇同步 + 倾听/思考表情 |
 
@@ -60,12 +60,12 @@ orchestrator（CPU，:8000）
 
 | 环节 | 耗时 |
 |---|---|
-| VAD 判停 | ~0.4s |
+| VAD 软判停（64ms）+ SmartTurn 复核（~0.08s） | ~0.15s |
 | STT（SenseVoiceSmall） | ~0.1s |
-| LLM 首句（Qwen3.8-27B 本地流式） | ~1.0s |
+| LLM 首句（Qwen3.8-27B 本地流式） | ~0.9s |
 | TTS 首音（VoxCPM2 流式） | ~0.1s |
 | 唇同步缓冲（AVTR-1） | ~0.4s |
-| **合计** | **≈ 2.0s** |
+| **合计** | **≈ 1.5s** |
 
 ## 部署（AutoDL 单卡 4090 48G）
 
@@ -90,6 +90,10 @@ bash scripts/tunnel.sh        # 转发 8000（网页）+ 3478（WebRTC 媒体）
 ## 特性
 
 - **完全离线**：本地 Qwen3.8-27B 当大脑（MTP 投机解码 41.7 tok/s），零 API 费用零外网依赖
+- **语义判停**：SmartTurn 复核——你停顿他沉住气，你说完他秒接，中途停顿不抢答不丢字
+- **流式字幕**：回答逐字上屏，不整句砸脸
+- **空回复兜底**：模型偶发失声自动追问重答，对话不断流
+- **长对话不漂移**：超 30 轮后旧对话后台摘要压缩
 - **倾听反应**：你说话时数字人实时注视/微表情回应（AVTR-1 双流）
 - **待机微动**：无语音时眨眼/轻摇头，画面永远活着
 - **人设切换**：前端点 chip，人设 / 音色 / 肖像三路同切

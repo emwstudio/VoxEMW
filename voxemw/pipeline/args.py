@@ -1,8 +1,8 @@
 """把 VoxEMW YAML 积木配置渲染成 speech-to-speech CLI argv（纯逻辑，可单测）。
 
-stt/tts 积木是自定义 handler，不在上游 CLI 的 Literal 选项里，所以这里
-不渲染 --stt/--tts；launch.py 在 parse_arguments() 之后直接改
-module_kwargs.stt/tts，并 monkeypatch 工厂函数完成注册。
+上游 2026-08 重构后：--stt/--tts 的 choices 由 backend_registry 动态生成，
+launch.py 先调 register_custom_backends() 把我们的积木插进注册表，
+这里直接渲染 --stt sensevoice --tts voxcpm 即可（不再靠 parse 后改写）。
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ _VAD_PASSTHROUGH = (
     "max_speech_ms",
 )
 
-# server 段允许透传的模块级参数（ModuleArguments / WebSocketStreamerArguments）
+# server 段允许透传的模块级参数（ModuleArguments）
 _SERVER_PASSTHROUGH = (
     "enable_live_transcription",
     "num_pipelines",
@@ -34,13 +34,16 @@ def render_s2s_argv(config: dict, env: dict | None = None) -> list[str]:
     """渲染 speech-to-speech 的 CLI 参数列表（不含程序名）。"""
     vad = config["vad"]
     llm = config["llm"]
+    stt = config["stt"]
+    tts = config["tts"]
     server = config.get("server") or {}
 
     argv = [
-        "--mode", "realtime",
-        "--ws_host", str(server.get("s2s_host", "127.0.0.1")),
-        "--ws_port", str(server.get("s2s_port", 8765)),
+        "--host", str(server.get("s2s_host", "127.0.0.1")),
+        "--port", str(server.get("s2s_port", 8765)),
         "--log_level", str(server.get("log_level", "info")),
+        "--stt", str(stt.get("backend", "sensevoice")),
+        "--tts", str(tts.get("backend", "voxcpm")),
     ]
 
     for key in _VAD_PASSTHROUGH:
