@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260816a";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260816b";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -115,7 +115,11 @@ async function startRTC() {
       }, 2000);
     }
   };
-  const offer = await conn.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+  // 显式 recvonly transceiver：Safari 对 createOffer({offerToReceive*}) 老语法
+  // 会产出零 m-section 的空 offer（iPad 实测 500），addTransceiver 全浏览器一致
+  conn.addTransceiver("audio", { direction: "recvonly" });
+  conn.addTransceiver("video", { direction: "recvonly" });
+  const offer = await conn.createOffer();
   await conn.setLocalDescription(offer);
   // aiortc 不支持 trickle：offer 必须带齐候选。TURN 走 TCP 隧道可能较慢，给足 15s
   await Promise.race([

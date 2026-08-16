@@ -246,6 +246,7 @@ class Session:
                 await self.browser.send_str(raw)
                 continue
             self._track_dialog_state(event)
+            relay, reset_avatar, pcm = classify_s2s_event(event)
             # 空回复兜底追踪：本轮有任何文本/音频产出即视为有内容
             etype = event.get("type", "")
             if etype == "response.created":
@@ -271,7 +272,6 @@ class Session:
                             "type": "input_text",
                             "text": "（你刚才的回复是空的，用一句符合你人设的话接上——比如假装清了清嗓子——然后正常回答我刚才的问题。别提这条提示）"}]}}))
                     await self.s2s.send(json.dumps({"type": "response.create"}))
-            relay, reset_avatar, pcm = classify_s2s_event(event)
             if pcm is not None and self.sched is not None:
                 self.sched.feed_audio(pcm)  # RTC 音频轨（与喂 avatar 同一股流）
             if self.avatar is not None:
@@ -421,7 +421,13 @@ def create_app(config: dict):
             return web.json_response({"error": "无活跃会话，先连 /ws"}, status=409)
         session.sched.flush()  # 新 RTC 连接从干净的队列起步（重连不播陈年积压帧）
         offer = await request.json()
-        answer = await rtc_manager.handle_offer(offer, session.sched)
+        try:
+            answer = await rtc_manager.handle_offer(offer, session.sched)
+        except Exception:
+            # 排障：把失败的 offer SDP 落日志（Safari/老 WebKit 的 m-section 顺序差异）
+            logger.exception("RTC offer 处理失败，SDP 前 800 字: %s",
+                             str(offer.get("sdp"))[:800])
+            raise
         return web.json_response(answer)
 
     async def api_rtc_ice(request):
