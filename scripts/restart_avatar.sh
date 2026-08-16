@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 重启数字人服务（AVTR-1，pixi env 直调——勿 pixi run，会按 lock 重同步 env
-# 覆盖 pip 降级）。生成任务/换图/日常重启共用。
+# 覆盖 pip 降级）。换图/日常重启共用。
 cd "$(dirname "$0")/.."
 
 pkill -f "voxemw.avatar.service" 2>/dev/null || true

@@ -1,4 +1,4 @@
-# VoxEMW 数字人实时语音助手 —— AutoDL RTX 4090D（24GB 单卡）
+# VoxEMW 数字人实时语音助手 —— AutoDL RTX 4090 48G 单卡
 #
 # 积木：vad（语音活动检测）/ stt（语音转文字）/ llm（对话模型）/
 #       tts（文字转语音）/ avatar（数字人形象，AVTR-1）/ personas（人设注册表）
@@ -18,9 +18,12 @@
 # ---------------------------------------------------------------------------
 vad:
   backend: silero
-  # 判停静音时长：上游默认 64ms 太灵，稍微停顿就被切断；900ms 实测等待感偏强。
-  # 600→500ms：pipeline 的 speculative reopen 会接住误断，压低 100ms 响应延迟
-  min_silence_ms: 500
+  # 判停静音 64ms（上游默认）：Silero 激进软判停 + SmartTurn 语义复核（没说完压住）
+  # + 800ms 重开宽限（你接着说就接回同话轮）——抢答/丢字由后两层兜底
+  min_silence_ms: 64
+  # SmartTurn GPU 版模型路径（autodl_setup.sh 预下载到 HF_HOME 缓存，
+  # 部署后填实际 snapshot 路径；不配则走上游默认 CPU 版）
+  # smart_turn_model_path: /root/autodl-tmp/hf/hub/models--pipecat-ai--smart-turn-v3/snapshots/<hash>/smart-turn-v3.2-gpu.onnx
   # thresh: 0.6             # 检测阈值，越大越严格
   # min_speech_ms: 384      # 最短有效语音
   # speech_pad_ms: 500      # 段前保留音频
@@ -38,14 +41,13 @@ stt:
 
 # ---------------------------------------------------------------------------
 # LLM：对话模型。chat-completions = OpenAI 兼容 /v1/chat/completions。
-# DeepSeek 关 thinking 由 launch.py 在 extra_body 里处理（thinking.type=disabled）；
-# 不要配 reasoning_effort: none——DeepSeek 只认 high/low/medium/max/xhigh，none 会 400。
+# 默认本地 llama-server（Qwen3.8-27B，:8081，见 scripts/start_assistant.sh）。
 # ---------------------------------------------------------------------------
 llm:
   backend: chat-completions
-  model_name: deepseek-v4-flash
-  base_url: https://api.deepseek.com/v1
-  api_key_env: DEEPSEEK_API_KEY    # 从环境变量读 key（启动时加载 .env.local），缺失即报错
+  model_name: qwen38-local
+  base_url: http://127.0.0.1:8081/v1
+  api_key_env: LLM_API_KEY    # llama-server 只要求非空；从环境变量读（启动时加载 .env.local）
   # 流式：逐句送 TTS，长回复首音从等整段 3-5s 降到 ~0.5s，代价是语调上下文略平；
   # 回退：stream: false（整段送 TTS，prosody 更自然）
   stream: true

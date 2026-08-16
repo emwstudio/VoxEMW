@@ -72,7 +72,7 @@ async def proxy_http(request: web.Request) -> web.StreamResponse:
 
 
 async def proxy_ws(request: web.Request) -> web.WebSocketResponse:
-    """WebSocket 双向透传（/ws 会话：文本事件 + 二进制视频帧）。"""
+    """WebSocket 双向透传（/ws 会话：文本事件；BINARY 分支为兼容保留）。"""
     client_ws = web.WebSocketResponse(max_msg_size=16 * 1024 * 1024)
     await client_ws.prepare(request)
     async with aiohttp.ClientSession() as sess:

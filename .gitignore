@@ -20,9 +20,6 @@ assets/*/ref.wav
 assets/*/ref.txt
 assets/*/ref.png
 assets/*/ref.jpg
-# 音色衍生物（TTS 克隆生成的嘟囔/垫音，同上不入库）
-assets/*/murmur_*.wav
-assets/*/fillers/**/*.wav
 
 # 局域网反代的自签证书与私钥（可重新生成，不入库）
 scripts/lan_https/*.crt

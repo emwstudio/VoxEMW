@@ -17,6 +17,7 @@ _VAD_PASSTHROUGH = (
     "min_speech_continuation_ms",
     "speech_pad_ms",
     "max_speech_ms",
+    "smart_turn_model_path",
 )
 
 # server 段允许透传的模块级参数（ModuleArguments）

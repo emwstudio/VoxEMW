@@ -6,9 +6,6 @@
 - 上游 2026-08 重构（main @5a0c79f）：工厂函数废弃，改 BackendSpec 注册表。
   我们先 register_custom_backends() 把 sensevoice/voxcpm 插进注册表，
   之后 --stt sensevoice --tts voxcpm 就是合法 CLI 参数，走标准 parse/serve 流程。
-- DeepSeek 关 thinking：上游 disable_thinking 发的是 vLLM 风格
-  chat_template_kwargs（DeepSeek 忽略），这里把 _build_extra_body 换成
-  DeepSeek 认的 thinking.type=disabled（仅在线回退时生效）。
 - persona 人设不进管线进程：realtime 模式下 instructions 由客户端
   （voxemw.avatar.orchestrator）经 session.update 注入。
 """
@@ -44,25 +41,6 @@ def _patch_torch_flex_attention_compat() -> None:
         _fa.AuxRequest = AuxRequest
 
 
-def _patch_deepseek_thinking() -> None:
-    """DeepSeek 的关 thinking 协议是 extra_body {"thinking": {"type": "disabled"}}；
-    上游只懂 vLLM 风格 chat_template_kwargs / reasoning_effort。只在 base_url
-    指向 DeepSeek 时替换。"""
-    from speech_to_speech.LLM.base_openai_compatible_language_model import (
-        BaseOpenAICompatibleHandler,
-    )
-
-    orig = BaseOpenAICompatibleHandler._build_extra_body
-
-    @classmethod
-    def _build_extra_body(cls, base_url, disable_thinking, reasoning_effort):
-        if base_url and "deepseek" in base_url and disable_thinking and not reasoning_effort:
-            return {"thinking": {"type": "disabled"}}
-        return orig(base_url, disable_thinking, reasoning_effort)
-
-    BaseOpenAICompatibleHandler._build_extra_body = _build_extra_body
-
-
 def _patch_torch_hub_offline_fallback() -> None:
     """silero VAD 走 torch.hub.load("snakers4/silero-vad"):每次启动都向
     github.com 发校验请求,而本机 GitHub 时通时断,断则启动失败。
@@ -85,6 +63,32 @@ def _patch_torch_hub_offline_fallback() -> None:
             raise
 
     torch.hub.load = _load_with_local_fallback
+
+
+def _patch_smart_turn_gpu() -> None:
+    """上游 SmartTurnAnalyzer 硬编 CPUExecutionProvider。smart_turn_model_path 指到
+    *-gpu.onnx 且 CUDA 可用时换成 GPU 优先（复核 ~80ms → ~10ms）。
+    做法：包一层 __init__，建完 CPU 会话后原地重建成 CUDA（模型 20MB，双载无感）。"""
+    import logging
+
+    import onnxruntime as ort
+    from speech_to_speech.VAD import smart_turn as st_mod
+
+    if "CUDAExecutionProvider" not in ort.get_available_providers():
+        return  # 环境没装 onnxruntime-gpu，不动
+
+    logger = logging.getLogger(__name__)
+    orig_init = st_mod.SmartTurnAnalyzer.__init__
+
+    def _init_gpu(self, **kw):
+        orig_init(self, **kw)
+        mp = str(kw.get("model_path") or "")
+        if mp.endswith("-gpu.onnx"):
+            self.session = ort.InferenceSession(
+                mp, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+            logger.info("SmartTurn 走 GPU: %s", mp)
+
+    st_mod.SmartTurnAnalyzer.__init__ = _init_gpu
 
 
 def _patch_speechable_keep_cjk_punct() -> None:
@@ -162,9 +166,9 @@ def main() -> None:
     import speech_to_speech.s2s_pipeline as s2s
 
     _patch_torch_flex_attention_compat()
-    _patch_deepseek_thinking()
     _patch_torch_hub_offline_fallback()
     _patch_speechable_keep_cjk_punct()
+    _patch_smart_turn_gpu()
 
     # 新上游标准 serve 流程（s2s_pipeline.run_pipeline_command 复刻）
     parsed = s2s.parse_arguments(argv, command="serve")

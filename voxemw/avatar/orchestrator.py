@@ -101,7 +101,7 @@ def avatar_state_transition(event: dict, speaking: bool) -> tuple[bool, list[dic
     - speech_active：首个音频 delta 开、response.done/打断关。说话期间 avatar
       禁 idle 生成——句间停顿 pending 排空时插入 idle 帧会被前端直画，卡画面
     - idle_mode：listening（用户开口）/ thinking（用户说完）/ calm（助手说完），
-      决定待机驱动音频（persona 嘟囔循环或纯静音）
+      决定待机驱动音频（listen 轨转发或纯静音）
     """
     etype = event.get("type", "")
     msgs: list[dict] = []

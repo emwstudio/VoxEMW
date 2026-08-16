@@ -1,6 +1,6 @@
 # VoxEMW · 数字人实时语音聊天助手
 
-[![version](https://img.shields.io/badge/version-v1.6.1-blue)](https://github.com/emwstudio/VoxEMW/tags)
+[![version](https://img.shields.io/badge/version-v1.6.2-blue)](https://github.com/emwstudio/VoxEMW/tags)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6?logo=bilibili&logoColor=white)](https://space.bilibili.com/492428186)
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000?logo=youtube&logoColor=white)](https://www.youtube.com/@emw_studio)
@@ -14,7 +14,7 @@
 [![Instagram](https://img.shields.io/badge/Instagram-@emwstudio.ai-e4405f?logo=instagram&logoColor=white)](https://www.instagram.com/emwstudio.ai)
 
 对着浏览器说话，屏幕里的数字人开口回答你。**完全离线**（零 API 调用），
-单卡 RTX 4090 48G 全本地运行，**你说完到听到第一声 ≈ 1.5s**。
+单卡 RTX 4090 48G 全本地运行，**你说完到听到第一声 ≈ 1.3s**。
 
 链路：[huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech)
 实时语音管线 + [AVTR-1](https://github.com/avaturn-live/avtr-1) 数字人形象，
@@ -52,7 +52,7 @@ orchestrator（CPU，:8000）
 |---|---|---|
 | ① VAD 判停 | Silero + SmartTurn v3.2 | 64ms 软判停 + 语义复核 + 800ms 重开宽限（停顿不抢答） |
 | ② STT 语音转写 | SenseVoiceSmall（FunASR） | ~0.1s |
-| ③ LLM 大脑 | Qwen3.8-27B（UD-Q6_K_XL + MTP） | llama.cpp 本地服务，首句 ~0.9s |
+| ③ LLM 大脑 | Qwen3.8-27B（UD-Q6_K_XL + MTP） | llama.cpp 本地服务，首句 ~0.8s |
 | ④ TTS 语音合成 | VoxCPM2（音色克隆，流式） | 首音 ~0.1s |
 | ⑤ Avatar 数字人 | AVTR-1（TensorRT） | 唇同步 + 倾听/思考表情 |
 
@@ -60,17 +60,17 @@ orchestrator（CPU，:8000）
 
 | 环节 | 耗时 |
 |---|---|
-| VAD 软判停（64ms）+ SmartTurn 复核（~0.08s） | ~0.15s |
+| VAD 软判停（64ms）+ SmartTurn GPU 复核（~10ms） | ~0.08s |
 | STT（SenseVoiceSmall） | ~0.1s |
-| LLM 首句（Qwen3.8-27B 本地流式） | ~0.9s |
+| LLM 首句（Qwen3.8-27B 本地流式） | ~0.8s |
 | TTS 首音（VoxCPM2 流式） | ~0.1s |
-| 唇同步缓冲（AVTR-1） | ~0.4s |
-| **合计** | **≈ 1.5s** |
+| 唇同步对齐压后（AVTR-1） | ~0.3s |
+| **合计** | **≈ 1.3s** |
 
 ## 部署（AutoDL 单卡 4090 48G）
 
 ```bash
-cp .env.example .env.local        # 在线回退时填 DEEPSEEK_API_KEY（离线版不需要）
+cp .env.example .env.local        # LLM_API_KEY 填任意非空值（本地 llama-server 只要求非空）
 bash scripts/autodl_setup.sh      # 装环境 + 下模型（幂等）
 bash scripts/start_assistant.sh   # 一键起全栈（含本地 LLM llama-server）
 ```
@@ -121,4 +121,3 @@ python3 -m venv .venv && .venv/bin/python -m pip install pytest pyyaml numpy aio
 - Qwen3.8（GGUF 量化）: https://huggingface.co/unsloth/Qwen3.8-27B-GGUF
 - llama.cpp: https://github.com/ggml-org/llama.cpp
 - FunASR（SenseVoice）: https://github.com/modelscope/FunASR
-- DeepSeek API（在线回退）: https://platform.deepseek.com

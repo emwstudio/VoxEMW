@@ -147,7 +147,7 @@ def resolve_api_key(llm_cfg: dict, env: dict | None = None) -> str:
     """按 llm.api_key_env 从环境变量取 API key，兜底 LLM_API_KEY，缺失即退出。"""
     if env is None:
         env = os.environ
-    key_env = llm_cfg.get("api_key_env", "DEEPSEEK_API_KEY")
+    key_env = llm_cfg.get("api_key_env", "LLM_API_KEY")
     api_key = env.get(key_env) or env.get("LLM_API_KEY")
     if not api_key:
         sys.exit(f"ERROR: 环境变量 {key_env}（或兜底 LLM_API_KEY）未设置，无法提供 LLM API key")

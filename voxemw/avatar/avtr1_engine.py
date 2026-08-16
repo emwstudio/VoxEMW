@@ -9,7 +9,7 @@ speech/speech_scheduler.py，2026-08-04 逐条对账）：
 - chunk 步进 0.2s（3200 采样，官方 present=5 帧）产 5 帧，输入窗口 6480 采样
   （当前 3280 + 前瞻 3200+80，官方 future=5 帧+80 采样；renderer/models.py）。
   模型需 0.205s 前瞻 → 稳态供帧天然落后音频 ~0.2s（+生成 ~0.08s），
-  前端 AVATAR_AUDIO_DELAY 用 0.35s（orchestrator 下发 avatar_backend 选择）。
+  由 orchestrator 侧 AVSyncScheduler 压后音频 0.25s 对齐（?alead= 可调）。
 - 运动上下文（AVTR1State）整个会话连续透传——官方 state 只在 session 开始为
   None，interrupt（打断）不重置（DiscardAvatarSpeechBuffer 只清音频队列）。
   故本引擎 reset() 只清音频缓冲、保留运动上下文（打断后静音 chunk 自然衰减
@@ -27,7 +27,7 @@ speech/speech_scheduler.py，2026-08-04 逐条对账）：
 
 运行环境：pixi env（/root/autodl-tmp/avtr-1/.pixi/envs/renderer），
 不要 pixi run（会按 lock 重同步覆盖 pip 降级）——启动脚本见
-/root/autodl-tmp/restart_avatar_avtr1.sh（env python 直调 + LD_LIBRARY_PATH）。
+scripts/start_assistant.sh / scripts/restart_avatar.sh（env python 直调 + LD_LIBRARY_PATH）。
 权重/引擎目录由 AVTR1_LOCAL_STORAGE 指定（含 TRT 引擎，sm89 专用）。
 """
 

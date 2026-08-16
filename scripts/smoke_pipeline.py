@@ -4,7 +4,7 @@
 链路验证（不经过浏览器）：
   1. s2s 语音管线：连 ws://127.0.0.1:8765/v1/realtime，注入人设，
      上行一段 16kHz wav（当作用户说话），断言收到转写 + TTS 音频 delta
-  2. avatar 数字人：连 ws://127.0.0.1:8767，把同一段音频喂进去，断言收到 JPEG 帧
+  2. avatar 数字人：连 ws://127.0.0.1:8767，把同一段音频喂进去，断言收到视频帧
 
 用法：
     .venv/bin/python scripts/smoke_pipeline.py --wav /path/to/test_16k.wav
@@ -113,7 +113,7 @@ async def smoke_avatar(pcm: bytes, port: int) -> bool:
                             break
         except TimeoutError:
             pass
-    print(f"[avatar] 收到 {frames} 帧 JPEG")
+    print(f"[avatar] 收到 {frames} 帧（裸 RGB）")
     return frames > 0
 
 

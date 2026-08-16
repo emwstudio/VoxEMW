@@ -5,13 +5,13 @@
 # 用法：rsync 仓库到实例后，在仓库根目录执行  bash scripts/autodl_setup.sh
 # 幂等：重复执行不会重复装依赖/下模型，已在跑的服务不重启。
 #
-# 环境：.venv（py312 + torch 2.8）：s2s 语音管线（SenseVoice / VoxCPM2）+ orchestrator + 记忆
+# 环境：.venv（py312 + torch 2.8）：s2s 语音管线（SenseVoice / VoxCPM2）+ orchestrator
 # 数字人（AVTR-1）运行在独立的 pixi env（/root/autodl-tmp/avtr-1/.pixi/envs/renderer），
-# 安装过程含 TRT 引擎编译等一次性步骤，见本脚本 [2/7] 段说明。
+# 安装过程含 TRT 引擎编译等一次性步骤，见本脚本 [2/6] 段说明。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "==> [0/7] 基础环境（conda + 系统包）"
+echo "==> [0/6] 基础环境（conda + 系统包）"
 # 非交互 SSH 下 conda 可能不在 PATH
 if ! command -v conda > /dev/null 2>&1 && [ -x /root/miniconda3/bin/conda ]; then
     export PATH="/root/miniconda3/bin:$PATH"
@@ -57,7 +57,7 @@ if [ -d /root/autodl-tmp ]; then
     export HF_HOME="${HF_HOME:-/root/autodl-tmp/hf}"
 fi
 
-echo "==> [1/7] 语音管线 venv（py312 + torch 2.8 cu128）"
+echo "==> [1/6] 语音管线 venv（py312 + torch 2.8 cu128）"
 [ -x .venv/bin/python ] || "$CONDA_BASE/envs/py312/bin/python" -m venv .venv
 # shellcheck disable=SC1091
 source .venv/bin/activate
@@ -69,8 +69,8 @@ else
     pip install --no-cache-dir torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 fi
 # --- 两个空 stub wheel ------------------------------------------------------------
-# faster-qwen3-tts 是 speech-to-speech 的依赖,但其 transformers<5 约束与 Qwen3-ASR
-# 官方要求的 transformers>=5.13 硬冲突;上游 TTS handler 全部懒加载,本项目 TTS 走
+# faster-qwen3-tts 是 speech-to-speech 的依赖,但其 transformers<5 约束与上游
+# 当前要求的 transformers>=5.13 硬冲突;上游 TTS handler 全部懒加载,本项目 TTS 走
 # voxcpm,faster_qwen3_tts 代码永远不会被导入 → 用 stub 顶替(带上 ggml extra,
 # 因为 speech-to-speech 的依赖声明点了 faster-qwen3-tts[ggml])。
 # qwentts-cpp-python 是真实 faster-qwen3-tts[ggml] 的依赖,只发 manylinux_2_39 wheel
@@ -112,11 +112,15 @@ pip install "$(make_stub_wheel faster_qwen3_tts faster-qwen3-tts 0.3.2 ggml)"
 pip show qwentts-cpp-python > /dev/null 2>&1 || \
     pip install "$(make_stub_wheel qwentts_cpp qwentts-cpp-python 0.3.1 '')"
 # 钉死关键包版本防 pip 回溯（回溯会逐个下载几十个几十 MB 的 wheel,卡死数小时）:
-# Qwen3-ASR 官方要求 transformers>=5.13.0;voxcpm 2.0.3 要求 >=4.36.2 + gradio>=6,<7
+# 上游 speech-to-speech 当前要求 transformers>=5.13.0;voxcpm 2.0.3 要求 >=4.36.2 + gradio>=6,<7
 pip install --no-cache-dir -r requirements.txt "huggingface_hub[cli]" "voxcpm==2.0.3" "transformers==5.13.0"
+# SmartTurn 复核走 GPU：speech-to-speech 拉的是 CPU 版 onnxruntime，
+# 换 onnxruntime-gpu 让 voxemw/pipeline/launch.py 的 _patch_smart_turn_gpu 生效
+# （复核 ~80ms → ~2ms）。1.28+ 要 CUDA 13 不匹配，1.22.1 已从 PyPI 撤轮子，钉 1.24.4。
+pip install --no-cache-dir onnxruntime-gpu==1.24.4
 deactivate
 
-echo "==> [2/7] 数字人（AVTR-1）环境检查"
+echo "==> [2/6] 数字人（AVTR-1）环境检查"
 # AVTR-1 运行在独立 pixi env（与主 venv 依赖冲突不可合装）。一次性部署步骤：
 #   git clone https://github.com/avaturn-live/avtr-1 /root/autodl-tmp/avtr-1
 #   cd 后 pixi install（国内镜像调整见仓库部署笔记）→ pixi run download（HF gated，
@@ -131,35 +135,36 @@ else
     exit 1
 fi
 
-echo "==> [4/7] 预下载模型（HF_HOME=${HF_HOME:-默认}）"
-# hf download 幂等（已下载会校验后跳过）;VoxCPM2 / Qwen3-ASR 走 HF 缓存（管线按 repo id 加载）
+echo "==> [3/6] 预下载模型（HF_HOME=${HF_HOME:-默认}）"
+# hf download 幂等（已下载会校验后跳过）;VoxCPM2 走 HF 缓存（管线按 repo id 加载）
 .venv/bin/hf download openbmb/VoxCPM2
-# STT（SenseVoiceSmall）与记忆 embedder（bge-m3）：ModelScope/HF 缓存（首次启动自动下载亦可）
+# STT（SenseVoiceSmall）：ModelScope 缓存（首次启动自动下载亦可）
 .venv/bin/pip install -q modelscope
 .venv/bin/modelscope download --model iic/SenseVoiceSmall
-.venv/bin/hf download BAAI/bge-m3 --exclude "imgs/*"
+# SmartTurn v3.2 GPU 版模型（配置里 smart_turn_model_path 指到 *-gpu.onnx）
+.venv/bin/hf download pipecat-ai/smart-turn-v3 --include "smart-turn-v3.2-gpu.onnx"
 
-echo "==> [5/7] 检查配置"
+echo "==> [4/6] 检查配置"
 if [ ! -f .env.local ]; then
-    echo "ERROR: .env.local 不存在。请 cp .env.example .env.local 并填入 DEEPSEEK_API_KEY。" >&2
+    echo "ERROR: .env.local 不存在。请 cp .env.example .env.local（LLM_API_KEY 填任意非空值）。" >&2
     exit 1
 fi
 set -a; source .env.local; set +a
-if [ -z "${DEEPSEEK_API_KEY:-${LLM_API_KEY:-}}" ]; then
-    echo "ERROR: .env.local 里 DEEPSEEK_API_KEY（或 LLM_API_KEY）为空。" >&2
+if [ -z "${LLM_API_KEY:-}" ]; then
+    echo "ERROR: .env.local 里 LLM_API_KEY 为空（本地 llama-server 只要求非空，填任意值即可）。" >&2
     exit 1
 fi
 VOXEMW_CONFIG="${VOXEMW_CONFIG:-configs/assistant.yaml}"
 [ -f "$VOXEMW_CONFIG" ] || { echo "ERROR: 配置不存在: $VOXEMW_CONFIG" >&2; exit 1; }
 
-echo "==> [6/7] 数字人肖像素材检查"
+echo "==> [5/6] 数字人肖像素材检查"
 MISSING_IMG=0
-for img in assets/fengge/ref.png assets/liangzi/ref.png; do
+for img in assets/fengge/ref.png; do
     [ -f "$img" ] || { echo "    缺 $img（对应 persona 将降级纯语音）"; MISSING_IMG=1; }
 done
 [ "$MISSING_IMG" = "0" ] || echo "    提示：缺肖像不阻塞语音对话，补齐后重启数字人服务即可"
 
-echo "==> [7/7] 启动服务"
+echo "==> [6/6] 启动服务"
 bash scripts/start_assistant.sh
 
 cat <<'EOF'

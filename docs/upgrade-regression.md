@@ -5,14 +5,17 @@
 
 ## 我们的自定义接触面（升级风险点）
 
-- `voxemw/pipeline/launch.py`：monkeypatch `get_stt_handler` / `get_tts_handler` 工厂
-  （怕上游改签名）+ 复刻上游 `main()` 启动流程（怕上游改启动结构）
-- 自定义 handler 三件套：`stt_sensevoice.py` / `stt_qwen3asr.py`（BaseSTTHandler）、
+- `voxemw/pipeline/launch.py`：复刻上游 `s2s_pipeline` 启动流程（怕上游改启动结构）
+  + 若干 monkeypatch（flex_attention 兼容 / torch.hub 离线兜底 / CJK 标点白名单 /
+  SmartTurn GPU 会话重建——怕上游改被 patch 的类名/签名）
+- `voxemw/pipeline/backends.py`：BackendSpec 注册表接入 sensevoice/voxcpm
+  （怕上游改 BackendSpec 接口）
+- 自定义 handler：`stt_sensevoice.py`（BaseSTTHandler）、
   `tts_voxcpm.py`（BaseHandler + cancel_scope + speculative_turns + voices 热切换）
 - orchestrator 依赖的 realtime 协议行为：`session.update` 结构、
   `response.create` 被拒（conversation_already_has_active_response）重试、
   `conversation.item.create` deferred 队列、`response.done` 计数、GA/beta 双名音频事件
-- 截帧打分两阶段注入（垫场→打分）、打断链路（speech_started → avatar reset）
+- 打断链路（speech_started → avatar reset）
 
 ## 阶段 0：隔离准备（15 分钟）
 
@@ -22,9 +25,10 @@
 
 ## 阶段 1：静态对账（30 分钟）
 
-- diff 上游新版 `main()` vs `launch.py` 复刻段：工厂签名、`module_kwargs` 字段、
-  realtime router 初始化参数
-- 检查 `BaseSTTHandler` / `BaseHandler` / `SpeculativeTurnTracker` 接口变更
+- diff 上游新版 `s2s_pipeline` serve 流程 vs `launch.py` 复刻段：BackendSpec 接口、
+  `module_kwargs` 字段、realtime router 初始化参数
+- 检查 `BaseSTTHandler` / `BaseHandler` / `SpeculativeTurnTracker` 接口变更，
+  以及 launch.py 各 monkeypatch 的目标符号是否还在
 - `.venv-next` 跑通全部单测（`python -m pytest tests/`，无需 GPU）
 
 ## 阶段 2：启动冒烟（15 分钟）
@@ -33,9 +37,9 @@
 
 ## 阶段 3：脚本化端到端（30 分钟）
 
-- `measure_latency.py`：转写→首音频 ~2.0s 基线，偏差 >20% 红灯
-- `diag_sync.py`：speech/idle 帧 tag 正确、说话期间无 idle 帧（speech_active 门控）、
-  爬坡帧序正常、句尾 speech 帧积压 < 50
+- `scripts/smoke_pipeline.py`：转写 + TTS 音频 delta + avatar 出帧全通
+- pipeline.log 观测：SmartTurn 复核毫秒数、VoxCPM TTFA、LLM 首句耗时，
+  闭嘴→首音总延迟 ~1.5s 基线，偏差 >20% 红灯
 - VoxCPM 音色热切换（session.update 的 voice override）
 
 ## 阶段 4：人工交互矩阵（30 分钟，浏览器）
@@ -45,7 +49,6 @@
 | 普通问答 ×3 | 转写准、首音及时、口型齐 |
 | 说话中打断 | 音频即停、嘴型归位、能接新话 |
 | 长回复（>30s） | 不卡、?debug=1 帧队列不见底 |
-| 截帧打分 | 暗号「让我好好看看你」→ 垫场→打分两阶段走完 |
 | 待机/倾听微动 | 眨眼轻摇头正常、说话无缝接口型 |
 
 ## 回滚

@@ -298,8 +298,8 @@ function showStill(personaId) {
 
 // ---------------------------------------------------------------------------
 // 对话状态角标：listening（用户说话中）/ thinking（说完到开口前）显示角标，
-// speaking / idle 隐藏。画面动感由 avatar 服务驱动：倾听/思考时循环 persona
-// 嘟囔音频（TTS 预合成）产生真实沉吟/附和微动，待机时纯静音基线微动
+// speaking / idle 隐藏。画面动感由 avatar 服务驱动：listening 时用户麦克风
+// 音频经 listen 轨喂给模型产生点头/注视等倾听反应，thinking/calm 纯静音
 // ---------------------------------------------------------------------------
 
 let avatarState = "idle"; // idle | listening | thinking | speaking
