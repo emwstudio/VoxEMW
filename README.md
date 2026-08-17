@@ -35,7 +35,7 @@
 - TikTok：https://www.tiktok.com/@emw.studio
 - Instagram：https://www.instagram.com/emwstudio.ai
 
-## 架构（五块积木）
+## 架构（六块积木）
 
 ```
 浏览器
@@ -55,6 +55,7 @@ orchestrator（CPU，:8000）
 | ③ LLM 大脑 | Qwen3.8-27B（UD-Q6_K_XL + MTP） | llama.cpp 本地服务，首句 ~0.8s |
 | ④ TTS 语音合成 | VoxCPM2（音色克隆，流式） | 首音 ~0.1s |
 | ⑤ Avatar 数字人 | AVTR-1（TensorRT） | 唇同步 + 倾听/思考表情 |
+| ⑥ Persona 人设 | 女娲 · Skill 造人术（nuwa-skill） | 离线蒸馏：人名 → 深度调研 → 思维框架 → `personas/*.md`（含音色参考音/肖像三件套，注册即用） |
 
 ## 延迟分解（4090 48G 全离线实测）
 
@@ -121,3 +122,4 @@ python3 -m venv .venv && .venv/bin/python -m pip install pytest pyyaml numpy aio
 - Qwen3.8（GGUF 量化）: https://huggingface.co/unsloth/Qwen3.8-27B-GGUF
 - llama.cpp: https://github.com/ggml-org/llama.cpp
 - FunASR（SenseVoice）: https://github.com/modelscope/FunASR
+- 女娲 · Skill 造人术（persona 蒸馏）: https://github.com/alchaincyf/nuwa-skill
