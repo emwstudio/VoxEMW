@@ -68,7 +68,10 @@ def _patch_torch_hub_offline_fallback() -> None:
 def _patch_smart_turn_gpu() -> None:
     """上游 SmartTurnAnalyzer 硬编 CPUExecutionProvider。smart_turn_model_path 指到
     *-gpu.onnx 且 CUDA 可用时换成 GPU 优先（复核 ~80ms → ~10ms）。
-    做法：包一层 __init__，建完 CPU 会话后原地重建成 CUDA（模型 20MB，双载无感）。"""
+    做法：包一层 __init__，建完 CPU 会话后原地重建成 CUDA（模型 20MB，双载无感）。
+    ⚠️ 2026-08-17 实测：与 AVTR-1 TRT 渲染在同卡上初始化互斥（pipeline 必炸
+    illegal memory access），当前配置用 CPU 版模型，本补丁不触发。保留备用——
+    换双卡或 TRT 冲突解决后可重新启用。"""
     import logging
 
     import onnxruntime as ort

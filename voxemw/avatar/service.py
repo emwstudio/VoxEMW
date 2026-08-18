@@ -131,6 +131,12 @@ async def _serve(ws, engine) -> None:
                 engine.set_speech_active(bool(event.get("on")))
             elif etype == "idle_mode":
                 engine.set_idle_mode(str(event.get("mode", "calm")))
+            elif etype == "set_idle_motion":
+                # 热切换常驻微动。启动期 GPU 共存约束（2026-08-17 实测）：
+                # avatar 持续渲染时 pipeline 的 VoxCPM conv1d 初始化必炸
+                # illegal memory access——故启动脚本先以 idle_motion=false 起
+                # avatar，pipeline 就绪后经此消息开回 true。运行期共存无碍。
+                engine.idle_motion = bool(event.get("on"))
     finally:
         send_task.cancel()
         # 只清自己的回调：旧连接断开若误清，会把新连接刚接管的帧流杀死
@@ -169,11 +175,17 @@ def main() -> None:
 
     from voxemw.avatar.avtr1_engine import AVTR1Engine
 
+    # AVTR_IDLE_MOTION=0 覆盖配置：启动脚本在 pipeline 初始化窗口关微动，
+    # 避免 avatar 持续渲染与 VoxCPM conv1d 初始化在 GPU 上互踩（2026-08-17 实测）
+    idle_motion = bool(avatar.get("idle_motion", True))
+    if os.environ.get("AVTR_IDLE_MOTION") == "0":
+        idle_motion = False
+
     engine = AVTR1Engine(
         image,
         storage=avatar.get("avtr1_storage") or None,
         bg_id=str(avatar.get("avtr1_bg", "plain_white")),
-        idle_motion=bool(avatar.get("idle_motion", True)),
+        idle_motion=idle_motion,
         cfg_self_audio=float(avatar.get("avtr1_cfg_self_audio", 2.0)),
     )
 

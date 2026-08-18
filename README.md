@@ -1,6 +1,6 @@
 # VoxEMW · 数字人实时语音聊天助手
 
-[![version](https://img.shields.io/badge/version-v1.6.2-blue)](https://github.com/emwstudio/VoxEMW/tags)
+[![version](https://img.shields.io/badge/version-v1.6.3-blue)](https://github.com/emwstudio/VoxEMW/tags)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6?logo=bilibili&logoColor=white)](https://space.bilibili.com/492428186)
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000?logo=youtube&logoColor=white)](https://www.youtube.com/@emw_studio)

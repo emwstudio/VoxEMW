@@ -286,7 +286,9 @@ function appendAssistantDelta(delta) {
 // ---------------------------------------------------------------------------
 
 function showStill(personaId) {
-  els.avatarWrap.classList.remove("streaming");
+  // 注意：不动 streaming 类——RTC 流的生命周期由 ontrack/断连事件管理。
+  // 这里若移除 streaming，persona 切换/换图后 video 会被永久定格成静态图
+  //（ontrack 只在建连时触发一次，streaming 再也加不回来）——2026-08-18 踩坑
   const persona = personas.find((p) => p.id === personaId);
   if (persona && persona.has_image) {
     els.still.src = `/api/personas/${personaId}/image`;
