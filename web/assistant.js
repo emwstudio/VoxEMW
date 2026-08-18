@@ -1,6 +1,6 @@
 /* VoxEMW 数字人语音助手前端。
  *
- * 下行音画：WebRTC——POST /rtc/offer 建连，音频（Opus）+ 视频（VP8）走 RTP 轨，
+ * 下行音画：WebRTC——POST /rtc/offer 建连，音频（Opus）+ 视频（H264）走 RTP 轨，
  *           浏览器按时间戳原生音画同步，<video> 直挂远程流，零补偿参数。
  *           音画对齐在服务端 AVSyncScheduler（?alead=毫秒 调音频压后量）。
  * WS /ws：上行麦克风/控制事件；下行转写/状态事件（音频体已剥离，走音轨）。

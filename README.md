@@ -1,6 +1,6 @@
 # VoxEMW · 数字人实时语音聊天助手
 
-[![version](https://img.shields.io/badge/version-v1.6.4-blue)](https://github.com/emwstudio/VoxEMW/tags)
+[![version](https://img.shields.io/badge/version-v1.6.5-blue)](https://github.com/emwstudio/VoxEMW/tags)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6?logo=bilibili&logoColor=white)](https://space.bilibili.com/492428186)
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000?logo=youtube&logoColor=white)](https://www.youtube.com/@emw_studio)
@@ -39,7 +39,7 @@
 
 ```
 浏览器
-  │  WebRTC 音画（VP8 + Opus，TURN 走 coturn :3478）
+  │  WebRTC 音画（H264 + Opus，TURN 走 coturn :3478）
   │  WS 控制/麦克风/转写（:8000）
   ▼
 orchestrator（CPU，:8000）

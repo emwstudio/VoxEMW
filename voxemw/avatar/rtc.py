@@ -26,14 +26,17 @@ VIDEO_CLOCK = 90000              # RTP 视频时钟
 VIDEO_PTS_STEP = VIDEO_CLOCK // 25
 
 
-def _patch_vp8_bitrate(bitrate: int) -> None:
-    """aiortc vpx 编码器默认 500kbps、上限钳 1.5Mbps——720p 数字人不够用。
-    编码器实例由 RTCRtpSender 内部创建，只能在 import 层改常量。
-    顺带把 720p 的编码线程 2→4（recv→编码串行，2 线程撑不满 25fps 节拍）。"""
-    from aiortc.codecs import vpx
+def _patch_video_bitrate(bitrate: int) -> None:
+    """aiortc 视频编码器默认码率不够 720p 数字人（VP8 默认 500k/上限 1.5M，
+    H264 默认 1M/上限 3M）。编码器实例由 RTCRtpSender 内部创建，只能在
+    import 层改常量；VP8 顺带把 720p 的编码线程 2→4（recv→编码串行，
+    2 线程撑不满 25fps 节拍）。"""
+    from aiortc.codecs import h264, vpx
 
     vpx.DEFAULT_BITRATE = bitrate
     vpx.MAX_BITRATE = max(vpx.MAX_BITRATE, bitrate)
+    h264.DEFAULT_BITRATE = bitrate
+    h264.MAX_BITRATE = max(h264.MAX_BITRATE, bitrate)
 
     orig_threads = vpx.number_of_threads
 
@@ -43,7 +46,7 @@ def _patch_vp8_bitrate(bitrate: int) -> None:
         return orig_threads(pixels, cpus)
 
     vpx.number_of_threads = _more_threads
-    logger.info("VP8 目标码率: %d kbps", bitrate // 1000)
+    logger.info("视频轨目标码率: %d kbps（H264/VP8）", bitrate // 1000)
 
 
 class RTCAudioTrack:  # 组合而非继承：构造在 aiortc 导入前不触发重依赖
@@ -175,7 +178,7 @@ class RTCManager:
         self._turn_user = cfg.get("turn_username", "")
         self._turn_pass = cfg.get("turn_credential", "")
         self.browser_ice_servers = cfg.get("browser_ice_servers", [])  # 下发给前端
-        _patch_vp8_bitrate(int(cfg.get("video_bitrate", 2_000_000)))
+        _patch_video_bitrate(int(cfg.get("video_bitrate", 2_000_000)))
         self._pcs: set = set()
 
     async def _server_ice(self):
@@ -191,17 +194,28 @@ class RTCManager:
     async def handle_offer(self, offer: dict, sched) -> dict:
         from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 
-        # 码率可按 offer 要求临时调整（前端 ?vbr=kbps，调参用；vp8 常量是全局的，
+        # 码率可按 offer 要求临时调整（前端 ?vbr=kbps，调参用；编码器常量是全局的，
         # 单用户产品无所谓，下次 offer 会再覆盖）
         vbr = int(offer.get("vbr") or 0)
         if vbr >= 250:
-            _patch_vp8_bitrate(vbr * 1000)
+            _patch_video_bitrate(vbr * 1000)
 
         ice = await self._server_ice()
         pc = RTCPeerConnection(RTCConfiguration(iceServers=ice))
         self._pcs.add(pc)
         pc.addTrack(RTCAudioTrack(sched).track)
-        pc.addTrack(RTCVideoTrack(sched).track)
+        # 视频轨 H264 优先：iPad/macOS 的 WebKit 用 VideoToolbox 硬解，H264 是
+        # Apple 原生亲儿子；VP8 硬解的参考帧管理在 iPad 上偶发重影（2026-08-18）。
+        vt = pc.addTransceiver(RTCVideoTrack(sched).track, direction="sendonly")
+        from aiortc.rtcrtpsender import RTCRtpSender
+
+        h264_codecs = [
+            c for c in RTCRtpSender.getCapabilities("video").codecs
+            if c.mimeType.lower() == "video/h264"
+        ]
+        if h264_codecs:
+            vt.setCodecPreferences(h264_codecs)
+
 
         @pc.on("connectionstatechange")
         async def _on_state():
@@ -214,7 +228,7 @@ class RTCManager:
             RTCSessionDescription(sdp=offer["sdp"], type=offer["type"]))
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)  # aiortc 不支持 trickle：此调用完成后候选已收齐
-        logger.info("RTC answer 已发（音频 48k Opus + 视频 720p25 VP8）")
+        logger.info("RTC answer 已发（音频 48k Opus + 视频 720p25 H264）")
         return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
 
     async def close_all(self) -> None:
