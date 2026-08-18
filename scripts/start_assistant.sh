@@ -40,6 +40,9 @@ pkill -f "turnserver.*turnserver.conf" 2>/dev/null || true
 sleep 2
 
 # 本地 LLM（离线版大脑，llama-server :8081）：二进制和模型都在才启动，已在跑则跳过
+# LD_LIBRARY_PATH 先备好：llama-server 的 cudart/cublas 用主 venv 的 nvidia pip 库
+MAIN_SP=.venv/lib/python3.12/site-packages
+export LD_LIBRARY_PATH="$(echo $PWD/$MAIN_SP/nvidia/*/lib | tr " " ":"):${LD_LIBRARY_PATH:-}"
 LLAMA_BIN=/root/autodl-tmp/llama.cpp/build/bin/llama-server
 LLAMA_MODEL=/root/autodl-tmp/models/Qwen3.8-27B-UD-Q6_K_XL.gguf
 if [ -x "$LLAMA_BIN" ] && [ -f "$LLAMA_MODEL" ]; then
@@ -96,9 +99,7 @@ for i in $(seq 1 120); do
     sleep 5
 done
 
-# SmartTurn GPU（onnxruntime-gpu）需要主 venv 的 nvidia 运行库
-MAIN_SP=.venv/lib/python3.12/site-packages
-export LD_LIBRARY_PATH="$(echo $PWD/$MAIN_SP/nvidia/*/lib | tr " " ":"):${LD_LIBRARY_PATH:-}"
+# SmartTurn GPU（onnxruntime-gpu）需要主 venv 的 nvidia 运行库（llama 段已 export）
 echo "==> 启动语音管线（.venv，:8765）"
 nohup .venv/bin/python -m voxemw.pipeline.launch --config "$VOXEMW_CONFIG" \
     > logs/pipeline.log 2>&1 &
