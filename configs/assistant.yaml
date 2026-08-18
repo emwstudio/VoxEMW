@@ -121,6 +121,7 @@ personas:
   default: fengge
   list:
     fengge: personas/fengge.md
+    liangzi: personas/liangzi.md
 
 # ---------------------------------------------------------------------------
 # 服务参数。

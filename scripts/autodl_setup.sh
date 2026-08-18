@@ -118,6 +118,12 @@ pip install --no-cache-dir -r requirements.txt "huggingface_hub[cli]" "voxcpm==2
 # 换 onnxruntime-gpu 让 voxemw/pipeline/launch.py 的 _patch_smart_turn_gpu 生效
 # （复核 ~80ms → ~2ms）。1.28+ 要 CUDA 13 不匹配，1.22.1 已从 PyPI 撤轮子，钉 1.24.4。
 pip install --no-cache-dir onnxruntime-gpu==1.24.4
+# H264 编码器调优（aiortc 无官方入口，直接改 site-packages；幂等 sed）：
+# gop_size 加 75（3s 一关键帧）——x264 默认 250 帧（10s），切 persona 换肖像时
+# 新画面被当旧画面的 P 帧增量编码，要等关键帧才干净（2026-08-18 切换重影修复）
+H264=.venv/lib/python3.12/site-packages/aiortc/codecs/h264.py
+[ -f "$H264" ] && grep -q "gop_size" "$H264" || \
+    sed -i 's|            self.codec.options = {|            self.codec.gop_size = 75  # VoxEMW：3s 一关键帧\n            self.codec.options = {|' "$H264"
 deactivate
 
 echo "==> [2/6] 数字人（AVTR-1）环境检查"
