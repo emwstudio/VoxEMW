@@ -121,9 +121,15 @@ pip install --no-cache-dir onnxruntime-gpu==1.24.4
 # H264 编码器调优（aiortc 无官方入口，直接改 site-packages；幂等 sed）：
 # gop_size 加 75（3s 一关键帧）——x264 默认 250 帧（10s），切 persona 换肖像时
 # 新画面被当旧画面的 P 帧增量编码，要等关键帧才干净（2026-08-18 切换重影修复）
+# + vbv-maxrate/bufsize=3000（峰值码率钳到平均码率，防运动峰值爆带宽丢帧，
+# iPad 链路马赛克修复）
 H264=.venv/lib/python3.12/site-packages/aiortc/codecs/h264.py
-[ -f "$H264" ] && grep -q "gop_size" "$H264" || \
-    sed -i 's|            self.codec.options = {|            self.codec.gop_size = 75  # VoxEMW：3s 一关键帧\n            self.codec.options = {|' "$H264"
+if [ -f "$H264" ]; then
+    grep -q "gop_size" "$H264" || \
+        sed -i 's|            self.codec.options = {|            self.codec.gop_size = 75  # VoxEMW：3s 一关键帧\n            self.codec.options = {|' "$H264"
+    grep -q "vbv-maxrate" "$H264" || \
+        sed -i 's|                "tune": "zerolatency",|                "tune": "zerolatency",\n                "vbv-maxrate": "4000",  # VoxEMW：峰值码率钳制（=video_bitrate 4M）\n                "vbv-bufsize": "4000",|' "$H264"
+fi
 deactivate
 
 echo "==> [2/6] 数字人（AVTR-1）环境检查"

@@ -102,7 +102,7 @@ avatar:
 # ---------------------------------------------------------------------------
 rtc:
   enabled: true
-  video_bitrate: 2000000               # 视频目标码率（720p25 数字人最佳画质档）
+  video_bitrate: 4000000               # 视频目标码率（720p25 数字人最佳画质档；VBV 峰值同步钳此值）
   turn_url: "turn:127.0.0.1:3478?transport=udp"
   turn_username: "voxemw"
   turn_credential: "voxemw-turn-2026"
