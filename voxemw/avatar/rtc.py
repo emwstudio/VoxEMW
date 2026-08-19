@@ -116,6 +116,7 @@ class RTCVideoTrack:
                 async def produce():
                     import av
 
+                    sched.drop_stale_frames()  # 建连期积压的 idle 帧不播，从最新帧起步
                     pts = 0
                     start = time.monotonic()
                     stat_n, stat_t = 0, start
@@ -204,17 +205,7 @@ class RTCManager:
         pc = RTCPeerConnection(RTCConfiguration(iceServers=ice))
         self._pcs.add(pc)
         pc.addTrack(RTCAudioTrack(sched).track)
-        # 视频轨 H264 优先：iPad/macOS 的 WebKit 用 VideoToolbox 硬解，H264 是
-        # Apple 原生亲儿子；VP8 硬解的参考帧管理在 iPad 上偶发重影（2026-08-18）。
-        vt = pc.addTransceiver(RTCVideoTrack(sched).track, direction="sendonly")
-        from aiortc.rtcrtpsender import RTCRtpSender
-
-        h264_codecs = [
-            c for c in RTCRtpSender.getCapabilities("video").codecs
-            if c.mimeType.lower() == "video/h264"
-        ]
-        if h264_codecs:
-            vt.setCodecPreferences(h264_codecs)
+        pc.addTrack(RTCVideoTrack(sched).track)
 
 
         @pc.on("connectionstatechange")
@@ -228,7 +219,7 @@ class RTCManager:
             RTCSessionDescription(sdp=offer["sdp"], type=offer["type"]))
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)  # aiortc 不支持 trickle：此调用完成后候选已收齐
-        logger.info("RTC answer 已发（音频 48k Opus + 视频 720p25 H264）")
+        logger.info("RTC answer 已发（音频 48k Opus + 视频 720p25 VP8）")
         return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
 
     async def close_all(self) -> None:

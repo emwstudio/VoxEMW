@@ -95,7 +95,7 @@ avatar:
 
 # ---------------------------------------------------------------------------
 # WebRTC 音画轨（2026-08-07，对标 AVTR-1 官方 demo）：下行音画走 RTP
-# （H264 720p25 + Opus 48k），浏览器按时间戳原生音画同步；带宽比 WS 推 JPEG
+# （VP8 720p25 + Opus 48k），浏览器按时间戳原生音画同步；带宽比 WS 推 JPEG
 # 省一个数量级。传输：SSH 隧道用户需 TURN（媒体过不了 TCP 隧道）——实例跑
 # coturn（configs/turnserver.conf，loopback :3478），隧道用 scripts/tunnel.sh
 # （含 3478）；LAN 直连走 host candidate，无需 TURN。前端 ?vbr=kbps 可临时调码率。

@@ -82,6 +82,13 @@ class AVSyncScheduler:
         self._speech_out = 0
         self._suppress_speech = True  # 封杀在途陈旧 speech 帧，直到新音频到达
 
+    def drop_stale_frames(self) -> None:
+        """RTC 视频轨启动时清积压帧，只留最新一帧——ICE 协商/建连期间
+        avatar 的 idle 帧会持续积进队列，produce 从队头取会永远落后
+        积压时长（实测积到 121 帧 = 画面比声音慢 ~5s，2026-08-19）。"""
+        if self._frames:
+            self._frames = deque([self._frames[-1]])
+
     def close(self) -> None:
         """会话结束：唤醒阻塞中的取帧协程退出。"""
         self._closed = True

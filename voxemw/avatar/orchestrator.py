@@ -408,7 +408,7 @@ def create_app(config: dict):
 
         rtc_manager = RTCManager(rtc_cfg)
         rtc_ice_servers = rtc_manager.browser_ice_servers
-        logger.info("WebRTC 音画轨启用（H264 + Opus）")
+        logger.info("WebRTC 音画轨启用（VP8 + Opus）")
 
     # 单用户产品：新浏览器连接顶掉旧会话（换网络/僵尸会话不再需要刷新两次）
     current_session: dict = {"session": None}
