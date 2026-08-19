@@ -3,8 +3,11 @@
 对齐原理（对标 AVTR-1 官方 demo worklets/rendering.py 的时间戳模型）：
 - avatar 引擎每消费 0.2s（3200 采样@16k）音频输出 5 帧
   → 第 k 帧（0 起）对应音频第 k*640 采样，帧序号 = 音频时间轴
-- WebRTC 音频轨/视频轨分别按 20ms / 40ms 实时节奏从本调度器取数据，
-  同一时刻取出的音频与帧天然对齐；浏览器按 RTP/RTCP 时间戳原生同步音画
+- avatar 在 TTS 生成时刻就拿到音频（RTF<1，帧提前渲染好，前瞻窗口有着落）；
+  展示侧由播放时钟门控：第 k 帧只在已有 k*640 采样被音频轨真正取走
+  （= 正在扬声器播放）后才放行，超前则重复上一帧等音频追上
+- WebRTC 音频轨/视频轨分别按 20ms / 40ms 实时节奏从本调度器取数据；
+  浏览器按 RTP/RTCP 时间戳原生同步音画
 - 句尾零填充闭嘴帧（is_speech 但序号超出实喂音频时长）在此丢弃——
   它对应不存在的音频，WS 时代靠前端裁剪，现收敛到服务端
 
@@ -23,7 +26,7 @@ SAMPLES_PER_FRAME = 640          # 16kHz / 25fps，一帧对应 640 采样
 AUDIO_TICK_SAMPLES = 320         # 音频轨每次取用量：20ms @16k
 FRAME_TICK_SECONDS = 1 / 25      # 视频轨节奏：25fps
 
-DEFAULT_AUDIO_LEAD = 0.25        # 新回复音频压后秒数（见 feed_audio 注释）
+DEFAULT_AUDIO_LEAD = 0.20        # 新回复音频压后秒数（见 feed_audio 注释；实测 0.20 口型最准）
 
 
 class AVSyncScheduler:
@@ -49,6 +52,11 @@ class AVSyncScheduler:
         self._suppress_speech = False  # flush 后封杀在途陈旧 speech 帧
         self.tail_dropped = 0         # 丢尾帧计数（排障观测）
         self.stale_dropped = 0        # 陈旧帧封杀计数（排障观测）
+        # 已真实播出去的采样数（RTC 音频轨每取一拍真音频 +=320）。
+        # speech 帧的展示门控用播放时钟而不是喂入时钟：TTS 生成快于播放
+        #（RTF<1），按喂入量放行会让嘴型超前于扬声器在播的内容
+        #（2026-08-19 良子长文本嘴快进/提前结束的根因）
+        self._audio_samples_played = 0
 
     # ── 生产者（Session 转发协程调用）──
 
@@ -78,6 +86,7 @@ class AVSyncScheduler:
         """打断：清队列、游标归零。_last_jpeg 保留——新帧到达前画面不黑屏。"""
         self._audio.clear()
         self._audio_samples_fed = 0
+        self._audio_samples_played = 0
         self._frames.clear()
         self._speech_out = 0
         self._suppress_speech = True  # 封杀在途陈旧 speech 帧，直到新音频到达
@@ -102,23 +111,34 @@ class AVSyncScheduler:
         if len(self._audio) >= need and time.monotonic() >= self._audio_ready_at:
             out = bytes(self._audio[:need])
             del self._audio[:need]
+            self._audio_samples_played += AUDIO_TICK_SAMPLES
             return out
         return b"\x00" * need
 
     async def next_frame_tick(self) -> bytes | None:
-        """取下一显示帧（JPEG 字节）。队空重复上一帧（防定格）；close 后返回 None。"""
+        """取下一显示帧（JPEG 字节）。队空重复上一帧（防定格）；close 后返回 None。
+
+        speech 帧按播放时钟放行：第 k 帧（0 起）对应音频第 k*640 采样，
+        只有当这些采样已被音频轨真正取走（= 即将/正在扬声器播放）才弹出；
+        超前则重复上一帧等音频追上。avatar 在 TTS 生成时刻就拿到音频
+        （RTF<1，帧提前渲染好），靠这道门把展示时刻对齐到播放时刻。
+        """
         while True:
             if self._closed:
                 return None
             while self._frames:
-                jpeg, is_speech = self._frames.popleft()
+                jpeg, is_speech = self._frames[0]
                 if is_speech:
                     if self._speech_out >= self._audio_samples_fed // SAMPLES_PER_FRAME:
                         # 零填充闭嘴尾帧：只丢这一帧，绝不清队列
                         #（清队列会把排在后面的新回复真帧一起误杀，实测踩过）
+                        self._frames.popleft()
                         self.tail_dropped += 1
                         continue
+                    if self._speech_out * SAMPLES_PER_FRAME > self._audio_samples_played:
+                        break  # 帧超前于已播音频 → 等音频时钟（走下方限时等待）
                     self._speech_out += 1
+                self._frames.popleft()
                 self._last_jpeg = jpeg
                 return jpeg
             self._frame_event.clear()
@@ -128,6 +148,13 @@ class AVSyncScheduler:
                     await asyncio.wait_for(self._frame_event.wait(), FRAME_TICK_SECONDS)
                 except asyncio.TimeoutError:
                     return self._last_jpeg
+            elif self._frames:
+                # 队首 speech 帧超前且还没有上一帧可重复：限时等音频追上再重查，
+                # 不能裸等 frame_event（新帧未必再来，会死锁）
+                try:
+                    await asyncio.wait_for(self._frame_event.wait(), FRAME_TICK_SECONDS)
+                except asyncio.TimeoutError:
+                    pass
             else:
                 await self._frame_event.wait()
 

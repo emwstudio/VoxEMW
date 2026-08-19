@@ -464,7 +464,7 @@ function switchPersona(id) {
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  // ?alead=毫秒：音频压后量（音画对齐补偿，服务端调度器执行），默认 250
+  // ?alead=毫秒：音频压后量（音画对齐补偿，服务端调度器执行），默认 200（实测最准）
   const q = new URLSearchParams(location.search);
   const qs = q.get("alead") ? `?alead=${encodeURIComponent(q.get("alead"))}` : "";
   ws = new WebSocket(`${proto}://${location.host}/ws${qs}`);

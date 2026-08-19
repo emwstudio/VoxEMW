@@ -19,6 +19,12 @@ def _jpeg(tag: int) -> bytes:
     return bytes([tag]) * 10  # 假 JPEG，用首字节区分
 
 
+def _play(s: AVSyncScheduler, samples: int) -> None:
+    """模拟 RTC 音频轨消费：推进播放时钟（speech 帧的放行门）。"""
+    for _ in range(samples // AUDIO_TICK_SAMPLES):
+        s.next_audio_tick()
+
+
 def test_audio_tick_exact_and_silence():
     s = AVSyncScheduler(audio_lead=0)  # lead=0：立即可播
     # 空缓冲 → 静音
@@ -47,13 +53,14 @@ def test_audio_lead_holds_then_plays():
 
 def test_speech_frames_pass_and_tail_dropped():
     async def scenario():
-        s = AVSyncScheduler()
+        s = AVSyncScheduler(audio_lead=0)
         # 喂 1.0s 音频（16000 采样 = 25 帧）+ 25 真帧 + 4 零填充尾帧
         s.feed_audio(_pcm(16000))
         for _ in range(25):
             s.feed_frame(_jpeg(1), is_speech=True)
         for _ in range(4):
             s.feed_frame(_jpeg(2), is_speech=True)
+        _play(s, 16000)  # 播放时钟走满 25 帧
         got = [await s.next_frame_tick() for _ in range(25)]
         assert all(g == _jpeg(1) for g in got)  # 25 真帧全过
         # 尾帧已被连簇清掉 → 下一拍取到「重复上一帧」
@@ -63,13 +70,34 @@ def test_speech_frames_pass_and_tail_dropped():
     asyncio.run(scenario())
 
 
+def test_speech_frames_gated_by_playback_clock():
+    """帧超前于播放时钟时：不弹队列、重复上一帧，等音频追上再放行。"""
+    async def scenario():
+        s = AVSyncScheduler(audio_lead=0)
+        s.feed_audio(_pcm(SAMPLES_PER_FRAME * 3))  # 3 帧音频
+        for tag in (1, 2, 3):
+            s.feed_frame(_jpeg(tag), is_speech=True)
+        # 一帧音频都没播：帧 0 放行（其音频窗从 0 开始），帧 1 起被门控
+        assert await s.next_frame_tick() == _jpeg(1)
+        assert await s.next_frame_tick() == _jpeg(1)  # 帧 1 超前 → 重复上一帧
+        assert s.queued_frames == 2  # 超前的帧留在队列里，没丢
+        _play(s, SAMPLES_PER_FRAME)  # 播完帧 0 的音频
+        assert await s.next_frame_tick() == _jpeg(2)
+        _play(s, SAMPLES_PER_FRAME)
+        assert await s.next_frame_tick() == _jpeg(3)
+        assert s.queued_frames == 0
+
+    asyncio.run(scenario())
+
+
 def test_partial_audio_frame_count_floors():
     async def scenario():
-        s = AVSyncScheduler()
+        s = AVSyncScheduler(audio_lead=0)
         # 16100 采样 → 25 帧有效（100 采样零头不构成一帧）
         s.feed_audio(_pcm(16100))
         for _ in range(26):
             s.feed_frame(_jpeg(1), is_speech=True)
+        _play(s, 16000)  # 播放时钟走满 25 帧（零头 100 采样不足一拍）
         got = [await s.next_frame_tick() for _ in range(26)]
         # 第 26 帧被丢 → 取到的是重复上一帧（内容同第 25 帧）
         assert got == [_jpeg(1)] * 26
@@ -80,11 +108,12 @@ def test_partial_audio_frame_count_floors():
 
 def test_idle_frames_not_counted():
     async def scenario():
-        s = AVSyncScheduler()
+        s = AVSyncScheduler(audio_lead=0)
         s.feed_frame(_jpeg(9), is_speech=False)
         s.feed_audio(_pcm(SAMPLES_PER_FRAME))
         s.feed_frame(_jpeg(1), is_speech=True)
         assert await s.next_frame_tick() == _jpeg(9)  # idle 帧不占 speech 序号
+        _play(s, SAMPLES_PER_FRAME)
         assert await s.next_frame_tick() == _jpeg(1)
 
     asyncio.run(scenario())
@@ -92,24 +121,24 @@ def test_idle_frames_not_counted():
 
 def test_flush_resets_counters():
     async def scenario():
-        s = AVSyncScheduler()
+        s = AVSyncScheduler(audio_lead=0)
         s.feed_audio(_pcm(16000))
         for _ in range(10):
             s.feed_frame(_jpeg(1), is_speech=True)
         s.flush()
         assert s.buffered_audio_seconds == 0
         assert s.queued_frames == 0
-        # flush 后新一轮：新音频重新从序号 0 计
+        # flush 后新一轮：新音频重新从序号 0 计（播放时钟也归零）
         s.feed_audio(_pcm(SAMPLES_PER_FRAME * 2))
         s.feed_frame(_jpeg(3), is_speech=True)
-        assert await s.next_frame_tick() == _jpeg(3)
+        assert await s.next_frame_tick() == _jpeg(3)  # 帧 0 无需等待即放行
 
     asyncio.run(scenario())
 
 
 def test_repeat_last_frame_when_starved():
     async def scenario():
-        s = AVSyncScheduler()
+        s = AVSyncScheduler(audio_lead=0)
         s.feed_audio(_pcm(SAMPLES_PER_FRAME))
         s.feed_frame(_jpeg(7), is_speech=True)
         assert await s.next_frame_tick() == _jpeg(7)

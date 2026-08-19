@@ -9,7 +9,7 @@ speech/speech_scheduler.py，2026-08-04 逐条对账）：
 - chunk 步进 0.2s（3200 采样，官方 present=5 帧）产 5 帧，输入窗口 6480 采样
   （当前 3280 + 前瞻 3200+80，官方 future=5 帧+80 采样；renderer/models.py）。
   模型需 0.205s 前瞻 → 稳态供帧天然落后音频 ~0.2s（+生成 ~0.08s），
-  由 orchestrator 侧 AVSyncScheduler 压后音频 0.25s 对齐（?alead= 可调）。
+  由 orchestrator 侧 AVSyncScheduler 压后音频 0.20s 对齐（?alead= 可调，实测 0.20 最准）。
 - 运动上下文（AVTR1State）整个会话连续透传——官方 state 只在 session 开始为
   None，interrupt（打断）不重置（DiscardAvatarSpeechBuffer 只清音频队列）。
   故本引擎 reset() 只清音频缓冲、保留运动上下文（打断后静音 chunk 自然衰减
@@ -242,6 +242,7 @@ class AVTR1Engine:
         from avtr1_renderer.types import Chunk
 
         last_idle_at = 0.0
+        last_speech_at = 0.0  # 上一个 speech chunk 的渲染完成时刻（1x 自节拍锚点）
         while True:
             with self._cond:
                 while not self._closed:
@@ -293,6 +294,16 @@ class AVTR1Engine:
             )
             frames = np.stack([self._to_display(f) for f in frames_iter])
             on_frames(frames, is_idle)
+            if not is_idle:
+                # speech 渲染限速到 1x 实时：TTS 喂入快于播放（RTF<1），GPU 又有
+                # ~3x 余量，不限速会瞬间渲完整段，把 orchestrator 的帧队列
+                #（125 帧帽）撑爆→静默丢最旧帧→嘴型乱序。1x 到达=1x 消费，
+                # 队列保持稳定；最终音画对齐由 orchestrator 的播放时钟门控完成。
+                # 固定速率、落后不追产（TTS 停顿后播放同样停顿，无需追）
+                wait = last_speech_at + CHUNK_SECONDS - _time.monotonic()
+                if wait > 0:
+                    _time.sleep(wait)
+                last_speech_at = _time.monotonic()
 
     def warmup(self, on_frames) -> None:
         """静音跑 2+ chunk：TRT 首个 chunk 初始化 + 运动上下文预填。"""

@@ -281,6 +281,8 @@ class Session:
                 for msg in ctrl_msgs:
                     await self.avatar.send(json.dumps(msg))
             if pcm is not None and self.avatar is not None:
+                # 生成时刻即喂 avatar：TTS 比播放快（RTF<1），帧提前渲染好，
+                # 超前问题由 sched 的播放时钟门控在展示侧收敛（见 avsync）
                 await self.avatar.send(json.dumps({
                     "type": "audio",
                     "pcm": base64.b64encode(pcm).decode(),
@@ -451,7 +453,7 @@ def create_app(config: dict):
             await old.close()
         # ?alead=毫秒：音频压后量（等 avatar 渲染追赶，音画对齐的关键补偿，可调）
         try:
-            lead = float(request.query.get("alead", "250")) / 1000.0
+            lead = float(request.query.get("alead", "200")) / 1000.0
         except ValueError:
             lead = 0.25
         sched = AVSyncScheduler(audio_lead=lead) if rtc_manager is not None else None
