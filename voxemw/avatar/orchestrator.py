@@ -125,6 +125,31 @@ def avatar_state_transition(event: dict, speaking: bool) -> tuple[bool, list[dic
     return speaking, msgs
 
 
+_PUNCT = "。！？；，、…—.!?;,"
+
+
+def heard_prefix(transcript: str, audio_seconds: float, played_seconds: float) -> str:
+    """打断时估算用户实际听到的文本前缀（纯函数，便于单测）。
+
+    思路对齐 AVTR-1 官方 SpeechScheduler 的 played_duration 语义：播放进度
+    占已生成音频的比例 ≈ 听到的文本比例（中文语速在一条回复内足够均匀）。
+    不足 2 字不值得注入（上游会把整条回复从上下文回滚，零前缀=保持回滚）。
+    截断处回退到最近的标点，避免半个词留在上下文里。
+    """
+    if not transcript or audio_seconds <= 0 or played_seconds <= 0:
+        return ""
+    n = int(len(transcript) * min(1.0, played_seconds / audio_seconds))
+    if n < 2:
+        return ""
+    cut = transcript[:n]
+    if n < len(transcript):
+        for i in range(len(cut) - 1, 0, -1):
+            if cut[i] in _PUNCT:
+                cut = cut[: i + 1]
+                break
+    return cut
+
+
 class Session:
     """一个浏览器连接 ↔ 一路 s2s + 一路 avatar 的编排。"""
 
@@ -147,6 +172,8 @@ class Session:
         self._avatar_speaking = False  # 是否已向 avatar 下发 speech_active=on
         self._resp_had_content = False  # 本轮回复是否有任何文本/音频产出（空回复兜底用）
         self._empty_nudged = False      # 本轮是否已追问过（防追问死循环）
+        self._reply_transcript = ""     # 本轮回复的转写文本（打断回报估算用）
+        self._reply_audio_samples = 0   # 本轮回复已生成音频采样数（同上）
 
     async def run(self) -> None:
         import websockets
@@ -251,7 +278,13 @@ class Session:
             etype = event.get("type", "")
             if etype == "response.created":
                 self._resp_had_content = False
-            elif pcm is not None or (
+                self._reply_transcript = ""     # 本轮回复转写（打断回报用）
+                self._reply_audio_samples = 0   # 本轮回复已生成音频采样
+            if etype == "response.output_audio_transcript.delta":
+                self._reply_transcript += event.get("delta", "")
+            if pcm is not None:
+                self._reply_audio_samples += len(pcm) // 2
+            if pcm is not None or (
                 etype in ("response.output_audio_transcript.delta",
                           "response.output_text.delta",
                           "response.output_audio_transcript.done")
@@ -274,6 +307,7 @@ class Session:
                     await self.s2s.send(json.dumps({"type": "response.create"}))
             if pcm is not None and self.sched is not None:
                 self.sched.feed_audio(pcm)  # RTC 音频轨（与喂 avatar 同一股流）
+            was_speaking = self._avatar_speaking  # 打断回报判定要在状态翻转前取
             if self.avatar is not None:
                 self._avatar_speaking, ctrl_msgs = avatar_state_transition(
                     event, self._avatar_speaking
@@ -289,6 +323,20 @@ class Session:
                 }))
             if reset_avatar and self.avatar is not None:
                 await self.avatar.send(json.dumps({"type": "reset"}))
+            if reset_avatar and was_speaking and self.sched is not None:
+                # 打断回报（对齐 AVTR-1 官方 played_duration 语义）：上游会把
+                # 整条回复从上下文回滚，但用户实际已经听到了一段——把已听前缀
+                # 作为 assistant 消息补写回上下文（须在下方 flush 清计数前读）
+                played_s = self.sched.reply_played_seconds
+                prefix = heard_prefix(self._reply_transcript,
+                                      self._reply_audio_samples / 16000, played_s)
+                if prefix:
+                    logger.info("打断回报：已播 %.1fs，已听前缀 %d 字补写回上下文",
+                                played_s, len(prefix))
+                    await self.s2s.send(json.dumps({
+                        "type": "conversation.item.create",
+                        "item": {"type": "message", "role": "assistant",
+                                 "content": [{"type": "output_text", "text": prefix}]}}))
             if reset_avatar and self.sched is not None:
                 self.sched.flush()  # 打断：清 RTC 音画队列
             if relay:

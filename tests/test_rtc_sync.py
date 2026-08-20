@@ -148,6 +148,28 @@ def test_repeat_last_frame_when_starved():
     asyncio.run(scenario())
 
 
+def test_reply_played_seconds_tracks_current_reply():
+    async def scenario():
+        s = AVSyncScheduler(audio_lead=0)
+        s.feed_audio(_pcm(16000))  # 1.0s 回复
+        assert s.reply_played_seconds == 0
+        _play(s, 8000)  # 播了 0.5s
+        assert s.reply_played_seconds == pytest.approx(0.5)
+        # 回复播完、队列走空 → 新回复重起游标
+        _play(s, 8000)
+        s.feed_audio(_pcm(3200))  # 第二条回复 0.2s
+        assert s.reply_played_seconds == 0
+        _play(s, 3200)
+        assert s.reply_played_seconds == pytest.approx(0.2)
+        # flush（打断）后归零
+        s.feed_audio(_pcm(16000))
+        _play(s, 3200)
+        s.flush()
+        assert s.reply_played_seconds == 0
+
+    asyncio.run(scenario())
+
+
 def test_close_unblocks_waiter():
     async def scenario():
         s = AVSyncScheduler()

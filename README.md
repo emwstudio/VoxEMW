@@ -1,6 +1,6 @@
 # VoxEMW · 数字人实时语音聊天助手
 
-[![version](https://img.shields.io/badge/version-v1.7.3-blue)](https://github.com/emwstudio/VoxEMW/tags)
+[![version](https://img.shields.io/badge/version-v1.7.4-blue)](https://github.com/emwstudio/VoxEMW/tags)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6?logo=bilibili&logoColor=white)](https://space.bilibili.com/492428186)
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000?logo=youtube&logoColor=white)](https://www.youtube.com/@emw_studio)
@@ -90,8 +90,9 @@ bash scripts/tunnel.sh        # 转发 8000（网页）+ 3478（WebRTC 媒体）
 
 ## 特性
 
-- **完全离线**：本地 Qwen3.8-27B 当大脑（MTP 投机解码 41.7 tok/s），零 API 费用零外网依赖
+- **完全离线**：本地 Qwen3.8-27B 当大脑（Dynamic V3.0 量化 + MTP 投机解码 55.5 tok/s），零 API 费用零外网依赖
 - **语义判停**：SmartTurn 复核——你停顿他沉住气，你说完他秒接，中途停顿不抢答不丢字
+- **打断记忆**：中途打断，数字人记得刚才说到哪（已播时长回报，已听内容写回上下文）
 - **流式字幕**：回答逐字上屏，不整句砸脸
 - **空回复兜底**：模型偶发失声自动追问重答，对话不断流
 - **长对话不漂移**：超 30 轮后旧对话后台摘要压缩

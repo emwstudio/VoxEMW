@@ -3,19 +3,18 @@
 # torch/torchaudio 需先单独安装 cu128 wheel，flash_attn 与 ffmpeg 另装，
 # 见 scripts/autodl_setup.sh（本文件只管 pip 常规依赖）。
 
-# 语音管线主体（pip 依赖；当前为上游 main @5a0c79f——BackendSpec 注册表 +
-# SmartTurn 判停 + 流式字幕。2026-08-16 按 docs/upgrade-regression.md 五阶段
-# 验收后扶正；回滚锚点：main @5b443c8）
+# 语音管线主体（pip 依赖；当前为上游 main @f75db25——Supertonic TTS 后端 +
+# TTS 念 Markdown 修复（#497）。2026-08-20 升级；回滚锚点：main @5a0c79f）
 # 注意 glibc<2.39 实例（Ubuntu 20.04 老镜像）：s2s 的 ggml 依赖 qwentts-cpp-python
 # 只有 manylinux_2_39 轮子，直接装会 "No matching distribution"——先装本文件其余项，
 # 再 pip install --no-deps speech-to-speech@…，最后补装它其余核心依赖
 # （见 scripts/autodl_setup.sh 的 venv-next 段；我们用不到 qwen3-tts 的 ggml 后端）
-speech-to-speech @ git+https://github.com/huggingface/speech-to-speech.git@5a0c79f538488dd508e5353ba58f37a101aaf9cb
+speech-to-speech @ git+https://github.com/huggingface/speech-to-speech.git@f75db25eefe4fb65e9a2f1cf788f5e855682d329
 
 # 自定义积木依赖
 voxcpm                  # TTS：openbmb/VoxCPM2
 transformers            # STT：SenseVoice
-funasr                  # STT：iic/SenseVoiceSmall（ModelScope）
+funasr>=1.4.2           # STT：iic/SenseVoiceSmall（ModelScope）；1.4.2 修 english.json 归一化
 # 注意：torchcodec 与 transformers 5.x 共存会炸（libnvrtc.so.13），装上了请卸载
 
 # 编排与服务

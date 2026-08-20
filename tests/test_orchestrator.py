@@ -6,7 +6,29 @@ from voxemw.avatar.orchestrator import (
     avatar_state_transition,
     build_session_update,
     classify_s2s_event,
+    heard_prefix,
 )
+
+
+def test_heard_prefix_proportional_cut():
+    # 播放 1/4 音频 → 约 1/4 文本，截到最近标点
+    t = "这事儿吧，得从登山说起。我跟你说，当年那个坡啊，真不是人爬的，累死个人。"
+    out = heard_prefix(t, audio_seconds=8.0, played_seconds=2.0)
+    assert out == "这事儿吧，"
+    # 全播完 → 全文保留
+    assert heard_prefix(t, 8.0, 8.0) == t
+    # 还没开播 / 无音频 / 空转写 → 空（保持整条回滚）
+    assert heard_prefix(t, 8.0, 0) == ""
+    assert heard_prefix(t, 0, 1.0) == ""
+    assert heard_prefix("", 8.0, 1.0) == ""
+    # 不足 2 字不注入
+    assert heard_prefix(t, 8.0, 0.1) == ""
+
+
+def test_heard_prefix_no_punctuation_keeps_raw_cut():
+    t = "没有一个标点的长句子在这里直接被切断掉"
+    out = heard_prefix(t, audio_seconds=4.0, played_seconds=2.0)
+    assert out == t[: len(t) // 2]
 
 
 def test_build_session_update():

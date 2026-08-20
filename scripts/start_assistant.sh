@@ -41,19 +41,24 @@ sleep 2
 
 # 本地 LLM（离线版大脑，llama-server :8081）：二进制和模型都在才启动，已在跑则跳过
 # LD_LIBRARY_PATH 先备好：llama-server 的 cudart/cublas 用主 venv 的 nvidia pip 库
+#（b10516 二进制已把 conda CUDA 12.8 运行库路径烧进 rpath，无需在此加
+#  /root/miniconda3/lib——加了会让 turnserver 误用 conda 的 libffi 崩掉）
 MAIN_SP=.venv/lib/python3.12/site-packages
 export LD_LIBRARY_PATH="$(echo $PWD/$MAIN_SP/nvidia/*/lib | tr " " ":"):${LD_LIBRARY_PATH:-}"
-LLAMA_BIN=/root/autodl-tmp/llama.cpp/build/bin/llama-server
+LLAMA_BIN=/root/autodl-tmp/llama.cpp-b10516/build/bin/llama-server
 LLAMA_MODEL=/root/autodl-tmp/models/Qwen3.8-27B-UD-Q6_K_XL.gguf
 if [ -x "$LLAMA_BIN" ] && [ -f "$LLAMA_MODEL" ]; then
     if pgrep -f "llama-server" > /dev/null 2>&1; then
         echo "==> 本地 LLM 已在跑（:8081），跳过"
     else
         echo "==> 启动本地 LLM（Qwen3.8-27B Q6 + MTP，:8081）"
-        # 采样参数按 Unsloth 官方非思考模式推荐值
+        # 采样参数按 Unsloth 官方非思考模式推荐值。
+        # --reasoning off：V3.0 模板的 thinking 默认开启，思考链动辄几百 token
+        # 把回答憋在肚子里（实测 max_tokens 300 全被推理吃光、content 为空，
+        # 还偶发英文安全拒答）——语音人设场景要的是快答，关掉思考（2026-08-21）
         nohup "$LLAMA_BIN" -m "$LLAMA_MODEL" \
             --alias qwen38-local --host 127.0.0.1 --port 8081 \
-            -ngl 99 -c 8192 -fa on --spec-type draft-mtp \
+            -ngl 99 -c 8192 -fa on --spec-type draft-mtp --reasoning off \
             --temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0 --presence-penalty 1.5 \
             > logs/llama_server.log 2>&1 &
         echo "    PID=$!，日志 logs/llama_server.log"

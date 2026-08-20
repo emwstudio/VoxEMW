@@ -57,6 +57,7 @@ class AVSyncScheduler:
         #（RTF<1），按喂入量放行会让嘴型超前于扬声器在播的内容
         #（2026-08-19 良子长文本嘴快进/提前结束的根因）
         self._audio_samples_played = 0
+        self._played_at_reply_start = 0  # 当前回复开播时的播放游标（算本条已听时长用）
 
     # ── 生产者（Session 转发协程调用）──
 
@@ -65,6 +66,7 @@ class AVSyncScheduler:
         if not self._audio:
             # 队列从空到非空 = 新回复开始：压后 lead 秒等 avatar 渲染追赶
             self._audio_ready_at = time.monotonic() + self._audio_lead
+            self._played_at_reply_start = self._audio_samples_played
         self._suppress_speech = False  # 新音频到 → 其后续 speech 帧合法，解除封杀
         self._audio.extend(pcm)
         self._audio_samples_fed += len(pcm) // 2
@@ -87,6 +89,7 @@ class AVSyncScheduler:
         self._audio.clear()
         self._audio_samples_fed = 0
         self._audio_samples_played = 0
+        self._played_at_reply_start = 0
         self._frames.clear()
         self._speech_out = 0
         self._suppress_speech = True  # 封杀在途陈旧 speech 帧，直到新音频到达
@@ -163,6 +166,14 @@ class AVSyncScheduler:
     @property
     def buffered_audio_seconds(self) -> float:
         return len(self._audio) / 2 / 16000
+
+    @property
+    def reply_played_seconds(self) -> float:
+        """当前回复已被真实播放的秒数（打断回报用：用户实际听到了多少）。
+
+        回复边界以音频队列「空→非空」判定；多条回复积压连播时只对
+        最前面那条精确（后面的还没开播，归零合理）。"""
+        return max(0, self._audio_samples_played - self._played_at_reply_start) / 16000
 
     @property
     def queued_frames(self) -> int:
