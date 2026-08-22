@@ -76,6 +76,10 @@ def render_s2s_argv(config: dict, env: dict | None = None) -> list[str]:
             argv += ["--stream_batch_sentences", str(llm["stream_batch_sentences"])]
         if "reasoning_effort" in llm:
             argv += ["--responses_api_reasoning_effort", str(llm["reasoning_effort"])]
+    elif backend == "mlx-lm":
+        # Mac 本地 LLM（mlx-lm）：模型经 --model_name 传入（上行已统一加），
+        # 只需设备参数；采样参数上游有默认值
+        argv += ["--llm_device", str(llm.get("device", "mps"))]
     elif backend == "transformers":
         argv += [
             "--llm_device", str(llm.get("device", "cuda")),
