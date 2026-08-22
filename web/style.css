@@ -1,20 +1,20 @@
-/* VoxEMW 良子语音助手 —— 深色舞台布局（纯语音，静态肖像） */
+/* 良子语音助手 —— 星空舞台（纯语音，静态肖像 + 全屏星空 canvas） */
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #0d1117;
-  --panel: #161b22;
-  --border: #30363d;
+  --bg: #070b1a;
+  --panel: rgba(16, 22, 44, 0.66);
+  --border: rgba(90, 110, 180, 0.35);
   --text: #e6edf3;
   --muted: #8b949e;
-  --accent: #4c9aff;
+  --accent: #6aa5ff;
   --live: #3fb950;
   --warn: #d29922;
 }
 
 body {
-  background: var(--bg);
+  background: radial-gradient(ellipse at 50% 30%, #101736 0%, var(--bg) 70%);
   color: var(--text);
   font-family: -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif;
   min-height: 100vh;
@@ -22,8 +22,19 @@ body {
   justify-content: center;
 }
 
+/* 全屏星空：所有动态在 canvas 里，内容层浮在上面 */
+#space {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+}
+
 .stage {
-  width: min(1080px, 100vw);
+  position: relative;
+  z-index: 1;
+  width: min(880px, 100vw);
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -35,7 +46,18 @@ body {
   align-items: baseline;
   gap: 12px;
 }
-.topbar h1 { font-size: 20px; letter-spacing: 1px; }
+.topbar h1 {
+  font-size: 20px;
+  letter-spacing: 2px;
+  text-shadow: 0 0 18px rgba(106, 165, 255, 0.45);
+}
+.powered {
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
 .status { font-size: 13px; color: var(--muted); }
 .status.live { color: var(--live); }
 .status.warn { color: var(--warn); }
@@ -55,6 +77,8 @@ body {
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 0 32px rgba(60, 90, 180, 0.18);
 }
 .pane-label {
   position: absolute;
@@ -64,7 +88,7 @@ body {
   border-radius: 999px;
   font-size: 12px;
   color: var(--text);
-  background: rgba(13, 17, 23, 0.6);
+  background: rgba(7, 11, 26, 0.6);
 }
 .avatar-wrap img {
   position: absolute;
@@ -80,7 +104,7 @@ body {
   bottom: 8px;
   font-size: 12px;
   color: var(--muted);
-  background: rgba(13, 17, 23, 0.6);
+  background: rgba(7, 11, 26, 0.6);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 3px 12px;
@@ -96,7 +120,7 @@ body {
   text-align: center;
   font-size: 12px;
   color: var(--muted);
-  background: rgba(13, 17, 23, 0.75);
+  background: rgba(7, 11, 26, 0.75);
 }
 .hidden { display: none; }
 
@@ -109,7 +133,7 @@ body {
   border-radius: 999px;
   font-size: 12px;
   color: var(--text);
-  background: rgba(13, 17, 23, 0.6);
+  background: rgba(7, 11, 26, 0.6);
 }
 #avatar-state.state-listening {
   color: #3fb950;
@@ -154,6 +178,7 @@ body {
   max-height: 260px;
   overflow-y: auto;
   background: var(--panel);
+  backdrop-filter: blur(6px);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 12px;
@@ -168,15 +193,25 @@ body {
 
 .controls { text-align: center; }
 .mic-btn {
-  padding: 12px 32px;
-  font-size: 16px;
+  padding: 16px 44px;
+  font-size: 18px;
   border-radius: 999px;
   border: none;
   background: var(--accent);
   color: #0d1117;
   font-weight: 600;
   cursor: pointer;
+  box-shadow: 0 0 24px rgba(106, 165, 255, 0.35);
+  animation: btn-invite 2.4s ease-in-out infinite;
 }
-.mic-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.mic-btn.live { background: var(--live); }
+.mic-btn:disabled { opacity: 0.5; cursor: not-allowed; animation: none; }
+.mic-btn.live {
+  background: var(--live);
+  box-shadow: 0 0 32px rgba(63, 185, 80, 0.45);
+  animation: none;
+}
+@keyframes btn-invite {
+  0%, 100% { box-shadow: 0 0 18px rgba(106, 165, 255, 0.25); }
+  50% { box-shadow: 0 0 36px rgba(106, 165, 255, 0.55); }
+}
 .hint { margin-top: 8px; font-size: 12px; color: var(--muted); }

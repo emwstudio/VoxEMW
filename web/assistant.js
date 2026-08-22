@@ -1,14 +1,16 @@
-/* VoxEMW 语音助手前端（纯语音模式，静态肖像）。
+/* 良子语音助手前端（纯语音模式，静态肖像 + 星空背景）。
  *
  * 下行音频：WebRTC——POST /rtc/offer 建连，音频（Opus）走 RTP 轨，
  *           挂隐藏 <audio> 播放（Chrome 对 RTC 音轨的解码只在媒体元素上才启动）。
  * WS /ws：上行麦克风/控制事件；下行转写/状态事件（音频体已剥离，走音轨）。
  * 肖像：/api/personas/{pid}/image 静态图，支持页面换图免重启。
+ * 星空：全屏 canvas 跟随对话状态——idle 无序漂移 / listening 向中心收拢的
+ *       专注波动（随麦克风能量）/ speaking 随 RTC 音频能量的径向声波。
  */
 
 "use strict";
 
-const VOX_JS_VERSION = "20260823c";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260823d";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -31,7 +33,6 @@ let ws = null;
 let mic = null;
 let personas = [];
 let currentPersona = null;
-let avatarOn = false;
 let assistantLine = null; // 正在流式累积的助手文本行
 let lineGotDeltas = false; // 当前行已收到逐字 delta（新上游 delta+done 双发，done 只收尾不重复上屏）
 let rtcEnabled = false;   // vox.status 下发：下行音频走 WebRTC
@@ -80,7 +81,7 @@ function ensureRtcAudio() {
 }
 
 // ---------------------------------------------------------------------------
-// WebRTC 音画：RTP 轨原生音画同步，<video> 直挂远程流
+// WebRTC 音频：RTP 轨下行，隐藏 <audio> 播放
 // ---------------------------------------------------------------------------
 
 async function startRTC() {
@@ -106,6 +107,7 @@ async function startRTC() {
       const el = ensureRtcAudio();
       el.srcObject = new MediaStream([e.track]);
       el.play().catch(() => {});
+      attachTtsAnalyser(e.streams[0] || new MediaStream([e.track]));
     }
   };
   conn.onconnectionstatechange = () => {
@@ -212,8 +214,14 @@ async function startMic() {
   const source = ctx.createMediaStreamSource(stream);
   const node = new AudioWorkletNode(ctx, "pcm-capture");
   node.port.onmessage = (e) => {
+    // 麦克风能量（星空 listening 模式的专注波动输入）：抽样 RMS，快攻慢放
+    const f = e.data;
+    let sum = 0;
+    for (let i = 0; i < f.length; i += 4) sum += f[i] * f[i];
+    const rms = Math.sqrt(sum / Math.max(1, f.length / 4));
+    SPACE.micLevel = Math.max(Math.min(rms * 5, 1), SPACE.micLevel * 0.9);
     if (ws && ws.readyState === WebSocket.OPEN) {
-      const int16 = floatTo16BitPCM(e.data);
+      const int16 = floatTo16BitPCM(f);
       ws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: base64FromInt16(int16) }));
     }
   };
@@ -262,26 +270,25 @@ function appendAssistantDelta(delta) {
 }
 
 // ---------------------------------------------------------------------------
-// 数字人画面（RTC 模式：<video> 挂远程流；未连接时显示静态肖像）
+// 静态肖像：/api/personas/{pid}/image（无数字人，肖像即全部画面）
 // ---------------------------------------------------------------------------
 
 function showStill(personaId) {
-  // 注意：不动 streaming 类——RTC 流的生命周期由 ontrack/断连事件管理。
-  // 这里若移除 streaming，persona 切换/换图后 video 会被永久定格成静态图
-  //（ontrack 只在建连时触发一次，streaming 再也加不回来）——2026-08-18 踩坑
   const persona = personas.find((p) => p.id === personaId);
   if (persona && persona.has_image) {
     els.still.src = `/api/personas/${personaId}/image`;
     els.still.classList.remove("hidden");
+    els.fallback.classList.add("hidden");
   } else {
+    // 无肖像时才显示占位条
     els.still.removeAttribute("src");
+    els.fallback.classList.remove("hidden");
   }
 }
 
 // ---------------------------------------------------------------------------
 // 对话状态角标：listening（用户说话中）/ thinking（说完到开口前）显示角标，
-// speaking / idle 隐藏。画面动感由 avatar 服务驱动：listening 时用户麦克风
-// 音频经 listen 轨喂给模型产生点头/注视等倾听反应，thinking/calm 纯静音
+// speaking / idle 隐藏。同一状态机驱动星空模式（见 tickSpace）
 // ---------------------------------------------------------------------------
 
 let avatarState = "idle"; // idle | listening | thinking | speaking
@@ -306,7 +313,7 @@ function setAvatarState(state) {
 
 const realtimeHandlers = {
   "input_audio_buffer.speech_started"() {
-    // 用户开口（打断）：服务端 flush 音画队列，本地只需更新状态
+    // 用户开口（打断）：服务端 flush 音频队列，本地只需更新状态
     assistantLine = null;
     setAvatarState("listening");
   },
@@ -366,9 +373,7 @@ function handleTextMessage(data) {
     return;
   }
   if (event.type === "vox.status") {
-    avatarOn = event.avatar === "on";
     currentPersona = event.persona;
-    els.fallback.classList.toggle("hidden", avatarOn);
     updatePersonaBar();
     showStill(currentPersona);
     rtcEnabled = !!(event.rtc && event.rtc.enabled);
@@ -384,7 +389,145 @@ function handleTextMessage(data) {
 }
 
 // ---------------------------------------------------------------------------
-// 调试角标（URL 加 ?debug=1 开启）：WebRTC 原生统计（到帧率/抖动/丢包/码率）
+// 星空背景：全屏 canvas，跟随对话状态（avatarState）的三种动态
+//   idle      无人说话：无序漂移 + 闪烁
+//   listening 你在说话：减速收拢向中心，随你的音量呼吸（专注倾听感）
+//   thinking  良子在想：持续缓慢内流 + 深呼吸
+//   speaking  良子说话：从中心向外的径向波动（能量取自 RTC 音频 RMS）
+// ---------------------------------------------------------------------------
+
+const SPACE = {
+  stars: [],
+  w: 0,
+  h: 0,
+  micLevel: 0,      // 麦克风 RMS（0..1，快攻慢放）
+  ttsLevel: 0,      // RTC 音频 RMS（0..1，快攻慢放）
+  ttsAnalyser: null,
+  ttsData: null,
+  last: 0,
+};
+
+function attachTtsAnalyser(stream) {
+  if (SPACE.ttsAnalyser) return;
+  try {
+    const actx = new AudioContext();
+    const src = actx.createMediaStreamSource(stream);
+    const an = actx.createAnalyser();
+    an.fftSize = 1024;
+    src.connect(an);  // 只分析不回放（声音走隐藏 <audio>），无需接 destination
+    SPACE.ttsAnalyser = an;
+    SPACE.ttsData = new Uint8Array(an.fftSize);
+  } catch (_) { /* 分析失败只是星空不波动，不影响通话 */ }
+}
+
+function initSpace() {
+  const canvas = document.getElementById("space");
+  SPACE.canvas = canvas;
+  SPACE.ctx2d = canvas.getContext("2d");
+
+  const resize = () => {
+    const dpr = window.devicePixelRatio || 1;
+    SPACE.w = window.innerWidth;
+    SPACE.h = window.innerHeight;
+    canvas.width = SPACE.w * dpr;
+    canvas.height = SPACE.h * dpr;
+    SPACE.ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const n = Math.min(340, Math.floor((SPACE.w * SPACE.h) / 4200));
+    SPACE.stars = Array.from({ length: n }, () => ({
+      x: Math.random() * SPACE.w,
+      y: Math.random() * SPACE.h,
+      vx: (Math.random() - 0.5) * 0.18,   // 无序漂移速度
+      vy: (Math.random() - 0.5) * 0.18,
+      r: 0.5 + Math.random() * 1.3,       // 基础半径
+      p: Math.random() * Math.PI * 2,     // 闪烁相位
+      s: 0.4 + Math.random() * 1.2,       // 闪烁速率
+    }));
+  };
+  window.addEventListener("resize", resize);
+  resize();
+  requestAnimationFrame(tickSpace);
+}
+
+function tickSpace(t) {
+  const { ctx2d: g, stars, w, h } = SPACE;
+  const dt = Math.min(50, t - (SPACE.last || t)) / 16.7;  // 以 60fps 为 1 的步长
+  SPACE.last = t;
+  const cx = w / 2;
+  const cy = h / 2;
+  const mode = avatarState;  // idle | listening | thinking | speaking
+
+  // RTC 音频能量（speaking 波动输入）
+  if (SPACE.ttsAnalyser) {
+    SPACE.ttsAnalyser.getByteTimeDomainData(SPACE.ttsData);
+    let sum = 0;
+    const d = SPACE.ttsData;
+    for (let i = 0; i < d.length; i += 4) {
+      const v = (d[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / Math.max(1, d.length / 4));
+    SPACE.ttsLevel = Math.max(Math.min(rms * 6, 1), SPACE.ttsLevel * 0.88);
+  } else {
+    SPACE.ttsLevel *= 0.9;
+  }
+  SPACE.micLevel *= mode === "listening" ? 1 : 0.94;  // 非倾听期麦克风能量淡出
+
+  g.clearRect(0, 0, w, h);
+  const breath = 0.5 + 0.5 * Math.sin(t * 0.0011);  // thinking 的深呼吸
+
+  for (const st of stars) {
+    let boost = 0;   // 额外亮度（0..1）
+    if (mode === "listening") {
+      // 专注：减速 + 向中心收拢，你声音越大收得越紧
+      st.vx *= 0.985; st.vy *= 0.985;
+      const pull = (0.0004 + SPACE.micLevel * 0.0035) * dt;
+      st.x += (cx - st.x) * pull;
+      st.y += (cy - st.y) * pull;
+      boost = SPACE.micLevel * 0.5;
+    } else if (mode === "thinking") {
+      st.vx *= 0.99; st.vy *= 0.99;
+      const pull = (0.0002 + breath * 0.0005) * dt;
+      st.x += (cx - st.x) * pull;
+      st.y += (cy - st.y) * pull;
+      boost = breath * 0.2;
+    } else if (mode === "speaking") {
+      // 声波：以中心为源的径向正弦波，幅度随音频能量
+      const dx = st.x - cx;
+      const dy = st.y - cy;
+      const dist = Math.hypot(dx, dy) || 1;
+      const wave = Math.sin(dist * 0.014 - t * 0.007);
+      const amp = SPACE.ttsLevel * 7 * dt;
+      st.x += (dx / dist) * wave * amp;
+      st.y += (dy / dist) * wave * amp;
+      boost = SPACE.ttsLevel * (0.35 + 0.4 * wave);
+    } else {
+      // idle：无序漂移，偶尔轻拐个弯
+      if (Math.random() < 0.002) {
+        st.vx += (Math.random() - 0.5) * 0.06;
+        st.vy += (Math.random() - 0.5) * 0.06;
+      }
+      st.vx = Math.max(-0.35, Math.min(0.35, st.vx));
+      st.vy = Math.max(-0.35, Math.min(0.35, st.vy));
+    }
+    st.x += st.vx * dt;
+    st.y += st.vy * dt;
+    // 出界回卷
+    if (st.x < -4) st.x = w + 4; else if (st.x > w + 4) st.x = -4;
+    if (st.y < -4) st.y = h + 4; else if (st.y > h + 4) st.y = -4;
+
+    const tw = 0.55 + 0.45 * Math.sin(t * 0.001 * st.s + st.p);
+    const alpha = Math.min(1, tw * (0.45 + boost) + boost * 0.3);
+    const rad = st.r * (1 + boost * 0.9);
+    g.beginPath();
+    g.arc(st.x, st.y, rad, 0, Math.PI * 2);
+    g.fillStyle = `rgba(190, 214, 255, ${alpha.toFixed(3)})`;
+    g.fill();
+  }
+  requestAnimationFrame(tickSpace);
+}
+
+// ---------------------------------------------------------------------------
+// 调试角标（URL 加 ?debug=1 开启）：WebRTC 原生统计（抖动/丢包/码率）
 // ---------------------------------------------------------------------------
 
 if (new URLSearchParams(location.search).has("debug")) {
@@ -398,11 +541,10 @@ if (new URLSearchParams(location.search).has("debug")) {
     let text = "";
     const stats = await pc.getStats();
     stats.forEach((r) => {
-      if (r.type === "inbound-rtp" && r.kind === "video") {
+      if (r.type === "inbound-rtp" && r.kind === "audio") {
         text =
-          `视频: ${(r.framesPerSecond || 0).toFixed(1)}fps 解码:${r.framesDecoded || 0} 丢包:${r.packetsLost || 0}\n` +
-          `抖动: ${((r.jitter || 0) * 1000).toFixed(0)}ms 累计: ${((r.bytesReceived || 0) / 131072).toFixed(1)}Mb\n` +
-          `连接: ${pc.connectionState}`;
+          `音频: ${((r.bytesReceived || 0) / 131072).toFixed(1)}Mb 丢包:${r.packetsLost || 0}\n` +
+          `抖动: ${((r.jitter || 0) * 1000).toFixed(0)}ms 连接: ${pc.connectionState}`;
       }
     });
     dbg.textContent = text || "RTC 统计等待中";
@@ -444,7 +586,7 @@ function switchPersona(id) {
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  // ?alead=毫秒：音频压后量（音画对齐补偿，服务端调度器执行），默认 200（实测最准）
+  // ?alead=毫秒：新回复音频压后量（云时代等数字人渲染的遗产，默认 0，调试用）
   const q = new URLSearchParams(location.search);
   const qs = q.get("alead") ? `?alead=${encodeURIComponent(q.get("alead"))}` : "";
   ws = new WebSocket(`${proto}://${location.host}/ws${qs}`);
@@ -457,7 +599,6 @@ function connect() {
     setStatus("已断开", "warn");
     els.micBtn.disabled = true;
     stopRTC();
-    els.avatarWrap.classList.remove("streaming");
     // 简单重连：对话中断后 3s 重试
     setTimeout(() => {
       if (mic) connect();
@@ -468,24 +609,23 @@ function connect() {
     if (typeof msg.data === "string") {
       handleTextMessage(msg.data);
     }
-    // 服务端不再发二进制帧（音画全走 RTC），忽略任何二进制消息
+    // 服务端只发文本事件（音频全走 RTC），忽略任何二进制消息
   };
 }
 
 async function init() {
+  initSpace();
   const res = await fetch("/api/personas");
   const data = await res.json();
   personas = data.list;
   currentPersona = data.default;
-  avatarOn = data.avatar === "on";
-  els.fallback.classList.toggle("hidden", avatarOn);
   updatePersonaBar();
   showStill(currentPersona);
   setAvatarState("idle");
   connect();
 }
 
-// 换图免重启：上传新肖像 → 服务端覆盖文件并热推 avatar 服务（引擎 set_image）
+// 换图免重启：上传新肖像 → 服务端覆盖文件，下方刷新 <img> 即生效
 els.imgUploadBtn.onclick = () => els.imgUpload.click();
 els.imgUpload.onchange = async () => {
   const file = els.imgUpload.files[0];
