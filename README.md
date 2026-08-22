@@ -56,7 +56,7 @@ orchestrator（CPU，:8000）
 cp .env.example .env.local        # 写入 DEEPSEEK_API_KEY=sk-...（DeepSeek 控制台创建）
 bash scripts/mac_setup.sh         # 装环境 + 下模型（幂等，~4G）
 bash scripts/start_mac.sh         # 起 pipeline + orchestrator
-open http://localhost:8000        # 开聊（外放即可：浏览器回声消除已开，不会自激打断）
+open http://localhost:8000        # 开聊
 ```
 
 启停：`bash scripts/start_mac.sh [stop]`。
