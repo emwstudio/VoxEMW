@@ -21,13 +21,20 @@ vad:
   min_silence_ms: 64
 
 # ---------------------------------------------------------------------------
-# STT：SenseVoiceSmall（FunASR 官方支持 mps；CPU 都 17x 实时，M5 无压力）
+# STT：Qwen3-ASR-0.6B-hf（transformers 原生，bf16 走 MPS；2026-08-23 M5 实测
+# A/B：SenseVoice 人设黑话 CER 9-24%（大胃袋→大卫在梁无人组），本模型+热词
+# 四段满分。代价：自回归，2-5s 短句 0.3-1.0s vs SenseVoice 0.03-0.18s——
+# 用户拍板用每轮 ~0.5s 换准确率）。
+# hotwords：人设词表，经 chat-template system 注入（"Vocabulary: ..."）。
+# 回退 SenseVoice：backend 换 sensevoice、model_name 换 iic/SenseVoiceSmall、
+# device 换 mps、language 换 zh、删掉 hotwords。
 # ---------------------------------------------------------------------------
 stt:
-  backend: sensevoice
-  model_name: iic/SenseVoiceSmall
-  device: mps
-  language: zh
+  backend: qwen3asr
+  model_name: Qwen/Qwen3-ASR-0.6B-hf
+  device: auto                  # device_map=auto → MPS
+  language: Chinese
+  hotwords: [大胃袋, 味真足, 任丘, 锅贴, 大窑, 胃袋, 良子, 李占良, 哎妈呀, 嘎嘎]
 
 # ---------------------------------------------------------------------------
 # LLM：DeepSeek API（deepseek-v4-flash）。本地 8B 实测回复质量不达标，

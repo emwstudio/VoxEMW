@@ -112,6 +112,17 @@ def stt_setup_kwargs(config: dict) -> dict:
             "language": stt.get("language", "zh"),
             "gen_kwargs": gen_kwargs,
         }
+    if backend == "qwen3asr":
+        hotwords = stt.get("hotwords", [])
+        if isinstance(hotwords, list):
+            hotwords = ", ".join(hotwords)
+        return {
+            "model_name": stt.get("model_name", "Qwen/Qwen3-ASR-0.6B-hf"),
+            "device": stt.get("device", "auto"),
+            "language": stt.get("language", "Chinese"),
+            "hotwords": hotwords,
+            "max_new_tokens": int(stt.get("max_new_tokens", 256)),
+        }
     raise ValueError(f"不支持的 stt.backend: {backend!r}")
 
 

@@ -37,10 +37,11 @@ if .venv-mac/bin/python -c "import speech_to_speech, voxcpm, funasr, aiortc, av"
     echo "    依赖已装齐，跳过"
 else
     "${UVPIP[@]}" -q torch torchaudio   # Mac 版（MPS 支持内置）
-    # s2s 钉死上游 commit（与云端同版）：Darwin 分支自动装 mlx 系
-    "${UVPIP[@]}" -q "speech-to-speech @ git+https://github.com/huggingface/speech-to-speech.git@f75db25eefe4fb65e9a2f1cf788f5e855682d329"
+    # s2s 钉死上游 commit（2026-08-21 main：含转写失败保留 + reasoning_effort 透传修复）；
+    # Darwin 分支自动装 mlx 系
+    "${UVPIP[@]}" -q "speech-to-speech @ git+https://github.com/huggingface/speech-to-speech.git@9f59bc72f66ee84b006e2682b9547144e7f74827"
     "${UVPIP[@]}" -q "voxcpm==2.0.3" "funasr>=1.4.2" modelscope aiortc av Pillow \
-        aiohttp websockets numpy scipy pyyaml
+        aiohttp websockets numpy scipy pyyaml accelerate
     # 本机有 SOCKS 代理环境变量时，hf/modelscope 的 httpx 需要 socksio，
     # 否则下载直接 ImportError（2026-08-22 实测踩坑）
     "${UVPIP[@]}" -q "httpx[socks]"
@@ -48,10 +49,11 @@ fi
 # torchcodec 在 Mac 没有 CUDA 问题，但与 transformers 5.x 共存仍有坑的话卸载它
 "$UV" pip uninstall --python .venv-mac/bin/python -q torchcodec 2>/dev/null || true
 
-echo "==> [3/4] 模型预下载（~6G，hf-mirror/modelscope）"
+echo "==> [3/4] 模型预下载（~8G，hf-mirror/modelscope）"
 .venv-mac/bin/hf download openbmb/VoxCPM2 > /dev/null && echo "    VoxCPM2 ✓"
-.venv-mac/bin/modelscope download --model iic/SenseVoiceSmall > /dev/null && echo "    SenseVoice ✓"
+.venv-mac/bin/modelscope download --model iic/SenseVoiceSmall > /dev/null && echo "    SenseVoice ✓（备用回退）"
 .venv-mac/bin/hf download pipecat-ai/smart-turn-v3 > /dev/null && echo "    SmartTurn ✓"
+.venv-mac/bin/hf download Qwen/Qwen3-ASR-0.6B-hf > /dev/null && echo "    Qwen3-ASR-0.6B-hf ✓"
 
 echo "==> [4/4] 配置检查"
 if [ ! -f .env.local ] || ! grep -q "^DEEPSEEK_API_KEY=sk-" .env.local; then

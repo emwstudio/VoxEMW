@@ -123,6 +123,28 @@ def test_stt_setup_kwargs_sensevoice():
     assert kwargs["gen_kwargs"] == {}
 
 
+def test_stt_setup_kwargs_qwen3asr():
+    config = _config()
+    config["stt"] = {
+        "backend": "qwen3asr",
+        "model_name": "Qwen/Qwen3-ASR-0.6B-hf",
+        "hotwords": ["大胃袋", "味真足"],
+    }
+    kwargs = stt_setup_kwargs(config)
+    assert kwargs["model_name"] == "Qwen/Qwen3-ASR-0.6B-hf"
+    assert kwargs["device"] == "auto"
+    assert kwargs["language"] == "Chinese"
+    # 列表词表拼成逗号串（chat-template system 注入用）
+    assert kwargs["hotwords"] == "大胃袋, 味真足"
+    assert kwargs["max_new_tokens"] == 256
+
+    # 字符串词表原样透传；缺省 model_name 兜底
+    config["stt"] = {"backend": "qwen3asr", "hotwords": "大胃袋"}
+    kwargs = stt_setup_kwargs(config)
+    assert kwargs["model_name"] == "Qwen/Qwen3-ASR-0.6B-hf"
+    assert kwargs["hotwords"] == "大胃袋"
+
+
 def test_tts_setup_kwargs_voices_from_personas():
     kwargs = tts_setup_kwargs(_config())
     assert kwargs["model_name"] == "openbmb/VoxCPM2"

@@ -22,6 +22,13 @@ class SenseVoiceArgs:
 
 
 @dataclass
+class Qwen3ASRArgs:
+    """Qwen3-ASR STT 积木的 CLI 参数空壳。"""
+
+    qwen3asr_placeholder: str = field(default="", metadata={"help": "内部占位，勿传"})
+
+
+@dataclass
 class VoxCPMArgs:
     """TTS 积木的 CLI 参数空壳。"""
 
@@ -51,6 +58,18 @@ def register_custom_backends(config: dict) -> None:
         handler.speculative_turns = ctx.speculative_turns
         return handler
 
+    def _create_stt_qwen3asr(ctx, _cfg):
+        from voxemw.pipeline.stt_qwen3asr import Qwen3ASRSTTHandler
+
+        handler = Qwen3ASRSTTHandler(
+            ctx.stop_event,
+            queue_in=ctx.queue_in,
+            queue_out=ctx.queue_out,
+            setup_kwargs=stt_setup_kwargs(config),
+        )
+        handler.speculative_turns = ctx.speculative_turns
+        return handler
+
     def _create_tts(ctx, _cfg):
         from voxemw.pipeline.tts_voxcpm import VoxCPMTTSHandler
 
@@ -69,6 +88,10 @@ def register_custom_backends(config: dict) -> None:
     STT_BACKENDS.setdefault("sensevoice", BackendSpec(
         name="sensevoice", kind="stt",
         config_type=SenseVoiceArgs, create_handler=_create_stt,
+    ))
+    STT_BACKENDS.setdefault("qwen3asr", BackendSpec(
+        name="qwen3asr", kind="stt",
+        config_type=Qwen3ASRArgs, create_handler=_create_stt_qwen3asr,
     ))
     TTS_BACKENDS.setdefault("voxcpm", BackendSpec(
         name="voxcpm", kind="tts",

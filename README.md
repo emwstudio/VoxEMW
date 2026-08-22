@@ -42,7 +42,7 @@ orchestrator（CPU，:8000）
 | 积木 | 模型 | 说明 |
 |---|---|---|
 | ① VAD 判停 | Silero + SmartTurn（CPU ONNX） | 64ms 软判停 + 语义复核（停顿不抢答） |
-| ② STT 语音转写 | SenseVoiceSmall（FunASR，MPS） | 实时性远超需求 |
+| ② STT 语音转写 | Qwen3-ASR-0.6B-hf（transformers，MPS） | 人设热词注入，黑话近满分；备用回退 SenseVoiceSmall |
 | ③ LLM 大脑 | DeepSeek v4-flash（API） | 关思考模式保时延；工具调用支持 |
 | ④ TTS 语音合成 | Qwen3-TTS-1.7B-Base（MLX 6bit） | **零样本音色克隆**：良子 ref.wav + 逐字台词注入，首音 ~0.5s |
 | Persona 人设 | 女娲 · Skill 造人术（nuwa-skill） | `personas/*.md`（含音色参考音/肖像三件套，注册即用） |
@@ -51,7 +51,7 @@ orchestrator（CPU，:8000）
 
 ```bash
 cp .env.example .env.local        # 写入 DEEPSEEK_API_KEY=sk-...（DeepSeek 控制台创建）
-bash scripts/mac_setup.sh         # 装环境 + 下模型（幂等，~6G）
+bash scripts/mac_setup.sh         # 装环境 + 下模型（幂等，~8G）
 bash scripts/start_mac.sh         # 起 pipeline + orchestrator
 open http://localhost:8000        # 开聊（建议戴耳机：外放会回声自激打断）
 ```
@@ -66,7 +66,7 @@ open http://localhost:8000        # 开聊（建议戴耳机：外放会回声�
 - **流式字幕**：回答逐字上屏，不整句砸脸
 - **空回复兜底**：模型偶发失声自动追问重答，对话不断流
 - **换图免重启**：页面「换图」按钮，即传即换静态肖像
-- **时延实测（M5）**：说完到首音 ≈ 1.5–2s（STT ~0.1s + DeepSeek 首句 ~0.5-1s + TTS TTFA ~0.5s）
+- **时延实测（M5）**：说完到首音 ≈ 2–2.5s（STT ~0.5s + DeepSeek 首句 ~0.5-1s + TTS TTFA ~0.5s）
 
 ## 本地开发（跑测试）
 
@@ -78,5 +78,5 @@ python3 -m venv .venv && .venv/bin/python -m pip install pytest pyyaml numpy aio
 ## 合规与许可
 
 - 代码以 [MIT](LICENSE) 发布；第三方模型遵循各自协议（speech-to-speech Apache-2.0、
-  Qwen3-TTS Apache-2.0、SenseVoice MIT 等），商用前请自行确认各模型协议
+  Qwen3-TTS / Qwen3-ASR Apache-2.0、SenseVoice MIT 等），商用前请自行确认各模型协议
 - 音色与肖像素材由使用者本人提供/授权；AI 生成内容需标注，不得用于冒充、欺诈
