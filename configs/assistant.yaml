@@ -30,21 +30,20 @@ stt:
   language: zh
 
 # ---------------------------------------------------------------------------
-# LLM：本地 llama-server 跑 MiniCPM-V-4.6（GGUF Q4_K_M，llama.cpp 已支持
-# v4.6；openbmb 2026-08 最新，视觉语言一体——视觉链路待接）。
-# 选型注记：mlx-lm 0.31.3（最新）尚不认 minicpmv4_6 架构，故走 llama.cpp；
-# 等 mlx-lm 跟进后可换 backend: mlx-lm 省一个进程。
-# 回退 DeepSeek API：base_url 换 https://api.deepseek.com、model_name 换
-# deepseek-v4-flash、api_key_env 换 DEEPSEEK_API_KEY。
+# LLM：DeepSeek API（deepseek-v4-flash）。本地 8B 实测回复质量不达标，
+# 弃用本地脑；key 放 .env.local 的 DEEPSEEK_API_KEY。
+# 回退本地脑：llama-server 跑 GGUF，base_url 换 http://127.0.0.1:8081/v1、
+# model_name 换对应 alias、api_key_env 换 LLM_API_KEY。
 # ---------------------------------------------------------------------------
 llm:
   backend: chat-completions
-  model_name: minicpmv46-local
-  base_url: http://127.0.0.1:8081/v1
-  api_key_env: LLM_API_KEY    # 本地 llama-server 只要求非空
+  model_name: deepseek-v4-flash
+  base_url: https://api.deepseek.com
+  api_key_env: DEEPSEEK_API_KEY
   stream: true
   stream_batch_sentences: 1
   chat_size: 30
+  reasoning_effort: "none"   # 关思考模式（deepseek-v4-flash 默认思考，先想 ~2s 才开口）
 
 # ---------------------------------------------------------------------------
 # TTS：Qwen3-TTS（上游内置后端，Mac 自动走 mlx-audio）。
