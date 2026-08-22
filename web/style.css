@@ -1,4 +1,4 @@
-/* 良子语音助手 —— 星空舞台（纯语音，静态肖像 + 全屏星空 canvas） */
+/* 良子语音助手 —— 星空舞台（纯语音，全屏星空 canvas 即全部画面） */
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -35,6 +35,7 @@ body {
   position: relative;
   z-index: 1;
   width: min(880px, 100vw);
+  min-height: 100vh;
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -62,78 +63,14 @@ body {
 .status.live { color: var(--live); }
 .status.warn { color: var(--warn); }
 
-/* 肖像区：单栏居中（纯语音，静态肖像） */
-.call-view {
-  display: grid;
-  grid-template-columns: min(720px, 100%);
-  justify-content: center;
-}
-
-.avatar-wrap {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow: hidden;
-  backdrop-filter: blur(6px);
-  box-shadow: 0 0 32px rgba(60, 90, 180, 0.18);
-}
-.pane-label {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  color: var(--text);
-  background: rgba(7, 11, 26, 0.6);
-}
-.avatar-wrap img {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-/* 换图按钮：肖像右下角 */
-.img-upload {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  font-size: 12px;
-  color: var(--muted);
-  background: rgba(7, 11, 26, 0.6);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 3px 12px;
-  cursor: pointer;
-  z-index: 5;
-}
-.img-upload:hover { color: var(--text); border-color: var(--muted); }
-
-.avatar-fallback {
-  position: absolute;
-  left: 0; right: 0; bottom: 0;
-  padding: 8px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--muted);
-  background: rgba(7, 11, 26, 0.75);
-}
-.hidden { display: none; }
-
-/* 对话状态角标（右上角）：倾听=绿、思考=琥珀，speaking/idle 时 hidden */
+/* 对话状态角标（顶栏）：倾听=绿、思考=琥珀，speaking/idle 时 hidden */
 #avatar-state {
-  position: absolute;
-  top: 8px;
-  right: 8px;
   padding: 2px 10px;
   border-radius: 999px;
   font-size: 12px;
   color: var(--text);
   background: rgba(7, 11, 26, 0.6);
+  border: 1px solid var(--border);
 }
 #avatar-state.state-listening {
   color: #3fb950;
@@ -147,6 +84,7 @@ body {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+.hidden { display: none; }
 
 .persona-bar {
   display: flex;
@@ -174,24 +112,23 @@ body {
 
 .transcript {
   flex: 1;
-  min-height: 120px;
-  max-height: 260px;
+  min-height: 280px;
   overflow-y: auto;
   background: var(--panel);
   backdrop-filter: blur(6px);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 12px;
-  font-size: 14px;
-  line-height: 1.7;
+  padding: 16px;
+  font-size: 15px;
+  line-height: 1.8;
 }
-.transcript .line { margin-bottom: 6px; }
+.transcript .line { margin-bottom: 8px; }
 .transcript .who { font-weight: 600; margin-right: 6px; }
 .transcript .user .who { color: var(--accent); }
 .transcript .assistant .who { color: var(--live); }
 .transcript .sys { color: var(--muted); font-size: 12px; text-align: center; }
 
-.controls { text-align: center; }
+.controls { text-align: center; padding-bottom: 8px; }
 .mic-btn {
   padding: 16px 44px;
   font-size: 18px;

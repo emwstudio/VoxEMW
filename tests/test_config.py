@@ -11,20 +11,17 @@ def assets(tmp_path):
     ref_wav.write_bytes(b"RIFF-fake")
     ref_txt = tmp_path / "ref.txt"
     ref_txt.write_text("  逐字台词内容  \n", encoding="utf-8")
-    ref_png = tmp_path / "ref.png"
-    ref_png.write_bytes(b"\x89PNG-fake")
     persona = tmp_path / "demo.md"
     persona.write_text(
         "---\n"
         "name: 演示人设\n"
         f"ref_wav: {ref_wav}\n"
         f"ref_text: {ref_txt}\n"
-        f"ref_image: {ref_png}\n"
         "---\n"
         "  你是演示人设。  \n",
         encoding="utf-8",
     )
-    return {"wav": ref_wav, "txt": ref_txt, "png": ref_png, "persona": persona}
+    return {"wav": ref_wav, "txt": ref_txt, "persona": persona}
 
 
 def _write_config(tmp_path, assets, extra_personas=""):
@@ -60,14 +57,6 @@ def test_load_config_resolves_persona(tmp_path, assets):
     assert demo["text"] == "你是演示人设。"
     assert demo["ref_wav"] == str(assets["wav"])
     assert demo["ref_text"] == "逐字台词内容"
-    assert demo["ref_image"] == str(assets["png"])
-
-
-def test_load_config_missing_ref_image_degrades(tmp_path, assets):
-    assets["png"].unlink()
-    config = load_config(_write_config(tmp_path, assets))
-    # 缺肖像不阻塞启动：ref_image 置 None，静态肖像缺失仅告警
-    assert config["personas"]["resolved"]["demo"]["ref_image"] is None
 
 
 def test_load_config_missing_block_exits(tmp_path, assets):
@@ -109,7 +98,6 @@ def test_parse_persona_file_without_frontmatter(tmp_path):
     assert persona["name"] == "plain"
     assert persona["text"] == "你是纯文本人设。"
     assert persona["ref_wav"] is None
-    assert persona["ref_image"] is None
 
 
 def test_resolve_api_key(monkeypatch):

@@ -14,8 +14,6 @@ __pycache__/
 # 用户提供的音色素材（个人材料，不入库）
 assets/*/ref.wav
 assets/*/ref.txt
-assets/*/ref.png
-assets/*/ref.jpg
 
 # macOS / 测试缓存
 .DS_Store

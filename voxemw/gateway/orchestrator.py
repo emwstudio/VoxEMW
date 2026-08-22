@@ -12,7 +12,6 @@
   本进程把人设正文/音色经 session.update 注入 s2s（instructions + voice）
 - 打断：s2s 报 speech_started → flush 音频队列；若回复播了一半，
   把已听前缀补写回上下文（heard_prefix，防模型忘记自己说到哪）
-- 静态肖像：/api/personas/{pid}/image（GET 展示 / POST 换图免重启）
 - 单用户单会话：新浏览器连接顶掉旧会话（s2s 只有 1 个管线槽位，
   换网络产生的僵尸会话被新连接立即踢掉，无需等超时/刷新两次）
 
@@ -21,9 +20,8 @@
     → {"type": "vox.persona", "id": "<persona_id>"}   切换人设
     → OpenAI Realtime 事件原样透传（input_audio_buffer.append / response.cancel 等）
     ← OpenAI Realtime 事件透传（transcription / response.done 等）
-    ← {"type": "vox.status", "avatar": "off", "persona": "<id>",
+    ← {"type": "vox.status", "persona": "<id>",
        "rtc": {"enabled": bool, "ice_servers": [...]}}
-       （avatar 字段恒 "off"：数字人已拆除，保留字段兼容前端静态肖像逻辑）
   POST /rtc/offer：WebRTC 信令，body {"sdp", "type"} → answer
   GET  /rtc/ice ：下发 ICE 配置
 """
@@ -158,7 +156,6 @@ class Session:
     async def _send_status(self) -> None:
         await self.browser.send_str(json.dumps({
             "type": "vox.status",
-            "avatar": "off",  # 数字人已拆除；字段保留兼容前端静态肖像逻辑
             "persona": self.persona_id,
             "rtc": {"enabled": self.pacer is not None, "ice_servers": self._rtc_ice_servers},
         }))
@@ -275,45 +272,15 @@ def create_app(config: dict):
     async def api_personas(_request):
         return web.json_response({
             "default": default_persona,
-            "avatar": "off",  # 数字人已拆除；字段保留兼容前端静态肖像逻辑
             "list": [
                 {
                     "id": pid,
                     "name": p["name"],
                     "label": p.get("label") or p["name"],
-                    "has_image": bool(p.get("ref_image")),
                 }
                 for pid, p in personas.items()
             ],
         })
-
-    async def api_persona_image(request):
-        pid = request.match_info["pid"]
-        persona = personas.get(pid)
-        image = (persona or {}).get("ref_image")
-        if not image:
-            return web.Response(status=404)
-        # 肖像可能被用户换图,禁缓存避免浏览器一直显示旧照片
-        return web.FileResponse(image, headers={"Cache-Control": "no-cache, must-revalidate"})
-
-    async def api_persona_image_upload(request):
-        """换图免重启：覆盖 persona 肖像文件（前端随后刷新 <img> 即生效）。"""
-        pid = request.match_info["pid"]
-        persona = personas.get(pid)
-        image = (persona or {}).get("ref_image")
-        if not image:
-            return web.json_response({"error": "persona 不存在或无肖像"}, status=404)
-        form = await request.post()
-        field = form.get("file")
-        if field is None or not getattr(field, "filename", ""):
-            return web.json_response({"error": "缺少文件（字段名 file）"}, status=400)
-        data = field.file.read()
-        if len(data) > 20 * 1024 * 1024:
-            return web.json_response({"error": "图片过大（>20MB）"}, status=400)
-        with open(image, "wb") as f:
-            f.write(data)
-        logger.info("persona %s 换图: %s", pid, image)
-        return web.json_response({"ok": True})
 
     # ── WebRTC 音频轨 ──
     rtc_cfg = config.get("rtc") or {}
@@ -397,7 +364,7 @@ def create_app(config: dict):
                 current_session["session"] = None
         return ws
 
-    app = web.Application(client_max_size=64 * 1024 * 1024)  # 换图上传可达几十 MB
+    app = web.Application()
 
     @web.middleware
     async def _no_cache(request, handler):
@@ -410,8 +377,6 @@ def create_app(config: dict):
     app.middlewares.append(_no_cache)
     app.router.add_get("/", index)
     app.router.add_get("/api/personas", api_personas)
-    app.router.add_get("/api/personas/{pid}/image", api_persona_image)
-    app.router.add_post("/api/personas/{pid}/image", api_persona_image_upload)
     app.router.add_post("/rtc/offer", api_rtc_offer)
     app.router.add_get("/rtc/ice", api_rtc_ice)
     app.router.add_post("/rtc/debug", api_rtc_debug)

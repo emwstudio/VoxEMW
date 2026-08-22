@@ -47,9 +47,9 @@ def _resolve_path(value: str) -> Path:
 
 
 def parse_persona_file(path: Path) -> dict:
-    """解析 personas/<id>.md：frontmatter（name/ref_wav/ref_text/ref_image）+ 正文。
+    """解析 personas/<id>.md：frontmatter（name/ref_wav/ref_text）+ 正文。
 
-    返回 {name, label, text, ref_wav, ref_text, ref_image}；无 frontmatter 时 name 用文件名、
+    返回 {name, label, text, ref_wav, ref_text}；无 frontmatter 时 name 用文件名、
     素材字段为 None（由调用方决定缺素材是否报错）。label 为界面短名（角标用），
     缺省回退 name。ref_text 此处仍是文件路径，读文件内容替换发生在 load_config 里。
     """
@@ -72,7 +72,6 @@ def parse_persona_file(path: Path) -> dict:
         "text": body.strip(),
         "ref_wav": meta.get("ref_wav"),
         "ref_text": meta.get("ref_text"),
-        "ref_image": meta.get("ref_image"),
     }
 
 
@@ -81,8 +80,7 @@ def load_config(path: Path) -> dict:
 
     - vad/stt/llm/tts 积木段原样保留
     - personas.list 每个 id 指向 persona md 文件：解析 frontmatter，
-      ref_wav 必须存在；ref_text 读入文本内容（TTS 克隆要逐字台词文本）；
-      ref_image 缺失只告警（纯语音模式肖像仅作静态展示，不阻塞启动）
+      ref_wav 必须存在；ref_text 读入文本内容（TTS 克隆要逐字台词文本）
     """
     try:
         import yaml
@@ -128,14 +126,6 @@ def load_config(path: Path) -> dict:
             sys.exit(f"ERROR: personas.{pid}.ref_text 文件不存在: {text_path}")
         persona["ref_text"] = text_path.read_text(encoding="utf-8").strip()
 
-        ref_image = persona.get("ref_image")
-        if ref_image:
-            image_path = _resolve_path(str(ref_image))
-            if image_path.is_file():
-                persona["ref_image"] = str(image_path)
-            else:
-                logger.warning("personas.%s.ref_image 不存在（肖像静态图将缺失）: %s", pid, image_path)
-                persona["ref_image"] = None
         resolved[pid] = persona
 
     config["personas"]["default"] = default_persona

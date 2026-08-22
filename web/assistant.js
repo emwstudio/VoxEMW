@@ -1,32 +1,25 @@
-/* 良子语音助手前端（纯语音模式，静态肖像 + 星空背景）。
+/* 良子语音助手前端（纯语音模式，星空背景即全部画面）。
  *
  * 下行音频：WebRTC——POST /rtc/offer 建连，音频（Opus）走 RTP 轨，
  *           挂隐藏 <audio> 播放（Chrome 对 RTC 音轨的解码只在媒体元素上才启动）。
  * WS /ws：上行麦克风/控制事件；下行转写/状态事件（音频体已剥离，走音轨）。
- * 肖像：/api/personas/{pid}/image 静态图，支持页面换图免重启。
  * 星空：全屏 canvas 跟随对话状态——idle 无序漂移 / listening 向中心收拢的
  *       专注波动（随麦克风能量）/ speaking 随 RTC 音频能量的径向声波。
  */
 
 "use strict";
 
-const VOX_JS_VERSION = "20260823d";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260823e";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
 
 const els = {
   status: document.getElementById("status"),
-  still: document.getElementById("avatar-still"),
-  avatarWrap: document.querySelector(".avatar-wrap"),
-  fallback: document.getElementById("avatar-fallback"),
-  avatarLabel: document.getElementById("avatar-label"),
   avatarState: document.getElementById("avatar-state"),
   personaBar: document.getElementById("persona-bar"),
   transcript: document.getElementById("transcript"),
   micBtn: document.getElementById("mic-btn"),
-  imgUploadBtn: document.getElementById("img-upload-btn"),
-  imgUpload: document.getElementById("img-upload"),
 };
 
 let ws = null;
@@ -270,23 +263,6 @@ function appendAssistantDelta(delta) {
 }
 
 // ---------------------------------------------------------------------------
-// 静态肖像：/api/personas/{pid}/image（无数字人，肖像即全部画面）
-// ---------------------------------------------------------------------------
-
-function showStill(personaId) {
-  const persona = personas.find((p) => p.id === personaId);
-  if (persona && persona.has_image) {
-    els.still.src = `/api/personas/${personaId}/image`;
-    els.still.classList.remove("hidden");
-    els.fallback.classList.add("hidden");
-  } else {
-    // 无肖像时才显示占位条
-    els.still.removeAttribute("src");
-    els.fallback.classList.remove("hidden");
-  }
-}
-
-// ---------------------------------------------------------------------------
 // 对话状态角标：listening（用户说话中）/ thinking（说完到开口前）显示角标，
 // speaking / idle 隐藏。同一状态机驱动星空模式（见 tickSpace）
 // ---------------------------------------------------------------------------
@@ -375,7 +351,6 @@ function handleTextMessage(data) {
   if (event.type === "vox.status") {
     currentPersona = event.persona;
     updatePersonaBar();
-    showStill(currentPersona);
     rtcEnabled = !!(event.rtc && event.rtc.enabled);
     if (rtcEnabled) {
       startRTC().catch((e) =>
@@ -571,8 +546,6 @@ function updatePersonaBar() {
     chip.onclick = () => switchPersona(p.id);
     els.personaBar.appendChild(chip);
   }
-  const cur = personas.find((p) => p.id === currentPersona);
-  if (cur) els.avatarLabel.textContent = cur.label || cur.name;
 }
 
 function switchPersona(id) {
@@ -581,7 +554,6 @@ function switchPersona(id) {
   currentPersona = id;
   assistantLine = null;
   updatePersonaBar();
-  showStill(id);
 }
 
 function connect() {
@@ -620,35 +592,9 @@ async function init() {
   personas = data.list;
   currentPersona = data.default;
   updatePersonaBar();
-  showStill(currentPersona);
   setAvatarState("idle");
   connect();
 }
-
-// 换图免重启：上传新肖像 → 服务端覆盖文件，下方刷新 <img> 即生效
-els.imgUploadBtn.onclick = () => els.imgUpload.click();
-els.imgUpload.onchange = async () => {
-  const file = els.imgUpload.files[0];
-  els.imgUpload.value = "";
-  if (!file) return;
-  const fd = new FormData();
-  fd.append("file", file, "ref.png");
-  try {
-    const r = await (await fetch(`/api/personas/${currentPersona}/image`, {
-      method: "POST", body: fd,
-    })).json();
-    if (r.ok) {
-      addLine("sys", "", "🖼 肖像已更新");
-      // 刷新静态图（服务端 no-cache + 查询参数双保险）
-      els.still.src = `/api/personas/${currentPersona}/image?t=${Date.now()}`;
-    } else {
-      addLine("sys", "", `⚠ 换图失败: ${r.error || "未知错误"}`);
-    }
-  } catch (e) {
-    addLine("sys", "", `⚠ 换图失败: ${e.message}`);
-  }
-};
-
 
 els.micBtn.onclick = async () => {
   if (mic) {
