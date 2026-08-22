@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260816b";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260823b";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -27,6 +27,8 @@ const els = {
   personaBar: document.getElementById("persona-bar"),
   transcript: document.getElementById("transcript"),
   micBtn: document.getElementById("mic-btn"),
+  singBtn: document.getElementById("sing-btn"),
+  singUpload: document.getElementById("sing-upload"),
   imgUploadBtn: document.getElementById("img-upload-btn"),
   imgUpload: document.getElementById("img-upload"),
 };
@@ -40,6 +42,8 @@ let avatarOn = false;
 let assistantLine = null; // 正在流式累积的助手文本行
 let lineGotDeltas = false; // 当前行已收到逐字 delta（新上游 delta+done 双发，done 只收尾不重复上屏）
 let rtcEnabled = false;   // vox.status 下发：下行音画走 WebRTC
+let musicOn = false;      // vox.status 下发：唱歌功能（ACE-Step）是否启用
+let singing = false;      // 正在唱歌（服务端 vox.sing started/finished 驱动）
 let pc = null;            // RTCPeerConnection
 // solo 模式（?solo=1）：demo 录制用，隐藏用户画面、数字人单栏居中、不开摄像头
 const SOLO_MODE = new URLSearchParams(location.search).has("solo");
@@ -66,6 +70,27 @@ function base64FromInt16(int16) {
   return btoa(binary);
 }
 
+// RTC 音频输出：挂隐藏 <audio> 元素——Chrome 对 WebRTC 远端音轨只有挂到
+// 媒体元素上才开始解码（WebAudio 直通在 Chrome 里是静音，Safari 正常；
+// MediaRecorder 能录到是因为录制强制解码。2026-08-23 实测定案）。
+// 元素 play() 需用户手势，各按钮点击处兜底补一次。
+let rtcAudioEl = null;
+
+function ensureRtcAudio() {
+  if (!rtcAudioEl) {
+    rtcAudioEl = document.createElement("audio");
+    rtcAudioEl.id = "rtc-audio";
+    rtcAudioEl.autoplay = true;
+    rtcAudioEl.playsInline = true;
+    rtcAudioEl.muted = false;
+    rtcAudioEl.volume = 1.0;
+    rtcAudioEl.style.display = "none";
+    document.body.appendChild(rtcAudioEl);
+  }
+  rtcAudioEl.play().catch(() => {});
+  return rtcAudioEl;
+}
+
 // ---------------------------------------------------------------------------
 // WebRTC 音画：RTP 轨原生音画同步，<video> 直挂远程流
 // ---------------------------------------------------------------------------
@@ -77,25 +102,34 @@ async function startRTC() {
   try {
     iceServers = (await (await fetch("/rtc/ice")).json()).ice_servers || [];
   } catch (_) { /* 取不到就裸 host candidate，LAN 还能用 */ }
-  // SSH 隧道场景（页面在 localhost）：强制 relay——host candidate 是双方各自的
-  // 私网/环回地址，互指必败；媒体走 coturn TCP 中继（隧道转发 3478）。
-  // LAN 直连场景用默认 all：host candidate 直配，无需 TURN。
+  // SSH 隧道场景（页面在 localhost 且有服务端 TURN 下发）：强制 relay——host
+  // candidate 是双方各自的私网/环回地址，互指必败；媒体走 coturn TCP 中继。
+  // 本机直连（localhost 但无 TURN 下发，如 Mac 本地版）回退 all：loopback
+  // host candidate 直连即可，强制 relay 会零候选哑连（2026-08-22 实测踩坑）。
   const isTunnel = ["localhost", "127.0.0.1"].includes(location.hostname);
   const conn = new RTCPeerConnection({
     iceServers,
-    iceTransportPolicy: isTunnel ? "relay" : "all",
+    iceTransportPolicy: isTunnel && iceServers.length > 0 ? "relay" : "all",
   });
   pc = conn;
   const rtcStream = new MediaStream();  // aiortc 音/视分两个 stream 发，收进同一个
   const trackKinds = [];
   conn.ontrack = (e) => {
+    if (e.track.kind === "audio") {
+      // 音频挂独立隐藏 <audio>（不挂 <video>：本地版无数字人画面，
+      // 且 Chrome 对 RTC 音轨的解码只在媒体元素上才启动）
+      const el = ensureRtcAudio();
+      el.srcObject = new MediaStream([e.track]);
+      el.play().catch(() => {});
+      return;
+    }
     rtcStream.addTrack(e.track);
     trackKinds.push(e.track.kind);
     els.avatarVideo.srcObject = rtcStream;
     els.avatarWrap.classList.add("webrtc", "streaming");
     els.still.classList.add("hidden");
-    // Chrome 自动播放策略：带音轨的 <video> 无用户手势不许出声自动播。
-    // 元素先 muted 自动播（画面能出），用户点了开始对话（有手势）再开声音
+    // 视频元素永远静音（音频全走 WebAudio，防双声道）
+    els.avatarVideo.muted = true;
     els.avatarVideo.play().catch(() => {});
   };
   conn.onconnectionstatechange = () => {
@@ -391,11 +425,31 @@ function handleTextMessage(data) {
     els.fallback.classList.toggle("hidden", avatarOn);
     updatePersonaBar();
     showStill(currentPersona);
+    musicOn = event.music === "on";
+    els.singBtn.disabled = !musicOn;
     rtcEnabled = !!(event.rtc && event.rtc.enabled);
     if (rtcEnabled) {
       startRTC().catch((e) =>
         addLine("sys", "", `⚠ WebRTC 建连异常: ${e.message}`)
       );
+    }
+    return;
+  }
+  if (event.type === "vox.sing") {
+    if (event.status === "started") {
+      singing = true;
+      els.singBtn.classList.add("live");
+      addLine("sys", "", `🎤 唱歌中（约 ${event.seconds || "?"}s，开口即可打断）…`);
+      setAvatarState("speaking");
+    } else {
+      if (singing || event.status === "failed") {
+        addLine("sys", "", event.status === "finished"
+          ? "🎵 唱完了"
+          : `⚠ 唱歌失败: ${event.error || "未知原因"}`);
+      }
+      singing = false;
+      els.singBtn.classList.remove("live");
+      if (avatarState === "speaking") setAvatarState("idle");
     }
     return;
   }
@@ -529,6 +583,60 @@ els.imgUpload.onchange = async () => {
   }
 };
 
+// 点歌是用户手势：解锁/补播 RTC 音频元素（autoplay 策略要手势）
+function unmuteAvatar() {
+  ensureRtcAudio();
+}
+
+// 点歌：先问模式——翻唱（选源歌音频换歌词）或从零创作（描述即可）
+els.singBtn.onclick = () => {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !musicOn) return;
+  unmuteAvatar();
+  if (window.confirm("🎤 翻唱模式：选一段源歌音频（比如她唱的小段）换歌词？\n\n「确定」= 选音频翻唱　「取消」= 描述从零创作")) {
+    els.singUpload.value = "";
+    els.singUpload.click();
+    return;
+  }
+  const promptText = window.prompt("唱什么？（风格/主题描述，如：民谣，关于深夜爬山）");
+  if (!promptText || !promptText.trim()) return;
+  ws.send(JSON.stringify({ type: "vox.sing", prompt: promptText.trim() }));
+};
+
+els.singUpload.onchange = async () => {
+  const file = els.singUpload.files[0];
+  els.singUpload.value = "";
+  let srcId;
+  if (file) {
+    // 选了源歌 → cover 翻唱：问新歌词
+    addLine("sys", "", `⏫ 上传源歌「${file.name}」…`);
+    const fd = new FormData();
+    fd.append("file", file, file.name);
+    try {
+      const r = await (await fetch("/api/sing/source", { method: "POST", body: fd })).json();
+      if (!r.ok) {
+        addLine("sys", "", `⚠ 源歌上传失败: ${r.error || "未知错误"}`);
+        return;
+      }
+      srcId = r.id;
+    } catch (e) {
+      addLine("sys", "", `⚠ 源歌上传失败: ${e.message}`);
+      return;
+    }
+    const lyrics = window.prompt("换成什么歌词？（留空则照源歌唱）") || "";
+    ws.send(JSON.stringify({
+      type: "vox.sing",
+      src: srcId,
+      lyrics: lyrics.trim(),
+      prompt: "cover, 翻唱",
+    }));
+    return;
+  }
+  // 没选源歌 → 从零创作
+  const promptText = window.prompt("唱什么？（风格/主题描述，如：民谣，关于深夜爬山）");
+  if (!promptText || !promptText.trim()) return;
+  ws.send(JSON.stringify({ type: "vox.sing", prompt: promptText.trim() }));
+};
+
 els.micBtn.onclick = async () => {
   if (mic) {
     stopMic();
@@ -544,9 +652,8 @@ els.micBtn.onclick = async () => {
     els.micBtn.textContent = "■ 结束对话";
     els.micBtn.classList.add("live");
     setStatus("聆听中", "live");
-    // 用户手势已发生：给数字人视频开声音（页面加载时只能 muted 自动播）
-    els.avatarVideo.muted = false;
-    els.avatarVideo.play().catch(() => {});
+    // 用户手势已发生：解锁/补播 RTC 音频元素（autoplay 策略要手势）
+    ensureRtcAudio();
   } catch (e) {
     addLine("sys", "", `⚠ 麦克风不可用: ${e.message}`);
     return;

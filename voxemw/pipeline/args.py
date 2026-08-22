@@ -47,6 +47,17 @@ def render_s2s_argv(config: dict, env: dict | None = None) -> list[str]:
         "--tts", str(tts.get("backend", "voxcpm")),
     ]
 
+    # 上游内置 qwen3 TTS 后端（Mac/MLX 路线）：CLI 直传模型与克隆参考
+    if tts.get("backend") == "qwen3":
+        persona = config["personas"]["resolved"][config["personas"]["default"]]
+        argv += [
+            "--qwen3_tts_model_name",
+            str(tts.get("model_name", "Qwen/Qwen3-TTS-12Hz-1.7B-Base")),
+            "--qwen3_tts_device", str(tts.get("device", "auto")),
+            "--qwen3_tts_ref_audio", str(persona["ref_wav"]),
+            "--qwen3_tts_ref_text", persona["ref_text"],
+        ]
+
     for key in _VAD_PASSTHROUGH:
         if key in vad:
             argv += [f"--{key}", str(vad[key])]

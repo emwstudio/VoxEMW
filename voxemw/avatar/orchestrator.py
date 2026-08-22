@@ -12,6 +12,12 @@
 - 上行：浏览器麦克风音频/控制消息 → 转发 s2s
 - persona：浏览器发 {"type": "vox.persona", "id": ...} 切换人设，
   本进程把人设正文/音色/肖像注入三路（s2s instructions、TTS voice、avatar 肖像）
+- 唱歌：两个触发入口——浏览器发 {"type": "vox.sing", "prompt": ...}（点歌按钮），
+  或 LLM 口播点歌（session 注册 sing_song 工具，拦
+  response.function_call_arguments.done 执行）。歌声经 ACE-Step
+  （voxemw.avatar.singing）分段生成，转 16k PCM 后复用 TTS 下行路径
+  （sched.feed_audio + avatar 口型）；用户开口打断与说话同语义
+  （取消生成任务 + reset/flush）
 - 打断：s2s 报 speech_started → 通知 avatar 丢弃未消费音频、运动上下文归位；
   同步 flush 音画调度器
 - 对话状态下发：由 s2s 事件推导 speech_active（说话期间 avatar 禁 idle 生成，
@@ -25,11 +31,15 @@
 浏览器侧协议：
   /ws 文本帧（JSON）：
     → {"type": "vox.persona", "id": "<persona_id>"}   切换人设
+    → {"type": "vox.sing", "prompt": "<风格描述>", "lyrics"?: "...", "seconds"?: 120}
+      点歌（新歌顶掉进行中的歌）
     → OpenAI Realtime 事件原样透传（input_audio_buffer.append / response.cancel 等）
     ← OpenAI Realtime 事件透传（transcription / response.done 等；
       音频 delta 事件剥掉 base64 音频体——音频走 RTC 音轨，只留事件）
     ← {"type": "vox.status", "avatar": "on"|"off", "persona": "<id>",
-       "rtc": {"enabled": bool, "ice_servers": [...]}}
+       "rtc": {"enabled": bool, "ice_servers": [...]},
+       "music": "on"|"off"}
+    ← {"type": "vox.sing", "status": "started"|"finished"|"failed"|"off", ...}
   POST /rtc/offer：WebRTC 信令，body {"sdp", "type", "vbr"?} → answer
   GET  /rtc/ice ：下发 TURN ICE 配置（本地 coturn）
 """
@@ -46,6 +56,7 @@ import re
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -55,6 +66,17 @@ logger = logging.getLogger(__name__)
 
 FRAME_TAG_SPEECH = 0x01  # avatar service 下行帧 tag：0x00=idle / 0x01=speech
 
+# cover 源歌上传的落盘目录（/tmp 下，1 小时懒清理）
+SING_SOURCE_DIR = Path(tempfile.gettempdir()) / "voxemw_sing_sources"
+
+
+def sing_source_path(src_id: str) -> Path | None:
+    """按 id 找上传的源歌音频（防目录穿越：id 只认 12 位 hex）。"""
+    if not re.fullmatch(r"[a-f0-9]{12}", src_id):
+        return None
+    matches = sorted(SING_SOURCE_DIR.glob(f"{src_id}_*"))
+    return matches[0] if matches else None
+
 # s2s 事件 → 编排动作（纯函数分类，便于单测）
 AUDIO_DELTA_EVENTS = {"response.output_audio.delta", "response.audio.delta"}  # GA / beta 名都收
 AVATAR_RESET_EVENTS = {
@@ -62,23 +84,66 @@ AVATAR_RESET_EVENTS = {
 }
 
 
-def build_session_update(persona_id: str, persona_text: str) -> dict:
+def build_session_update(persona_id: str, persona_text: str,
+                         tools: list | None = None) -> dict:
     """注入人设的 session.update：instructions = 人设正文，voice = persona id
-    （TTS voices 表 key，见 voxemw.pipeline.args.tts_setup_kwargs）。"""
+    （TTS voices 表 key，见 voxemw.pipeline.args.tts_setup_kwargs）。
+    tools：Realtime 扁平格式的 function 列表（如唱歌工具），None 不注入。"""
+    session = {
+        "type": "realtime",
+        "instructions": persona_text,
+        "audio": {
+            "input": {
+                "turn_detection": {
+                    "type": "server_vad",
+                    "interrupt_response": True,
+                }
+            },
+            "output": {"voice": persona_id},
+        },
+    }
+    if tools:
+        session["tools"] = tools
     return {
         "type": "session.update",
-        "session": {
-            "type": "realtime",
-            "instructions": persona_text,
-            "audio": {
-                "input": {
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "interrupt_response": True,
-                    }
+        "session": session,
+    }
+
+
+def build_sing_tool() -> dict:
+    """sing_song 工具 schema（Realtime 扁平格式，经 session.update.tools 注册）。
+
+    语音口播点歌全靠它：LLM 听到「唱首歌」类请求时产出 function call，
+    orchestrator 拦 response.function_call_arguments.done 执行（见 _handle_tool_call）。
+    """
+    return {
+        "type": "function",
+        "name": "sing_song",
+        "description": (
+            "为用户唱一首歌（调用后歌声立即开始生成并播放，不要再用语音报幕/复述）。"
+            "当用户要求唱歌、点歌、想听歌，或氛围适合主动献唱时调用。"
+            "注意：口播通道只能从零创作；若用户想翻唱某首具体的歌、或用她自己"
+            "录的小段换歌词，告诉她点页面底部的「点歌」按钮上传源音频。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "歌曲风格与主题描述，逗号分隔的标签最佳"
+                                   "（如 '民谣, 吉他, 深夜, 登山'）",
                 },
-                "output": {"voice": persona_id},
+                "lyrics": {
+                    "type": "string",
+                    "description": "歌词。建议你来写一小段（两三句即可，更有心意）；"
+                                   "留空则由歌声模型自动创作，但生成会慢约 25 秒",
+                },
+                "seconds": {
+                    "type": "integer",
+                    "description": "歌曲时长（秒），默认 30",
+                },
             },
+            "required": ["prompt"],
         },
     }
 
@@ -156,7 +221,8 @@ class Session:
     def __init__(self, browser_ws, s2s_url: str, avatar_url: str | None,
                  personas: dict, default_persona: str,
                  avatar_backend: str = "avtr1",
-                 rtc_sched=None, rtc_ice_servers: list | None = None):
+                 rtc_sched=None, rtc_ice_servers: list | None = None,
+                 music_client=None, music_cfg: dict | None = None):
         self.browser = browser_ws
         self.s2s_url = s2s_url
         self.avatar_url = avatar_url
@@ -164,6 +230,12 @@ class Session:
         # WebRTC 音画轨：下行音画走 RTC，WS 只留控制/转写
         self.sched = rtc_sched
         self._rtc_ice_servers = rtc_ice_servers or []
+        # 唱歌（ACE-Step）：client=None 即未启用；cfg 是配置里的 music 段
+        self.music_client = music_client
+        self._music_cfg = music_cfg or {}
+        self._sing_task = None  # 进行中的唱歌协程（asyncio.Task）
+        # 语音口播点歌：music 启用才给 LLM 注册 sing_song 工具
+        self._tools = [build_sing_tool()] if music_client is not None else None
         self.personas = personas
         self.persona_id = default_persona
         self._user_speaking = False  # server VAD 判定的用户说话段（listen 轨转发门控）
@@ -198,6 +270,7 @@ class Session:
             if self.avatar is not None:
                 tasks.append(asyncio.create_task(self._avatar_to_rtc()))
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            self._cancel_sing()  # 会话结束：停掉进行中的歌声生成
             if self.sched is not None:
                 self.sched.close()  # 唤醒 RTC 取帧协程退出
             for task in pending:
@@ -210,6 +283,7 @@ class Session:
         """关闭本会话（新浏览器连接顶掉旧连接时调用）。
         断开 s2s 释放管线槽位；转发协程随连接关闭自行退出。"""
         logger.info("close() 被调用: s2s=%s", self.s2s)
+        self._cancel_sing()
         if self.s2s is not None:
             try:
                 await self.s2s.close()
@@ -223,18 +297,181 @@ class Session:
             "avatar_backend": self.avatar_backend if self.avatar is not None else "off",
             "persona": self.persona_id,
             "rtc": {"enabled": self.sched is not None, "ice_servers": self._rtc_ice_servers},
+            "music": "on" if self.music_client is not None else "off",
         }))
 
     async def _apply_persona(self, persona_id: str) -> None:
         persona = self.personas[persona_id]
         self.persona_id = persona_id
         instructions = persona["text"]
-        await self.s2s.send(json.dumps(build_session_update(persona_id, instructions)))
+        await self.s2s.send(json.dumps(build_session_update(persona_id, instructions, tools=self._tools)))
         if self.avatar is not None:
             image = persona.get("ref_image")
             if image:
                 await self.avatar.send(json.dumps({"type": "set_image", "path": image}))
             await self.avatar.send(json.dumps({"type": "reset"}))
+
+    # ── 唱歌（ACE-Step 分段伪流式，复用 TTS 下行路径）──
+
+    def _cancel_sing(self) -> None:
+        """取消进行中的唱歌任务（打断/新歌顶旧歌/会话关闭共用）。"""
+        task = self._sing_task
+        if task is not None and not task.done():
+            logger.info("取消唱歌任务")
+            task.cancel()
+        self._sing_task = None
+
+    async def _start_sing(self, event: dict) -> None:
+        """处理浏览器 vox.sing：校验后挂后台唱歌协程。"""
+        if self.music_client is None:
+            await self.browser.send_str(json.dumps({"type": "vox.sing", "status": "off"}))
+            return
+        if self.sched is None:
+            # 歌声只走 RTC 音轨，无调度器（rtc.enabled: false）时唱了也听不到
+            await self.browser.send_str(json.dumps({
+                "type": "vox.sing", "status": "failed", "error": "RTC 未启用，歌声无输出通道"}))
+            return
+        self._cancel_sing()  # 新歌顶掉进行中的歌
+        from voxemw.avatar.singing import MAX_DURATION, MIN_DURATION, SongSpec
+
+        try:
+            seconds = int(event.get("seconds") or 30)
+        except (TypeError, ValueError):
+            seconds = 30
+        seconds = max(MIN_DURATION, min(int(self._music_cfg.get("max_duration", MAX_DURATION)), seconds))
+        prompt = str(event.get("prompt") or "").strip() or "pop ballad, emotional female vocal"
+        src_id = str(event.get("src") or "").strip()
+        # 清唱：text2music 时给 prompt 追加 a cappella 标签（cover 的伴奏跟随源歌，不管）
+        if self._music_cfg.get("acappella", False) and not src_id:
+            prompt += ", a cappella, solo voice, no instruments"
+        spec = SongSpec(
+            prompt=prompt,
+            lyrics=str(event.get("lyrics") or ""),
+            seconds=seconds,
+            vocal_language=str(self._music_cfg.get("vocal_language", "zh")),
+        )
+        # cover 翻唱：src = POST /api/sing/source 上传后下发的源歌 id
+        src_audio = None
+        if src_id:
+            src_path = sing_source_path(src_id)
+            if src_path is None or not src_path.is_file():
+                await self.browser.send_str(json.dumps({
+                    "type": "vox.sing", "status": "failed",
+                    "error": "源音频不存在或已过期，请重新上传"}))
+                return
+            src_audio = (src_path.name, src_path.read_bytes())
+            logger.info("cover 模式：源歌 %s（%d 字节）", src_path.name, len(src_audio[1]))
+        self._sing_task = asyncio.create_task(self._sing(spec, src_audio=src_audio))
+
+    async def _sing(self, spec, src_audio: tuple[str, bytes] | None = None) -> None:
+        """唱歌协程：停当前回复 → 逐段生成喂 RTC 音轨（+avatar 口型）→ 复位。
+
+        打断复用对话语义：用户开口时 _s2s_to_browser 的 speech_started 路径
+        取消本任务并做 reset/flush；唱歌期间 _avatar_speaking=True 让
+        avatar_state_transition 自然发出 speech_active off + listening。
+        src_audio 非空 = cover 翻唱模式（旋律照源歌，歌长先夹到源歌时长）。"""
+        from voxemw.avatar.singing import iter_song_segments
+
+        sync = bool(self._music_cfg.get("sync_singing", True)) and self.avatar is not None
+        cover_strength = (float(self._music_cfg.get("cover_strength", 0.4))
+                          if src_audio is not None else None)
+        try:
+            await self.browser.send_str(json.dumps({
+                "type": "vox.sing", "status": "started", "seconds": spec.seconds}))
+            # 停当前回复（若正在说话）：与打断同一套动作
+            if self._avatar_speaking:
+                await self.s2s.send(json.dumps({"type": "response.cancel"}))
+            if self.sched is not None:
+                self.sched.flush()
+            if self.avatar is not None:
+                await self.avatar.send(json.dumps({"type": "reset"}))
+            if sync:
+                await self.avatar.send(json.dumps({"type": "speech_active", "on": True}))
+                self._avatar_speaking = True
+            # 人设参考音：歌声贴近当前人设音色（API 只收 multipart 文件体）
+            ref_audio = None
+            if self._music_cfg.get("use_persona_ref", True):
+                wav = (self.personas.get(self.persona_id) or {}).get("ref_wav")
+                if wav:
+                    try:
+                        ref_audio = (Path(wav).name, Path(wav).read_bytes())
+                    except OSError as e:
+                        logger.warning("人设参考音读取失败，按无参考生成: %s", e)
+            t_start = time.monotonic()
+            first_seg = self._music_cfg.get("first_segment_seconds")
+            async for pcm in iter_song_segments(
+                    self.music_client, spec,
+                    int(self._music_cfg.get("segment_seconds", 20)),
+                    ref_audio=ref_audio,
+                    first_segment_seconds=int(first_seg) if first_seg else None,
+                    src_audio=src_audio,
+                    cover_strength=cover_strength):
+                if t_start:
+                    logger.info("首段音频就位：%.1fs（%d 采样）",
+                                time.monotonic() - t_start, len(pcm) // 2)
+                    t_start = None
+                if self.sched is not None:
+                    self.sched.feed_audio(pcm)  # RTC 音频轨（与 TTS 同一股流）
+                if sync:
+                    await self.avatar.send(json.dumps({
+                        "type": "audio", "pcm": base64.b64encode(pcm).decode()}))
+            if sync:
+                self._avatar_speaking = False
+                await self.avatar.send(json.dumps({"type": "speech_active", "on": False}))
+                await self.avatar.send(json.dumps({"type": "idle_mode", "mode": "calm"}))
+            # 上下文留痕（不带歌词，防模型下文复读歌词）
+            await self.s2s.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {"type": "message", "role": "assistant",
+                         "content": [{"type": "output_text",
+                                      "text": f"（刚为用户唱了一首歌：{spec.prompt}）"}]}}))
+            await self.browser.send_str(json.dumps({"type": "vox.sing", "status": "finished"}))
+            logger.info("唱歌完成: %ds, prompt=%r", spec.seconds, spec.prompt[:50])
+        except asyncio.CancelledError:
+            raise  # 打断/顶歌/关会话：avatar 复位由 speech_started 路径负责
+        except Exception as e:
+            logger.exception("唱歌失败")
+            if sync and self._avatar_speaking:
+                self._avatar_speaking = False
+                try:
+                    await self.avatar.send(json.dumps({"type": "speech_active", "on": False}))
+                    await self.avatar.send(json.dumps({"type": "idle_mode", "mode": "calm"}))
+                except Exception:
+                    pass
+            try:
+                await self.browser.send_str(json.dumps({
+                    "type": "vox.sing", "status": "failed", "error": str(e)[:200]}))
+            except Exception:
+                pass
+        finally:
+            # 只清自己——被新歌顶掉时 _sing_task 已指向新任务
+            if self._sing_task is asyncio.current_task():
+                self._sing_task = None
+
+    async def _handle_sing_tool_call(self, event: dict) -> None:
+        """LLM 口播点歌（function calling）：执行 sing_song 并回传工具结果。
+
+        不发 response.create——演唱期间模型保持安静，唱完等用户开口再自然回应
+        （工具结果已落库，下一轮生成自动带上）。"""
+        call_id = event.get("call_id", "")
+        try:
+            args = json.loads(event.get("arguments") or "{}")
+            if not isinstance(args, dict):
+                args = {}
+        except json.JSONDecodeError:
+            args = {}
+        logger.info("LLM 点歌（%s）: %s", call_id, str(args)[:200])
+        if self.music_client is None or self.sched is None:
+            output = "唱歌功能当前不可用，用一句话跟用户说明情况即可。"
+        else:
+            await self._start_sing({"type": "vox.sing", **args})
+            output = ("歌声已开始生成并播放。演唱期间不要生成任何语音回复；"
+                      "唱完后等用户开口再自然回应。")
+        if call_id:
+            await self.s2s.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {"type": "function_call_output",
+                         "call_id": call_id, "output": output}}))
 
     # ── 三条转发协程 ──
 
@@ -251,6 +488,9 @@ class Session:
                 if pid in self.personas:
                     await self._apply_persona(pid)
                     await self._send_status()
+                continue
+            if event.get("type") == "vox.sing":
+                await self._start_sing(event)
                 continue
             if event.get("type") == "vox.drained":
                 continue  # 帧合流后该信号仅作时序参考，无需动作
@@ -274,6 +514,13 @@ class Session:
                 continue
             self._track_dialog_state(event)
             relay, reset_avatar, pcm = classify_s2s_event(event)
+            # LLM 口播点歌：sing_song 工具调用（参数攒齐一次性到，无 delta 流）
+            if (event.get("type") == "response.function_call_arguments.done"
+                    and event.get("name") == "sing_song"):
+                # 工具调用即「本轮有内容」：纯 function call 的回复没有文本/音频，
+                # 不标记的话下方空回复兜底会误判追问，在演唱期间插话
+                self._resp_had_content = True
+                await self._handle_sing_tool_call(event)
             # 空回复兜底追踪：本轮有任何文本/音频产出即视为有内容
             etype = event.get("type", "")
             if etype == "response.created":
@@ -308,7 +555,10 @@ class Session:
             if pcm is not None and self.sched is not None:
                 self.sched.feed_audio(pcm)  # RTC 音频轨（与喂 avatar 同一股流）
             was_speaking = self._avatar_speaking  # 打断回报判定要在状态翻转前取
-            if self.avatar is not None:
+            # 唱歌任务存活期间，avatar 说话状态归 _sing 管：工具调用回复的
+            # response.done 不能把 speech_active 翻掉（否则唱歌中被插 idle 帧）
+            sing_active = self._sing_task is not None and not self._sing_task.done()
+            if self.avatar is not None and not (etype == "response.done" and sing_active):
                 self._avatar_speaking, ctrl_msgs = avatar_state_transition(
                     event, self._avatar_speaking
                 )
@@ -323,6 +573,8 @@ class Session:
                 }))
             if reset_avatar and self.avatar is not None:
                 await self.avatar.send(json.dumps({"type": "reset"}))
+            if reset_avatar:
+                self._cancel_sing()  # 用户开口：歌声即停（flush 在下方统一做）
             if reset_avatar and was_speaking and self.sched is not None:
                 # 打断回报（对齐 AVTR-1 官方 played_duration 语义）：上游会把
                 # 整条回复从上下文回滚，但用户实际已经听到了一段——把已听前缀
@@ -393,6 +645,19 @@ def create_app(config: dict):
     )
     avatar_backend = str(avatar_cfg.get("backend", "avtr1")) if avatar_available else "off"
 
+    # 唱歌（ACE-Step 1.5）：enabled 时构造客户端注入 Session；服务缺席只在
+    # 点歌时才报错（acestep-api 独立进程，主链路不依赖它就绪）
+    music_cfg = config.get("music") or {}
+    music_client = None
+    if music_cfg.get("enabled", False):
+        from voxemw.avatar.singing import MusicClient
+
+        music_client = MusicClient(
+            str(music_cfg.get("base_url", "http://127.0.0.1:8001")),
+            checkpoint=str(music_cfg.get("checkpoint", "acestep-v15-turbo")),
+        )
+        logger.info("唱歌功能启用: %s (%s)", music_client.base_url, music_client.checkpoint)
+
     async def index(_request):
         return web.FileResponse(REPO_ROOT / "web" / "index.html")
 
@@ -448,6 +713,33 @@ def create_app(config: dict):
         logger.info("persona %s 换图: %s（热推=%s）", pid, image, hot)
         return web.json_response({"ok": True, "hot": hot})
 
+    # ── cover 源歌上传（翻唱模式的旋律源）──
+    async def api_sing_source(request):
+        """POST /api/sing/source：上传源歌音频 → 返回短期 id（vox.sing 的 src 引用）。"""
+        form = await request.post()
+        field = form.get("file")
+        if field is None or not getattr(field, "filename", ""):
+            return web.json_response({"error": "缺少文件（字段名 file）"}, status=400)
+        data = field.file.read()
+        if len(data) > 50 * 1024 * 1024:
+            return web.json_response({"error": "音频过大（>50MB）"}, status=400)
+        SING_SOURCE_DIR.mkdir(exist_ok=True)
+        # 懒清理超 1 小时的旧源（音轨语义上只服务当次点歌）
+        now = time.time()
+        for old in SING_SOURCE_DIR.iterdir():
+            try:
+                if now - old.stat().st_mtime > 3600:
+                    old.unlink()
+            except OSError:
+                pass
+        sid = uuid.uuid4().hex[:12]
+        safe_name = re.sub(r"[^\w.\-]", "_", Path(field.filename).name)[:60]
+        path = SING_SOURCE_DIR / f"{sid}_{safe_name}"
+        with open(path, "wb") as f:
+            f.write(data)
+        logger.info("cover 源歌上传: %s（%d 字节）", path.name, len(data))
+        return web.json_response({"ok": True, "id": sid})
+
     # ── WebRTC 音画轨（对标 AVTR-1 官方 demo：RTP 时间戳原生音画同步）──
     rtc_cfg = config.get("rtc") or {}
     rtc_manager = None
@@ -492,6 +784,21 @@ def create_app(config: dict):
         logger.info("RTC 前端诊断: %s", json.dumps(body, ensure_ascii=False))
         return web.json_response({"ok": True})
 
+    async def api_sched_debug(_request):
+        """排障观测点（2026-08-23 本地版无声排查）：当前会话调度器的
+        音频喂入/播放计数。fed>0 而 played 不动 = RTC 音频轨没在消费；
+        fed=0 = 音频根本没喂进这条会话（会话/sched 错绑）。"""
+        session = current_session["session"]
+        s = session.sched if session is not None else None
+        if s is None:
+            return web.json_response({"sched": None})
+        return web.json_response({
+            "buffered_seconds": round(s.buffered_audio_seconds, 2),
+            "samples_fed": s._audio_samples_fed,
+            "samples_played": s._audio_samples_played,
+            "queued_frames": s.queued_frames,
+        })
+
     async def ws_handler(request):
         ws = web.WebSocketResponse(max_msg_size=16 * 1024 * 1024)
         await ws.prepare(request)
@@ -507,7 +814,8 @@ def create_app(config: dict):
         sched = AVSyncScheduler(audio_lead=lead) if rtc_manager is not None else None
         session = Session(ws, s2s_url, avatar_url, personas, default_persona,
                           avatar_backend=avatar_backend,
-                          rtc_sched=sched, rtc_ice_servers=rtc_ice_servers)
+                          rtc_sched=sched, rtc_ice_servers=rtc_ice_servers,
+                          music_client=music_client, music_cfg=music_cfg)
         current_session["session"] = session
         try:
             await session.run()
@@ -533,9 +841,11 @@ def create_app(config: dict):
     app.router.add_get("/api/personas", api_personas)
     app.router.add_get("/api/personas/{pid}/image", api_persona_image)
     app.router.add_post("/api/personas/{pid}/image", api_persona_image_upload)
+    app.router.add_post("/api/sing/source", api_sing_source)
     app.router.add_post("/rtc/offer", api_rtc_offer)
     app.router.add_get("/rtc/ice", api_rtc_ice)
     app.router.add_post("/rtc/debug", api_rtc_debug)
+    app.router.add_get("/rtc/sched", api_sched_debug)
     app.router.add_get("/ws", ws_handler)
     app.router.add_static("/static", REPO_ROOT / "web")
     return app

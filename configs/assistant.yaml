@@ -41,18 +41,27 @@ stt:
 
 # ---------------------------------------------------------------------------
 # LLM：对话模型。chat-completions = OpenAI 兼容 /v1/chat/completions。
-# 默认本地 llama-server（Qwen3.8-27B，:8081，见 scripts/start_assistant.sh）。
+# 默认 DeepSeek API（deepseek-v4-flash，2026-08-21 从本地 Qwen3.8-27B 迁入：
+# 本地 27B 回复效果一般，且 20-24G 显存让位给歌声生成后整卡装不下）。
+# 工具调用（口播点歌 sing_song）依赖 DeepSeek 的 Tool Calls，实测后再开。
+# 回退本地：base_url 换 http://127.0.0.1:8081/v1、model_name 换 qwen38-local，
+# 并确认 start_assistant.sh 的 LLAMA_MODEL 指向的 gguf 存在。
 # ---------------------------------------------------------------------------
 llm:
   backend: chat-completions
-  model_name: qwen38-local
-  base_url: http://127.0.0.1:8081/v1
-  api_key_env: LLM_API_KEY    # llama-server 只要求非空；从环境变量读（启动时加载 .env.local）
+  model_name: deepseek-v4-flash
+  base_url: https://api.deepseek.com
+  api_key_env: DEEPSEEK_API_KEY  # 从 .env.local 读（缺失回退 LLM_API_KEY）
   # 流式：逐句送 TTS，长回复首音从等整段 3-5s 降到 ~0.5s，代价是语调上下文略平；
   # 回退：stream: false（整段送 TTS，prosody 更自然）
   stream: true
   stream_batch_sentences: 1    # 攒几句送一次 TTS：1 = 逐句，首音最快
   chat_size: 30                    # 多轮历史上限
+  # DeepSeek V4 默认开 thinking（话还没说先推理几秒，语音对话等不起）。
+  # 上游 speech-to-speech 把它透传成 extra_body.reasoning_effort；
+  # "none" = 关思考（2026-08-21 实测有效；文档写法 thinking.type=disabled
+  # 上游不支持，chat_template_kwargs 打法 DeepSeek 不认）
+  reasoning_effort: "none"
 
 # ---------------------------------------------------------------------------
 # TTS：文字转语音。voxcpm = 自定义积木（voxemw.pipeline.tts_voxcpm），
@@ -113,14 +122,39 @@ rtc:
       credential: "voxemw-turn-2026"
 
 # ---------------------------------------------------------------------------
+# 歌声生成：ACE-Step 1.5（独立进程 acestep-api :8001，仅绑回环，不对外；
+# 安装/启停见 scripts/autodl_setup.sh 与 start_assistant.sh）。
+# 分段伪流式：整首歌拆成 segment_seconds 片段，首段生成完即开播，
+# 播放期间后台生成后续片段。歌声转 16kHz mono PCM 后复用 TTS 下行路径
+# （RTC 音轨 + avatar 口型），打断/flush 语义与说话一致。
+# ---------------------------------------------------------------------------
+music:
+  # 2026-08-22 翻篇：AI 音乐（生成/翻唱）效果验收不过，功能下线。
+  # 代码保留未删（voxemw/avatar/singing.py + orchestrator vox.sing + 前端点歌），
+  # enabled: false 时 orchestrator 不建客户端、ace-step 进程不启动、前端按钮置灰。
+  enabled: false
+  base_url: http://127.0.0.1:8001
+  checkpoint: acestep-v15-turbo      # 2B，~4.7GB 显存；显存富余可换 XL turbo（4B, ~9GB）
+  segment_seconds: 20                # 分段片长：20s 段 5090 带克隆实测 ~12-13s 生成 < 播放 20s，不断档
+  first_segment_seconds: 10          # 首段调短：开播延迟 ~14s → ~8s（API 下限 10s）
+  max_duration: 30                   # 单首歌时长上限（演示场景 30s 足够；API 支持 10–600）
+  vocal_language: zh                 # 歌词语种（API 默认 en）
+  sync_singing: true                 # 歌声是否驱动 avatar 口型（AVTR-1 效果待实测，差则 false）
+  use_persona_ref: true              # 用当前 persona 的 ref_wav 作参考音频，歌声贴近人设音色
+  cover_strength: 1.0                # cover 翻唱强度：官方默认 1.0 = 忠实翻唱（保旋律
+                                     # 保音色），0.2 小值是风格迁移——别往低调
+  acappella: true                    # 清唱（2026-08-22 用户要求）：text2music 时 prompt
+                                     # 追加 a cappella 标签，纯人声无伴奏；
+                                     # cover 不受影响（伴奏跟随源歌）
+
+# ---------------------------------------------------------------------------
 # 人设注册表：key = persona id（前端切换、TTS 音色名都用它），
 # value = 女娲蒸馏产物。每个文件的 frontmatter 声明三件套：
 #   name（显示名）/ ref_wav（音色参考音）/ ref_text（逐字台词）/ ref_image（数字人肖像）
 # ---------------------------------------------------------------------------
 personas:
-  default: fengge
+  default: liangzi
   list:
-    fengge: personas/fengge.md
     liangzi: personas/liangzi.md
 
 # ---------------------------------------------------------------------------

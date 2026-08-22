@@ -7,11 +7,18 @@
 #
 # 环境：.venv（py312 + torch 2.8）：s2s 语音管线（SenseVoice / VoxCPM2）+ orchestrator
 # 数字人（AVTR-1）运行在独立的 pixi env（/root/autodl-tmp/avtr-1/.pixi/envs/renderer），
-# 安装过程含 TRT 引擎编译等一次性步骤，见本脚本 [2/6] 段说明。
+# 安装过程含 TRT 引擎编译等一次性步骤，见本脚本 [2/7] 段说明。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "==> [0/6] 基础环境（conda + 系统包）"
+echo "==> [0/7] 基础环境（conda + 系统包）"
+# GitHub 访问（speech-to-speech git 依赖、ACE-Step clone）全程要学术加速，
+# 提到最前面——放后面的话 [1/7] 的 pip git clone 会直连超时（2026-08-21 踩坑）
+# shellcheck disable=SC1091
+source /etc/network_turbo > /dev/null 2>&1 || true
+# 但 pip 镜像（aliyun）和 pytorch 官方源必须直连——走代理会 503/超时
+# （2026-08-21 北京区实例实测 setuptools 都拉不下来）
+export no_proxy="${no_proxy:-localhost,127.0.0.1},mirrors.aliyun.com,download.pytorch.org"
 # 非交互 SSH 下 conda 可能不在 PATH
 if ! command -v conda > /dev/null 2>&1 && [ -x /root/miniconda3/bin/conda ]; then
     export PATH="/root/miniconda3/bin:$PATH"
@@ -20,6 +27,9 @@ command -v conda > /dev/null 2>&1 || { echo "ERROR: 无 conda，请换 AutoDL Mi
 # shellcheck disable=SC1091
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/ 2>/dev/null || true
+# 老镜像 .condarc 里残留 tuna 的 pkgs/free（已 404 下架），不清掉 conda create 直接炸
+# （2026-08-22 北京区实例踩坑）
+conda config --remove channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/ 2>/dev/null || true
 conda config --set show_channel_urls no 2>/dev/null || true
 for spec in py312:3.12 py310:3.10; do
     env="${spec%%:*}"
@@ -57,7 +67,7 @@ if [ -d /root/autodl-tmp ]; then
     export HF_HOME="${HF_HOME:-/root/autodl-tmp/hf}"
 fi
 
-echo "==> [1/6] 语音管线 venv（py312 + torch 2.8 cu128）"
+echo "==> [1/7] 语音管线 venv（py312 + torch 2.8 cu128）"
 [ -x .venv/bin/python ] || "$CONDA_BASE/envs/py312/bin/python" -m venv .venv
 # shellcheck disable=SC1091
 source .venv/bin/activate
@@ -113,7 +123,13 @@ pip show qwentts-cpp-python > /dev/null 2>&1 || \
     pip install "$(make_stub_wheel qwentts_cpp qwentts-cpp-python 0.3.1 '')"
 # 钉死关键包版本防 pip 回溯（回溯会逐个下载几十个几十 MB 的 wheel,卡死数小时）:
 # 上游 speech-to-speech 当前要求 transformers>=5.13.0;voxcpm 2.0.3 要求 >=4.36.2 + gradio>=6,<7
-pip install --no-cache-dir -r requirements.txt "huggingface_hub[cli]" "voxcpm==2.0.3" "transformers==5.13.0"
+# git 依赖每次都会重克隆（pip 对 git URL 无缓存），学术加速代理抖动会让整步白跑
+# ——已装齐就跳过（2026-08-21 北京区实例连续三次倒在 git clone/checkout）
+if python -c "import speech_to_speech, voxcpm, transformers; assert transformers.__version__.startswith('5.13')" > /dev/null 2>&1; then
+    echo "    管线依赖已装齐，跳过大安装"
+else
+    pip install --no-cache-dir -r requirements.txt "huggingface_hub[cli]" "voxcpm==2.0.3" "transformers==5.13.0"
+fi
 # SmartTurn 复核走 GPU：speech-to-speech 拉的是 CPU 版 onnxruntime，
 # 换 onnxruntime-gpu 让 voxemw/pipeline/launch.py 的 _patch_smart_turn_gpu 生效
 # （复核 ~80ms → ~2ms）。1.28+ 要 CUDA 13 不匹配，1.22.1 已从 PyPI 撤轮子，钉 1.24.4。
@@ -132,14 +148,27 @@ if [ -f "$H264" ]; then
 fi
 deactivate
 
-echo "==> [2/6] 数字人（AVTR-1）环境检查"
+echo "==> [2/7] 数字人（AVTR-1）环境检查"
 # AVTR-1 运行在独立 pixi env（与主 venv 依赖冲突不可合装）。一次性部署步骤：
 #   git clone https://github.com/avaturn-live/avtr-1 /root/autodl-tmp/avtr-1
-#   cd 后 pixi install（国内镜像调整见仓库部署笔记）→ pixi run download（HF gated，
-#   需先在 HF 页面接受协议）→ pixi run build-trt-engines（按显卡编译，~20 分钟）
-# 已知坑：onnxruntime-gpu 需降 1.22（pixi run 会重同步，用 env python 直调）；
-# glibc 2.31 需重编 libgrid_sample_3d_plugin。完成标志：pixi env python 可 import avtr1_renderer。
+#   cd 后 pixi install && pixi install -e renderer（镜像已调进 pixi.toml）→
+#   权重/TRT 引擎来自 gated 下载或旧实例接力（avtr1_storage/）
+# 2026-08-22 换机重建实录（pixi env 无 pip，一律 uv 补）：
+#   - tensorrt 不在 manifest，引擎要求 10.11.*（读引擎头 0a0b 得出）
+#   - onnxruntime-gpu 锁的 1.28 与 CUDA 12.8 不合，降 1.22.0
+#   - websockets 漏装（avatar service 直接崩 ModuleNotFoundError）
+#   - glibc 2.31 的重编插件在 avtr1_storage/renderer_runtime_artifacts/ 里，
+#     随存储接力即恢复，无需重编
 AVTR_ENV=/root/autodl-tmp/avtr-1/.pixi/envs/renderer
+if [ -x "$AVTR_ENV/bin/python" ]; then
+    UV4AVTR="$(command -v uv || ls /root/miniconda3/envs/py312/bin/uv 2>/dev/null || echo "$PWD/.venv/bin/uv")"
+    "$AVTR_ENV/bin/python" -c "import tensorrt" 2>/dev/null || \
+        "$UV4AVTR" pip install --python "$AVTR_ENV/bin/python" "tensorrt==10.11.*"
+    "$AVTR_ENV/bin/python" -c "import onnxruntime; assert onnxruntime.__version__ == '1.22.0'" 2>/dev/null || \
+        "$UV4AVTR" pip install --python "$AVTR_ENV/bin/python" onnxruntime-gpu==1.22.0
+    "$AVTR_ENV/bin/python" -c "import websockets" 2>/dev/null || \
+        "$UV4AVTR" pip install --python "$AVTR_ENV/bin/python" websockets
+fi
 if [ -x "$AVTR_ENV/bin/python" ] && "$AVTR_ENV/bin/python" -c "import avtr1_renderer" 2>/dev/null; then
     echo "    AVTR-1 环境就绪"
 else
@@ -147,36 +176,134 @@ else
     exit 1
 fi
 
-echo "==> [3/6] 预下载模型（HF_HOME=${HF_HOME:-默认}）"
+echo "==> [3/7] 预下载模型（HF_HOME=${HF_HOME:-默认}）"
 # hf download 幂等（已下载会校验后跳过）;VoxCPM2 走 HF 缓存（管线按 repo id 加载）
 .venv/bin/hf download openbmb/VoxCPM2
 # STT（SenseVoiceSmall）：ModelScope 缓存（首次启动自动下载亦可）
 .venv/bin/pip install -q modelscope
 .venv/bin/modelscope download --model iic/SenseVoiceSmall
 # SmartTurn v3.2 GPU 版模型（配置里 smart_turn_model_path 指到 *-gpu.onnx）
-.venv/bin/hf download pipecat-ai/smart-turn-v3 --include "smart-turn-v3.2-gpu.onnx"
+# 注意要整仓下：不配 smart_turn_model_path 时上游离线加载默认 CPU 版文件，
+# 只下 gpu.onnx 会 LocalEntryNotFound（2026-08-22 镜像缓存机踩坑）
+.venv/bin/hf download pipecat-ai/smart-turn-v3
 
-echo "==> [4/6] 检查配置"
+echo "==> [4/7] 检查配置"
 if [ ! -f .env.local ]; then
     echo "ERROR: .env.local 不存在。请 cp .env.example .env.local（LLM_API_KEY 填任意非空值）。" >&2
     exit 1
 fi
 set -a; source .env.local; set +a
-if [ -z "${LLM_API_KEY:-}" ]; then
-    echo "ERROR: .env.local 里 LLM_API_KEY 为空（本地 llama-server 只要求非空，填任意值即可）。" >&2
+if [ -z "${DEEPSEEK_API_KEY:-}" ] && [ -z "${LLM_API_KEY:-}" ]; then
+    echo "ERROR: .env.local 缺少 DEEPSEEK_API_KEY（或回退 LLM_API_KEY）。" >&2
     exit 1
 fi
 VOXEMW_CONFIG="${VOXEMW_CONFIG:-configs/assistant.yaml}"
 [ -f "$VOXEMW_CONFIG" ] || { echo "ERROR: 配置不存在: $VOXEMW_CONFIG" >&2; exit 1; }
 
-echo "==> [5/6] 数字人肖像素材检查"
+echo "==> [5/7] 数字人肖像素材检查"
 MISSING_IMG=0
-for img in assets/fengge/ref.png; do
+for img in assets/liangzi/ref.png; do
     [ -f "$img" ] || { echo "    缺 $img（对应 persona 将降级纯语音）"; MISSING_IMG=1; }
 done
 [ "$MISSING_IMG" = "0" ] || echo "    提示：缺肖像不阻塞语音对话，补齐后重启数字人服务即可"
 
-echo "==> [6/6] 启动服务"
+echo "==> [6/7] 歌声生成（ACE-Step 1.5，独立 uv 环境）"
+# 与主 venv 隔离（torch 钉死版本不同：ACE-Step 要 2.10.0+cu128，主 venv 是 2.8），
+# 同 AVTR-1 独立 pixi env 一个思路。仓库/checkpoint 都放数据盘；
+# checkpoint 默认 acestep-v15-turbo（2B, ~4.7GB 显存），下到 <仓库>/checkpoints/
+ACESTEP_DIR="${ACESTEP_DIR:-/root/autodl-tmp/ACE-Step-1.5}"
+if [ -d "$ACESTEP_DIR" ]; then
+    echo "    仓库已存在，跳过 clone"
+else
+    git clone --depth 1 https://github.com/ace-step/ACE-Step-1.5 "$ACESTEP_DIR"
+fi
+# uv 只是环境管理器，装进主 venv 用即可
+[ -x .venv/bin/uv ] || .venv/bin/pip install -q uv
+UV_BIN="$PWD/.venv/bin/uv"
+# uv 网络策略（2026-08-21 踩坑固化）：pypi 走阿里云镜像直连、pytorch 官方源
+# 直连（学术加速代理对这两者极慢，~10MB/min）；GitHub releases（flash_attn
+# 预编译轮）直连超时，必须走学术加速代理（[0/7] 已 source，取其 proxy 变量）；
+# 该代理是 MITM，uv 的 rustls 不认其 CA，需 --system-certs 用系统证书
+UV_ENV=(env "http_proxy=${http_proxy:-}" "https_proxy=${https_proxy:-}"
+      "no_proxy=localhost,127.0.0.1,mirrors.aliyun.com,download.pytorch.org,modelscope.com"
+      "UV_DEFAULT_INDEX=https://mirrors.aliyun.com/pypi/simple"
+      "UV_PYTHON=$CONDA_BASE/envs/py312/bin/python")
+# uv sync 按 pyproject 钉死版本装依赖；强制复用 conda py312 解释器
+# （项目要求 Python >=3.11,<3.13），不让 uv 自己再下一个 Python
+if (cd "$ACESTEP_DIR" && "${UV_ENV[@]}" "$UV_BIN" run --no-sync --system-certs python -c "import acestep" > /dev/null 2>&1); then
+    echo "    ACE-Step 环境已就绪"
+else
+    echo "    uv sync 安装依赖（首次含 torch 2.10 cu128，下载量大，耐心等）..."
+    (cd "$ACESTEP_DIR" && "${UV_ENV[@]}" "$UV_BIN" sync --system-certs)
+fi
+# flash_attn：uv.lock 只给了 cp311 预编译轮，py312 环境装不上会静默退回 SDPA
+# （注意力变慢 + nano-vllm 无法开 CUDA graph，2026-08-21 实测日志确认）。
+# 手动补装 cp312 预编译轮（GitHub releases，需走代理）
+if ! (cd "$ACESTEP_DIR" && .venv/bin/python -c "import flash_attn" > /dev/null 2>&1); then
+    (cd "$ACESTEP_DIR" && "${UV_ENV[@]}" "$UV_BIN" pip install --system-certs --python .venv/bin/python \
+        "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.12/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-linux_x86_64.whl") || \
+        echo "    警告：flash_attn 安装失败（退回 SDPA，生成略慢）"
+fi
+# 预下载 checkpoint（幂等；境内 auto 源自动走 ModelScope，也可
+# ACESTEP_DOWNLOAD_SOURCE=modelscope 显式指定）
+(cd "$ACESTEP_DIR" && "${UV_ENV[@]}" "$UV_BIN" run --no-sync acestep-download) || \
+    echo "    警告：checkpoint 下载失败，首次点歌时会自动重试下载"
+# 下载器会把 5Hz-LM 全档位都拉下来；4B 我们用不到（显存 +9GB、磁盘 ~10GB，
+# 2026-08-21 实测直接把 89G 系统盘塞满），删掉——运行时用 1.7B
+rm -rf "$ACESTEP_DIR/checkpoints/acestep-5Hz-lm-4B"
+# 冒烟：起服务 → 生成 10s 样本 → 停服务（正式启停归 start_assistant.sh）。
+# 首次含模型加载，可能要几分钟；失败只告警不阻塞（点歌时会再暴露）
+echo "    冒烟：生成 10s 样本（首次含模型加载，耐心等）..."
+mkdir -p logs
+pushd "$ACESTEP_DIR" > /dev/null
+ACESTEP_NO_INIT=false ACESTEP_LM_MODEL_PATH=acestep-5Hz-lm-1.7B \
+    ACESTEP_LM_DEVICE=cpu ACESTEP_OFFLOAD_DIT_TO_CPU=true \
+    PYTORCH_ALLOC_CONF=expandable_segments:True \
+    nohup "$UV_BIN" run --no-sync acestep-api --host 127.0.0.1 --port 8001 \
+    > "$OLDPWD/logs/acestep_smoke.log" 2>&1 &
+SMOKE_PID=$!
+popd > /dev/null
+.venv/bin/python - <<'PYEOF' || echo "    警告：冒烟未通过（看 logs/acestep_smoke.log），唱歌功能上线前先排障"
+import json, time, urllib.request
+
+BASE = "http://127.0.0.1:8001"
+
+def post(path, payload):
+    req = urllib.request.Request(BASE + path, data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())
+
+# 等服务起来（模型加载中 /docs 也可能未响应，给足 5 分钟）
+for _ in range(60):
+    try:
+        urllib.request.urlopen(BASE + "/docs", timeout=5)
+        break
+    except Exception:
+        time.sleep(5)
+else:
+    raise SystemExit("冒烟失败：acestep-api 5 分钟未就绪")
+reply = post("/release_task", {"prompt": "pop, short test", "lyrics": "[inst]",
+                               "audio_duration": 10.0, "audio_format": "wav"})
+task_id = (reply.get("data") or {}).get("task_id")
+assert task_id, f"release_task 无 task_id: {reply}"
+for _ in range(60):
+    time.sleep(5)
+    items = post("/query_result", {"task_id_list": [task_id]}).get("data") or []
+    item = next((i for i in items if i.get("task_id") == task_id), None)
+    status = item.get("status") if item else 0
+    if status == 1:
+        print("    冒烟通过：10s 样本生成成功")
+        break
+    if status == 2:
+        raise SystemExit(f"冒烟失败：任务报错 {item.get('progress_text')}")
+else:
+    raise SystemExit("冒烟失败：生成超时（5 分钟）")
+PYEOF
+kill "$SMOKE_PID" 2> /dev/null || true
+pkill -f "acestep-api" 2> /dev/null || true
+
+echo "==> [7/7] 启动服务"
 bash scripts/start_assistant.sh
 
 cat <<'EOF'
