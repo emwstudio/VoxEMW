@@ -27,8 +27,6 @@ const els = {
   personaBar: document.getElementById("persona-bar"),
   transcript: document.getElementById("transcript"),
   micBtn: document.getElementById("mic-btn"),
-  singBtn: document.getElementById("sing-btn"),
-  singUpload: document.getElementById("sing-upload"),
   imgUploadBtn: document.getElementById("img-upload-btn"),
   imgUpload: document.getElementById("img-upload"),
 };
@@ -42,8 +40,6 @@ let avatarOn = false;
 let assistantLine = null; // 正在流式累积的助手文本行
 let lineGotDeltas = false; // 当前行已收到逐字 delta（新上游 delta+done 双发，done 只收尾不重复上屏）
 let rtcEnabled = false;   // vox.status 下发：下行音画走 WebRTC
-let musicOn = false;      // vox.status 下发：唱歌功能（ACE-Step）是否启用
-let singing = false;      // 正在唱歌（服务端 vox.sing started/finished 驱动）
 let pc = null;            // RTCPeerConnection
 // solo 模式（?solo=1）：demo 录制用，隐藏用户画面、数字人单栏居中、不开摄像头
 const SOLO_MODE = new URLSearchParams(location.search).has("solo");
@@ -425,31 +421,11 @@ function handleTextMessage(data) {
     els.fallback.classList.toggle("hidden", avatarOn);
     updatePersonaBar();
     showStill(currentPersona);
-    musicOn = event.music === "on";
-    els.singBtn.disabled = !musicOn;
     rtcEnabled = !!(event.rtc && event.rtc.enabled);
     if (rtcEnabled) {
       startRTC().catch((e) =>
         addLine("sys", "", `⚠ WebRTC 建连异常: ${e.message}`)
       );
-    }
-    return;
-  }
-  if (event.type === "vox.sing") {
-    if (event.status === "started") {
-      singing = true;
-      els.singBtn.classList.add("live");
-      addLine("sys", "", `🎤 唱歌中（约 ${event.seconds || "?"}s，开口即可打断）…`);
-      setAvatarState("speaking");
-    } else {
-      if (singing || event.status === "failed") {
-        addLine("sys", "", event.status === "finished"
-          ? "🎵 唱完了"
-          : `⚠ 唱歌失败: ${event.error || "未知原因"}`);
-      }
-      singing = false;
-      els.singBtn.classList.remove("live");
-      if (avatarState === "speaking") setAvatarState("idle");
     }
     return;
   }
@@ -583,59 +559,6 @@ els.imgUpload.onchange = async () => {
   }
 };
 
-// 点歌是用户手势：解锁/补播 RTC 音频元素（autoplay 策略要手势）
-function unmuteAvatar() {
-  ensureRtcAudio();
-}
-
-// 点歌：先问模式——翻唱（选源歌音频换歌词）或从零创作（描述即可）
-els.singBtn.onclick = () => {
-  if (!ws || ws.readyState !== WebSocket.OPEN || !musicOn) return;
-  unmuteAvatar();
-  if (window.confirm("🎤 翻唱模式：选一段源歌音频（比如她唱的小段）换歌词？\n\n「确定」= 选音频翻唱　「取消」= 描述从零创作")) {
-    els.singUpload.value = "";
-    els.singUpload.click();
-    return;
-  }
-  const promptText = window.prompt("唱什么？（风格/主题描述，如：民谣，关于深夜爬山）");
-  if (!promptText || !promptText.trim()) return;
-  ws.send(JSON.stringify({ type: "vox.sing", prompt: promptText.trim() }));
-};
-
-els.singUpload.onchange = async () => {
-  const file = els.singUpload.files[0];
-  els.singUpload.value = "";
-  let srcId;
-  if (file) {
-    // 选了源歌 → cover 翻唱：问新歌词
-    addLine("sys", "", `⏫ 上传源歌「${file.name}」…`);
-    const fd = new FormData();
-    fd.append("file", file, file.name);
-    try {
-      const r = await (await fetch("/api/sing/source", { method: "POST", body: fd })).json();
-      if (!r.ok) {
-        addLine("sys", "", `⚠ 源歌上传失败: ${r.error || "未知错误"}`);
-        return;
-      }
-      srcId = r.id;
-    } catch (e) {
-      addLine("sys", "", `⚠ 源歌上传失败: ${e.message}`);
-      return;
-    }
-    const lyrics = window.prompt("换成什么歌词？（留空则照源歌唱）") || "";
-    ws.send(JSON.stringify({
-      type: "vox.sing",
-      src: srcId,
-      lyrics: lyrics.trim(),
-      prompt: "cover, 翻唱",
-    }));
-    return;
-  }
-  // 没选源歌 → 从零创作
-  const promptText = window.prompt("唱什么？（风格/主题描述，如：民谣，关于深夜爬山）");
-  if (!promptText || !promptText.trim()) return;
-  ws.send(JSON.stringify({ type: "vox.sing", prompt: promptText.trim() }));
-};
 
 els.micBtn.onclick = async () => {
   if (mic) {

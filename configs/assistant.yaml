@@ -1,156 +1,75 @@
-# VoxEMW 数字人实时语音助手 —— AutoDL RTX 4090 48G 单卡
+# VoxEMW 本地 Mac 极简版 —— Apple Silicon（M5 16GB），无数字人/无唱歌
 #
-# 积木：vad（语音活动检测）/ stt（语音转文字）/ llm（对话模型）/
-#       tts（文字转语音）/ avatar（数字人形象，AVTR-1）/ personas（人设注册表）
-#
-# 架构：huggingface/speech-to-speech 管线（pip 依赖，运行时注册自定义积木）
-#        浏览器 ↔ orchestrator（voxemw.avatar.orchestrator，:8000）
-#                ↔ s2s realtime ws（:8765，内部）
-#                ↔ avatar service（voxemw.avatar.service，:8767，内部）
+# 与云端 configs/assistant.yaml 的差异：
+# - 无数字人（AVTR-1 是 TensorRT/NVIDIA 专用，Mac 死路）：avatar.enabled: false，
+#   前端自动降级纯语音模式（静态肖像）
+# - STT/TTS 走 MPS（Apple GPU）。VoxCPM2 在 MPS 上被官方强制 float32
+#  （bf16 数值漂移），2B 模型 ~8G 内存——16G 机器偏紧，optimize 必须关
+#  （torch.compile 是 CUDA 路径）
+# - LLM 不变：DeepSeek API（key 从 .env.local 读）
+# - RTC 保留（aiortc 在 Mac 正常，音频下行唯一通道）：localhost 直连，
+#   不需要 coturn/TURN（host candidate 即可）
 #
 # 用法：
-#   python -m voxemw.pipeline.launch                 # s2s 语音管线（GPU 进程）
-#   python -m voxemw.avatar.service                  # 数字人服务（GPU 进程）
-#   python -m voxemw.avatar.orchestrator             # 编排 + Web 入口（CPU 进程）
+#   bash scripts/start_mac.sh    # pipeline + orchestrator（皆 .venv-mac）
 
 # ---------------------------------------------------------------------------
-# VAD：语音活动检测。上游只有 silero 一种实现，只能调参不能换。
+# VAD：语音活动检测（Silero，CPU 小模型，与平台无关）
 # ---------------------------------------------------------------------------
 vad:
   backend: silero
-  # 判停静音 64ms（上游默认）：Silero 激进软判停 + SmartTurn 语义复核（没说完压住）
-  # + 800ms 重开宽限（你接着说就接回同话轮）——抢答/丢字由后两层兜底
   min_silence_ms: 64
-  # SmartTurn GPU 版模型路径（autodl_setup.sh 预下载到 HF_HOME 缓存，
-  # 部署后填实际 snapshot 路径；不配则走上游默认 CPU 版）
-  # smart_turn_model_path: /root/autodl-tmp/hf/hub/models--pipecat-ai--smart-turn-v3/snapshots/<hash>/smart-turn-v3.2-gpu.onnx
-  # thresh: 0.6             # 检测阈值，越大越严格
-  # min_speech_ms: 384      # 最短有效语音
-  # speech_pad_ms: 500      # 段前保留音频
 
 # ---------------------------------------------------------------------------
-# STT：语音转文字。sensevoice = 自定义积木（voxemw.pipeline.stt_sensevoice），
-# FunASR SenseVoiceSmall 本地推理：非自回归一次前向出全文，实测 4s 音频 0.06s，
-# 中文 CER 同级 Whisper-large-v3。
+# STT：SenseVoiceSmall（FunASR 官方支持 mps；CPU 都 17x 实时，M5 无压力）
 # ---------------------------------------------------------------------------
 stt:
   backend: sensevoice
-  model_name: iic/SenseVoiceSmall       # ModelScope id，AutoModel 自动下载
-  device: cuda
+  model_name: iic/SenseVoiceSmall
+  device: mps
   language: zh
 
 # ---------------------------------------------------------------------------
-# LLM：对话模型。chat-completions = OpenAI 兼容 /v1/chat/completions。
-# 默认 DeepSeek API（deepseek-v4-flash，2026-08-21 从本地 Qwen3.8-27B 迁入：
-# 本地 27B 回复效果一般，且 20-24G 显存让位给歌声生成后整卡装不下）。
-# 工具调用（口播点歌 sing_song）依赖 DeepSeek 的 Tool Calls，实测后再开。
-# 回退本地：base_url 换 http://127.0.0.1:8081/v1、model_name 换 qwen38-local，
-# 并确认 start_assistant.sh 的 LLAMA_MODEL 指向的 gguf 存在。
+# LLM：DeepSeek API（与云端一致）
 # ---------------------------------------------------------------------------
 llm:
   backend: chat-completions
   model_name: deepseek-v4-flash
   base_url: https://api.deepseek.com
-  api_key_env: DEEPSEEK_API_KEY  # 从 .env.local 读（缺失回退 LLM_API_KEY）
-  # 流式：逐句送 TTS，长回复首音从等整段 3-5s 降到 ~0.5s，代价是语调上下文略平；
-  # 回退：stream: false（整段送 TTS，prosody 更自然）
+  api_key_env: DEEPSEEK_API_KEY
   stream: true
-  stream_batch_sentences: 1    # 攒几句送一次 TTS：1 = 逐句，首音最快
-  chat_size: 30                    # 多轮历史上限
-  # DeepSeek V4 默认开 thinking（话还没说先推理几秒，语音对话等不起）。
-  # 上游 speech-to-speech 把它透传成 extra_body.reasoning_effort；
-  # "none" = 关思考（2026-08-21 实测有效；文档写法 thinking.type=disabled
-  # 上游不支持，chat_template_kwargs 打法 DeepSeek 不认）
-  reasoning_effort: "none"
+  stream_batch_sentences: 1
+  chat_size: 30
+  reasoning_effort: "none"   # 关思考（见 assistant.yaml 同字段注释）
 
 # ---------------------------------------------------------------------------
-# TTS：文字转语音。voxcpm = 自定义积木（voxemw.pipeline.tts_voxcpm），
-# openbmb/VoxCPM2：Ultimate Cloning 音色克隆 + 流式输出（48kHz → 16kHz）。
-# 音色表自动取 personas 注册表全员（启动时预编码 prompt cache，
-# 前端切换人设时经 session.update 的 audio.output.voice 热切换，无需重启）。
+# TTS：Qwen3-TTS（上游内置后端，Mac 自动走 mlx-audio）。
+# Base 变体 = 零样本音色克隆（良子 ref.wav + ref.txt 由启动参数注入）；
+# Apple Silicon 自动映射到 mlx-community 6bit 版（~2G，M5 实测速度待验收）。
+# 克隆质量/速度不达标时的退路：云克隆 TTS API（MiniMax/百炼 CosyVoice）。
 # ---------------------------------------------------------------------------
 tts:
-  backend: voxcpm
-  model_name: openbmb/VoxCPM2
-  device: cuda                           # 别写 cuda:0——官方 optimize() 只认字符串 "cuda"
-  sample_rate: 16000                     # 管线全程 16kHz，勿改
-  blocksize: 512
-  cfg_value: 2.0                         # 官方推荐值；越大越贴近参考音色，过高会僵硬
-  inference_timesteps: 10                # 扩散步数,官方推荐 10；调低更快更糙
-  optimize: true                         # torch.compile：启动慢一两分钟，RTF ~1.0 → ~0.3-0.5
-  # 语速补偿：VoxCPM2 克隆语速实测比 ref.wav 快 ~12%（同文本合成 21.4s vs 24.2s，
-  # 2026-08-04 A/B：与逐句/整段、cfg_value、timesteps 均无关，模型固有）。
-  # atempo 保调变速，rate=时长倍数的倒数；1.0 = 关闭。每句一个 ffmpeg 管道，~几十 ms 窗口延迟
-  rate: 0.886                            # 时长 ×1.13，对齐 ref.wav 语速
-  # load_denoiser: true                  # 参考音频有底噪再开（额外下 ModelScope 降噪模型）
+  backend: qwen3                                 # 上游注册名（CLI 选项是 --tts qwen3）
+  model_name: Qwen/Qwen3-TTS-12Hz-1.7B-Base   # Base=克隆；CustomVoice=预设音色
+  device: auto                                 # darwin 上自动选 mlx-audio
+  sample_rate: 16000                           # 管线全程 16kHz，勿改
 
 # ---------------------------------------------------------------------------
-# Avatar：数字人形象 = AVTR-1（avaturn-live/avtr-1，TensorRT，0.2s/chunk，
-# 实测 4090D ~80ms/chunk）。一张参考肖像 + TTS 音频流 → 实时说话头视频。
-# 独立 GPU 进程（voxemw.avatar.service），orchestrator 经 ws 推送音频、收裸帧。
-# enabled: false 或 persona 缺 ref_image 时自动降级为纯语音模式。
-# 参考图规范（重要）：16:9 横版胸像（官方帧 1920×1080），脸宽占图宽 ~20%、
-# 头顶留白 ~19%——loader 对输入非等比 resize 到 1280×720，方图会把脸拉变形。
-# 想口型明显：用微张嘴/露齿、胡须不遮嘴线的照片（模型对闭嘴素材开合保守）
+# Avatar：本地无数字人（TensorRT/NVIDIA 专用，Mac 无法运行）
 # ---------------------------------------------------------------------------
 avatar:
-  enabled: true
-  avtr1_storage: /root/autodl-tmp/avtr1_storage   # AVTR1_LOCAL_STORAGE（权重+TRT 引擎）
-  avtr1_bg: plain_white                # 合成背景 id（pasteback 区域外才生效）
-  device: cuda
-  idle_motion: true                    # 常驻微动：无语音时静音驱动（眨眼/轻摇头/倾听反应）
-  port: 8767                           # avatar service 内部 ws 端口
-  host: 127.0.0.1
+  enabled: false
 
 # ---------------------------------------------------------------------------
-# WebRTC 音画轨（2026-08-07，对标 AVTR-1 官方 demo）：下行音画走 RTP
-# （VP8 720p25 + Opus 48k），浏览器按时间戳原生音画同步；带宽比 WS 推 JPEG
-# 省一个数量级。传输：SSH 隧道用户需 TURN（媒体过不了 TCP 隧道）——实例跑
-# coturn（configs/turnserver.conf，loopback :3478），隧道用 scripts/tunnel.sh
-# （含 3478）；LAN 直连走 host candidate，无需 TURN。前端 ?vbr=kbps 可临时调码率。
+# WebRTC 音画轨：本地 localhost 直连（host candidate），无需 coturn/TURN
 # ---------------------------------------------------------------------------
 rtc:
   enabled: true
-  video_bitrate: 4000000               # 视频目标码率（720p25 数字人最佳画质档；VBV 峰值同步钳此值）
-  turn_url: "turn:127.0.0.1:3478?transport=udp"
-  turn_username: "voxemw"
-  turn_credential: "voxemw-turn-2026"
-  # 下发给浏览器的 ICE 配置（SSH 隧道场景：浏览器 → turn localhost:3478 TCP）
-  browser_ice_servers:
-    - urls: ["turn:localhost:3478?transport=tcp"]
-      username: "voxemw"
-      credential: "voxemw-turn-2026"
+  video_bitrate: 4000000
+  browser_ice_servers: []
 
 # ---------------------------------------------------------------------------
-# 歌声生成：ACE-Step 1.5（独立进程 acestep-api :8001，仅绑回环，不对外；
-# 安装/启停见 scripts/autodl_setup.sh 与 start_assistant.sh）。
-# 分段伪流式：整首歌拆成 segment_seconds 片段，首段生成完即开播，
-# 播放期间后台生成后续片段。歌声转 16kHz mono PCM 后复用 TTS 下行路径
-# （RTC 音轨 + avatar 口型），打断/flush 语义与说话一致。
-# ---------------------------------------------------------------------------
-music:
-  # 2026-08-22 翻篇：AI 音乐（生成/翻唱）效果验收不过，功能下线。
-  # 代码保留未删（voxemw/avatar/singing.py + orchestrator vox.sing + 前端点歌），
-  # enabled: false 时 orchestrator 不建客户端、ace-step 进程不启动、前端按钮置灰。
-  enabled: false
-  base_url: http://127.0.0.1:8001
-  checkpoint: acestep-v15-turbo      # 2B，~4.7GB 显存；显存富余可换 XL turbo（4B, ~9GB）
-  segment_seconds: 20                # 分段片长：20s 段 5090 带克隆实测 ~12-13s 生成 < 播放 20s，不断档
-  first_segment_seconds: 10          # 首段调短：开播延迟 ~14s → ~8s（API 下限 10s）
-  max_duration: 30                   # 单首歌时长上限（演示场景 30s 足够；API 支持 10–600）
-  vocal_language: zh                 # 歌词语种（API 默认 en）
-  sync_singing: true                 # 歌声是否驱动 avatar 口型（AVTR-1 效果待实测，差则 false）
-  use_persona_ref: true              # 用当前 persona 的 ref_wav 作参考音频，歌声贴近人设音色
-  cover_strength: 1.0                # cover 翻唱强度：官方默认 1.0 = 忠实翻唱（保旋律
-                                     # 保音色），0.2 小值是风格迁移——别往低调
-  acappella: true                    # 清唱（2026-08-22 用户要求）：text2music 时 prompt
-                                     # 追加 a cappella 标签，纯人声无伴奏；
-                                     # cover 不受影响（伴奏跟随源歌）
-
-# ---------------------------------------------------------------------------
-# 人设注册表：key = persona id（前端切换、TTS 音色名都用它），
-# value = 女娲蒸馏产物。每个文件的 frontmatter 声明三件套：
-#   name（显示名）/ ref_wav（音色参考音）/ ref_text（逐字台词）/ ref_image（数字人肖像）
+# 人设注册表（良子唯一）
 # ---------------------------------------------------------------------------
 personas:
   default: liangzi
@@ -158,15 +77,13 @@ personas:
     liangzi: personas/liangzi.md
 
 # ---------------------------------------------------------------------------
-# 服务参数。
+# 服务参数
 # ---------------------------------------------------------------------------
 server:
-  s2s_host: 127.0.0.1       # s2s realtime ws（orchestrator 内部连接，不对外）
+  s2s_host: 127.0.0.1
   s2s_port: 8765
-  host: 0.0.0.0             # orchestrator 对外（Web 静态页 + ws）
+  host: 127.0.0.1              # 本地版只绑回环
   port: 8000
   log_level: info
-  # 说话中每 0.5s 送一块中间音频给 STT 做实时预览（上游默认开）。前端只展示
-  # 最终转写，开着只会让 STT 反复转写片段、浪费 GPU；关掉后 STT 只处理完整语音段
   enable_live_transcription: false
-  num_pipelines: 1          # 并发会话数 = 隔离管线数；每多一条多一份模型显存，24GB 保持 1
+  num_pipelines: 1

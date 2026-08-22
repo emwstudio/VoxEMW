@@ -215,16 +215,4 @@ body.solo .avatar-wrap { aspect-ratio: 16 / 9; }
 }
 .mic-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .mic-btn.live { background: var(--live); }
-.sing-btn {
-  margin-left: 10px;
-  padding: 12px 20px;
-  font-size: 14px;
-  border-radius: 999px;
-  border: 1px solid var(--accent);
-  background: transparent;
-  color: var(--accent);
-  cursor: pointer;
-}
-.sing-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.sing-btn.live { background: var(--accent); color: #0d1117; }
 .hint { margin-top: 8px; font-size: 12px; color: var(--muted); }

@@ -58,7 +58,7 @@ if [ ! -f .env.local ] || ! grep -q "^DEEPSEEK_API_KEY=sk-" .env.local; then
     echo "ERROR: .env.local 缺少 DEEPSEEK_API_KEY（DeepSeek 控制台创建后写入）" >&2
     exit 1
 fi
-[ -f configs/assistant-mac.yaml ] || { echo "ERROR: 缺 configs/assistant-mac.yaml" >&2; exit 1; }
+[ -f configs/assistant.yaml ] || { echo "ERROR: 缺 configs/assistant.yaml" >&2; exit 1; }
 
 cat <<'EOF'
 

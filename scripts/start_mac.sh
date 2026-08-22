@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VOXEMW_CONFIG="${VOXEMW_CONFIG:-configs/assistant-mac.yaml}"
+VOXEMW_CONFIG="${VOXEMW_CONFIG:-configs/assistant.yaml}"
 
 if [ "${1:-}" = "stop" ]; then
     pkill -f "voxemw.pipeline.launch" 2>/dev/null || true
