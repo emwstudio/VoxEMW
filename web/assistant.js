@@ -20,8 +20,6 @@ const els = {
   fallback: document.getElementById("avatar-fallback"),
   avatarLabel: document.getElementById("avatar-label"),
   avatarState: document.getElementById("avatar-state"),
-  camWrap: document.getElementById("cam-wrap"),
-  userCam: document.getElementById("user-cam"),
   personaBar: document.getElementById("persona-bar"),
   transcript: document.getElementById("transcript"),
   micBtn: document.getElementById("mic-btn"),
@@ -31,17 +29,13 @@ const els = {
 
 let ws = null;
 let mic = null;
-let camStream = null;
 let personas = [];
 let currentPersona = null;
 let avatarOn = false;
 let assistantLine = null; // 正在流式累积的助手文本行
 let lineGotDeltas = false; // 当前行已收到逐字 delta（新上游 delta+done 双发，done 只收尾不重复上屏）
-let rtcEnabled = false;   // vox.status 下发：下行音画走 WebRTC
+let rtcEnabled = false;   // vox.status 下发：下行音频走 WebRTC
 let pc = null;            // RTCPeerConnection
-// solo 模式（?solo=1）：demo 录制用，隐藏用户画面、数字人单栏居中、不开摄像头
-const SOLO_MODE = new URLSearchParams(location.search).has("solo");
-if (SOLO_MODE) document.body.classList.add("solo");
 
 
 // ---------------------------------------------------------------------------
@@ -237,24 +231,6 @@ function stopMic() {
   mic.stream.getTracks().forEach((t) => t.stop());
   mic.ctx.close();
   mic = null;
-}
-
-// ---------------------------------------------------------------------------
-// 摄像头（左侧画面，仅展示）
-// ---------------------------------------------------------------------------
-
-async function startCamera() {
-  camStream = await navigator.mediaDevices.getUserMedia({ video: true });
-  els.userCam.srcObject = camStream;
-  els.camWrap.classList.add("live");
-}
-
-function stopCamera() {
-  if (!camStream) return;
-  camStream.getTracks().forEach((t) => t.stop());
-  camStream = null;
-  els.userCam.srcObject = null;
-  els.camWrap.classList.remove("live");
 }
 
 // ---------------------------------------------------------------------------
@@ -522,7 +498,7 @@ els.imgUpload.onchange = async () => {
       method: "POST", body: fd,
     })).json();
     if (r.ok) {
-      addLine("sys", "", r.hot ? "🖼 新形象已生效" : "🖼 已保存，下次连接生效");
+      addLine("sys", "", "🖼 肖像已更新");
       // 刷新静态图（服务端 no-cache + 查询参数双保险）
       els.still.src = `/api/personas/${currentPersona}/image?t=${Date.now()}`;
     } else {
@@ -537,7 +513,6 @@ els.imgUpload.onchange = async () => {
 els.micBtn.onclick = async () => {
   if (mic) {
     stopMic();
-    stopCamera();
     setAvatarState("idle");
     els.micBtn.textContent = "🎙 开始对话";
     els.micBtn.classList.remove("live");
@@ -554,13 +529,6 @@ els.micBtn.onclick = async () => {
   } catch (e) {
     addLine("sys", "", `⚠ 麦克风不可用: ${e.message}`);
     return;
-  }
-  if (SOLO_MODE) return;  // solo 模式不开摄像头
-  try {
-    await startCamera();
-  } catch (e) {
-    // 摄像头被拒只降级：左侧显示占位，语音对话不受影响
-    addLine("sys", "", `⚠ 摄像头不可用（纯语音继续）: ${e.message}`);
   }
 };
 

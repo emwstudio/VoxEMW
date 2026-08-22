@@ -1,4 +1,4 @@
-/* VoxEMW 数字人语音助手 —— 深色舞台布局 */
+/* VoxEMW 良子语音助手 —— 深色舞台布局（纯语音，静态肖像） */
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -40,54 +40,22 @@ body {
 .status.live { color: var(--live); }
 .status.warn { color: var(--warn); }
 
-/* 通话双栏：左你的摄像头，右数字人；窄屏竖排 */
+/* 肖像区：单栏居中（纯语音，静态肖像） */
 .call-view {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-@media (max-width: 720px) {
-  .call-view { grid-template-columns: 1fr; }
-}
-
-/* solo 模式（?solo=1，demo 录制用）：隐藏用户画面，数字人 16:9 全宽居中。
-   注意必须用 grid 轨道尺寸 + justify-content 居中——
-   max-width + margin auto 在 flex/grid 嵌套下会把容器宽度压成 0（头像消失）*/
-body.solo .call-view {
-  grid-template-columns: min(1080px, 100%);
+  grid-template-columns: min(720px, 100%);
   justify-content: center;
 }
-body.solo .cam-wrap { display: none; }
-body.solo .avatar-wrap { aspect-ratio: 16 / 9; }
 
-.cam-wrap,
 .avatar-wrap {
   position: relative;
   width: 100%;
-  aspect-ratio: 1;
+  aspect-ratio: 16 / 9;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
 }
-.cam-wrap video {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  transform: scaleX(-1); /* 镜像，符合自拍直觉 */
-}
-.cam-fallback {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  color: var(--muted);
-}
-.cam-wrap.live .cam-fallback { display: none; }
 .pane-label {
   position: absolute;
   top: 8px;
@@ -98,18 +66,14 @@ body.solo .avatar-wrap { aspect-ratio: 16 / 9; }
   color: var(--text);
   background: rgba(13, 17, 23, 0.6);
 }
-.avatar-wrap img,
-.avatar-wrap video {
+.avatar-wrap img {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
-.avatar-wrap video { display: none; }
-/* WebRTC 模式：video 上屏（DOM 序 video 在 img 后，天然置顶） */
-.avatar-wrap.webrtc.streaming video { display: block; }
-/* 换图按钮：数字人画面右下角 */
+/* 换图按钮：肖像右下角 */
 .img-upload {
   position: absolute;
   right: 8px;

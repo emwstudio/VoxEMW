@@ -2,7 +2,7 @@
 .env.local
 .env
 .venv/
-.venv-avatar/
+.venv-mac/
 
 # 运行日志与临时文件
 *.log
@@ -11,21 +11,11 @@ logs/
 __pycache__/
 *.pyc
 
-# 第三方推理代码与模型权重（部署脚本拉取）
-vendor/
-models/
-
 # 用户提供的音色素材（个人材料，不入库）
 assets/*/ref.wav
 assets/*/ref.txt
 assets/*/ref.png
 assets/*/ref.jpg
-
-# 局域网反代的自签证书与私钥（可重新生成，不入库）
-scripts/lan_https/*.crt
-scripts/lan_https/*.key
-scripts/lan_https/*.csr
-scripts/lan_https/*.srl
 
 # macOS / 测试缓存
 .DS_Store
