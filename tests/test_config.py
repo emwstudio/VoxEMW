@@ -39,7 +39,6 @@ llm:
   base_url: https://api.deepseek.com/v1
   api_key_env: TEST_LLM_KEY
 tts: {{ backend: qwen3, model_name: Qwen/Qwen3-TTS-12Hz-1.7B-Base, device: auto }}
-avatar: {{ enabled: true }}
 personas:
   default: demo
   list:
@@ -67,7 +66,7 @@ def test_load_config_resolves_persona(tmp_path, assets):
 def test_load_config_missing_ref_image_degrades(tmp_path, assets):
     assets["png"].unlink()
     config = load_config(_write_config(tmp_path, assets))
-    # 缺肖像不阻塞启动：ref_image 置 None，avatar 降级纯语音
+    # 缺肖像不阻塞启动：ref_image 置 None，静态肖像缺失仅告警
     assert config["personas"]["resolved"]["demo"]["ref_image"] is None
 
 
@@ -92,7 +91,6 @@ vad: {{}}
 stt: {{}}
 llm: {{}}
 tts: {{}}
-avatar: {{}}
 personas:
   default: ghost
   list:

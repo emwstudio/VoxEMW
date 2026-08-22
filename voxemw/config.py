@@ -3,7 +3,7 @@
 纯逻辑模块：不 import torch / aiohttp / speech_to_speech，可在 macOS 开发机直接单测。
 
 配置结构（configs/assistant.yaml）：
-- vad / stt / llm / tts / avatar：五块硬积木，原样保留给 launch/orchestrator 渲染
+- vad / stt / llm / tts：四块硬积木，原样保留给 launch/orchestrator 渲染
 - personas：人设注册表（default + list: id -> personas/<id>.md）
   每个 persona 文件用 frontmatter 声明 name/ref_wav/ref_text/ref_image，
   正文为 LLM system prompt（女娲蒸馏产物）。
@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_BLOCKS = ("vad", "stt", "llm", "tts", "avatar")
+REQUIRED_BLOCKS = ("vad", "stt", "llm", "tts")
 
 
 def load_dotenv(path: Path) -> None:
@@ -79,10 +79,10 @@ def parse_persona_file(path: Path) -> dict:
 def load_config(path: Path) -> dict:
     """读 YAML 配置，解析 personas 人设文件与音色素材。
 
-    - vad/stt/llm/tts/avatar 积木段原样保留
+    - vad/stt/llm/tts 积木段原样保留
     - personas.list 每个 id 指向 persona md 文件：解析 frontmatter，
       ref_wav 必须存在；ref_text 读入文本内容（TTS 克隆要逐字台词文本）；
-      ref_image 缺失只告警（avatar 积木降级纯语音，不阻塞启动）
+      ref_image 缺失只告警（纯语音模式肖像仅作静态展示，不阻塞启动）
     """
     try:
         import yaml
@@ -122,7 +122,7 @@ def load_config(path: Path) -> dict:
 
         ref_text = persona.get("ref_text")
         if not ref_text:
-            sys.exit(f"ERROR: personas.{pid}（{p}）frontmatter 缺少 ref_text（Ultimate Cloning 需要逐字台词）")
+            sys.exit(f"ERROR: personas.{pid}（{p}）frontmatter 缺少 ref_text（TTS 克隆需要逐字台词）")
         text_path = _resolve_path(str(ref_text))
         if not text_path.is_file():
             sys.exit(f"ERROR: personas.{pid}.ref_text 文件不存在: {text_path}")
@@ -134,7 +134,7 @@ def load_config(path: Path) -> dict:
             if image_path.is_file():
                 persona["ref_image"] = str(image_path)
             else:
-                logger.warning("personas.%s.ref_image 不存在（avatar 将降级纯语音）: %s", pid, image_path)
+                logger.warning("personas.%s.ref_image 不存在（肖像静态图将缺失）: %s", pid, image_path)
                 persona["ref_image"] = None
         resolved[pid] = persona
 

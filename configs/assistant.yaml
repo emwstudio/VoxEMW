@@ -1,11 +1,9 @@
-# VoxEMW 本地 Mac 极简版 —— Apple Silicon（M5 16GB），无数字人/无唱歌
+# VoxEMW 本地 Mac 极简版 —— Apple Silicon（M5 16GB），纯语音（无数字人/无唱歌）
 #
 # 形态：
-# - 无数字人（AVTR-1 是 TensorRT/NVIDIA 专用，Mac 死路）：avatar.enabled: false，
-#   前端自动降级纯语音模式（静态肖像）
+# - 纯语音：数字人（AVTR-1）代码已整体拆除，前端静态肖像 + RTC 音频轨
 # - STT/TTS 走 MPS（Apple GPU）；LLM 走 DeepSeek API（key 从 .env.local 读）
-# - RTC 保留（aiortc 在 Mac 正常，音频下行唯一通道）：localhost 直连，
-#   不需要 coturn/TURN（host candidate 即可）
+# - RTC：localhost 直连，不需要 coturn/TURN（host candidate 即可）
 #
 # 用法：
 #   bash scripts/start_mac.sh    # pipeline + orchestrator（皆 .venv-mac）
@@ -56,17 +54,10 @@ tts:
   sample_rate: 16000                           # 管线全程 16kHz，勿改
 
 # ---------------------------------------------------------------------------
-# Avatar：本地无数字人（TensorRT/NVIDIA 专用，Mac 无法运行）
-# ---------------------------------------------------------------------------
-avatar:
-  enabled: false
-
-# ---------------------------------------------------------------------------
-# WebRTC 音画轨：本地 localhost 直连（host candidate），无需 coturn/TURN
+# WebRTC 音频轨：本地 localhost 直连（host candidate），无需 coturn/TURN
 # ---------------------------------------------------------------------------
 rtc:
   enabled: true
-  video_bitrate: 4000000
   browser_ice_servers: []
 
 # ---------------------------------------------------------------------------

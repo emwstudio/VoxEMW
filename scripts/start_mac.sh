@@ -10,7 +10,7 @@ VOXEMW_CONFIG="${VOXEMW_CONFIG:-configs/assistant.yaml}"
 
 if [ "${1:-}" = "stop" ]; then
     pkill -f "voxemw.pipeline.launch" 2>/dev/null || true
-    pkill -f "voxemw.avatar.orchestrator" 2>/dev/null || true
+    pkill -f "voxemw.gateway.orchestrator" 2>/dev/null || true
     echo "已停止"
     exit 0
 fi
@@ -22,7 +22,7 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 
 mkdir -p logs
 pkill -f "voxemw.pipeline.launch" 2>/dev/null || true
-pkill -f "voxemw.avatar.orchestrator" 2>/dev/null || true
+pkill -f "voxemw.gateway.orchestrator" 2>/dev/null || true
 sleep 1
 
 echo "==> 启动语音管线（.venv-mac，:8765）"
@@ -39,7 +39,7 @@ for i in $(seq 1 60); do
 done
 
 echo "==> 启动 orchestrator（.venv-mac，:8000）"
-nohup .venv-mac/bin/python -m voxemw.avatar.orchestrator --config "$VOXEMW_CONFIG" \
+nohup .venv-mac/bin/python -m voxemw.gateway.orchestrator --config "$VOXEMW_CONFIG" \
     > logs/orchestrator.log 2>&1 &
 echo "    PID=$!，日志 logs/orchestrator.log"
 

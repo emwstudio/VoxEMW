@@ -7,7 +7,7 @@
   我们先 register_custom_backends() 把 qwen3asr 插进注册表，
   之后 --stt qwen3asr 就是合法 CLI 参数，走标准 parse/serve 流程。
 - persona 人设不进管线进程：realtime 模式下 instructions 由客户端
-  （voxemw.avatar.orchestrator）经 session.update 注入。
+  （voxemw.gateway.orchestrator）经 session.update 注入。
 """
 
 from __future__ import annotations

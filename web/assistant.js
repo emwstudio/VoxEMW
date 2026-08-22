@@ -1,22 +1,20 @@
-/* VoxEMW 数字人语音助手前端。
+/* VoxEMW 语音助手前端（纯语音模式，静态肖像）。
  *
- * 下行音画：WebRTC——POST /rtc/offer 建连，音频（Opus）+ 视频（VP8）走 RTP 轨，
- *           浏览器按时间戳原生音画同步，<video> 直挂远程流，零补偿参数。
- *           音画对齐在服务端 AVSyncScheduler（?alead=毫秒 调音频压后量）。
+ * 下行音频：WebRTC——POST /rtc/offer 建连，音频（Opus）走 RTP 轨，
+ *           挂隐藏 <audio> 播放（Chrome 对 RTC 音轨的解码只在媒体元素上才启动）。
  * WS /ws：上行麦克风/控制事件；下行转写/状态事件（音频体已剥离，走音轨）。
- * 数字人缺席时显示 persona 静态肖像（纯语音模式）。
+ * 肖像：/api/personas/{pid}/image 静态图，支持页面换图免重启。
  */
 
 "use strict";
 
-const VOX_JS_VERSION = "20260823b";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260823c";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
 
 const els = {
   status: document.getElementById("status"),
-  avatarVideo: document.getElementById("avatar-video"),
   still: document.getElementById("avatar-still"),
   avatarWrap: document.querySelector(".avatar-wrap"),
   fallback: document.getElementById("avatar-fallback"),
@@ -108,25 +106,13 @@ async function startRTC() {
     iceTransportPolicy: isTunnel && iceServers.length > 0 ? "relay" : "all",
   });
   pc = conn;
-  const rtcStream = new MediaStream();  // aiortc 音/视分两个 stream 发，收进同一个
-  const trackKinds = [];
   conn.ontrack = (e) => {
     if (e.track.kind === "audio") {
-      // 音频挂独立隐藏 <audio>（不挂 <video>：本地版无数字人画面，
-      // 且 Chrome 对 RTC 音轨的解码只在媒体元素上才启动）
+      // 音频挂独立隐藏 <audio>（Chrome 对 RTC 音轨的解码只在媒体元素上才启动）
       const el = ensureRtcAudio();
       el.srcObject = new MediaStream([e.track]);
       el.play().catch(() => {});
-      return;
     }
-    rtcStream.addTrack(e.track);
-    trackKinds.push(e.track.kind);
-    els.avatarVideo.srcObject = rtcStream;
-    els.avatarWrap.classList.add("webrtc", "streaming");
-    els.still.classList.add("hidden");
-    // 视频元素永远静音（音频全走 WebAudio，防双声道）
-    els.avatarVideo.muted = true;
-    els.avatarVideo.play().catch(() => {});
   };
   conn.onconnectionstatechange = () => {
     if (["failed", "closed"].includes(conn.connectionState)) {
@@ -134,8 +120,6 @@ async function startRTC() {
       // 用局部变量 conn 判定/操作——全局 pc 可能被重入的新连接占用
       if (pc === conn) {
         pc = null;
-        els.avatarVideo.srcObject = null;
-        els.avatarWrap.classList.remove("webrtc", "streaming");
       }
       conn.close();
       setTimeout(() => {
@@ -148,7 +132,6 @@ async function startRTC() {
   // 显式 recvonly transceiver：Safari 对 createOffer({offerToReceive*}) 老语法
   // 会产出零 m-section 的空 offer（iPad 实测 500），addTransceiver 全浏览器一致
   conn.addTransceiver("audio", { direction: "recvonly" });
-  conn.addTransceiver("video", { direction: "recvonly" });
   const offer = await conn.createOffer();
   await conn.setLocalDescription(offer);
   // aiortc 不支持 trickle：offer 必须带齐候选。TURN 走 TCP 隧道可能较慢，给足 15s
@@ -195,13 +178,6 @@ async function startRTC() {
         iceGatheringState: conn.iceGatheringState,
         iceConnectionState: conn.iceConnectionState,
         connectionState: conn.connectionState,
-        tracks: trackKinds,
-        video: {
-          readyState: els.avatarVideo.readyState,
-          paused: els.avatarVideo.paused,
-          muted: els.avatarVideo.muted,
-          size: `${els.avatarVideo.videoWidth}x${els.avatarVideo.videoHeight}`,
-        },
         candidates: cands,
       }),
     }).catch(() => {});
@@ -212,8 +188,6 @@ function stopRTC() {
   if (!pc) return;
   pc.close();
   pc = null;
-  els.avatarVideo.srcObject = null;
-  els.avatarWrap.classList.remove("webrtc", "streaming");
 }
 
 // ---------------------------------------------------------------------------

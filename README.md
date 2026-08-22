@@ -1,6 +1,6 @@
 # VoxEMW · 良子语音助手（本地 Mac 版）
 
-[![version](https://img.shields.io/badge/version-v2.0.0-blue)](https://github.com/emwstudio/VoxEMW/tags)
+[![version](https://img.shields.io/badge/version-v2.5.0-blue)](https://github.com/emwstudio/VoxEMW/tags)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6?logo=bilibili&logoColor=white)](https://space.bilibili.com/492428186)
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000?logo=youtube&logoColor=white)](https://www.youtube.com/@emw_studio)
@@ -14,7 +14,7 @@ STT/TTS/编排全在本机，只有大脑走 DeepSeek API（按 token 计费，�
 
 链路：浏览器（麦克风/扬声器）↔ 本机 orchestrator ↔ 本机语音管线
 （[huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech)）
-+ DeepSeek API。音画下行走 WebRTC（本机直连，无需 TURN）。
++ DeepSeek API。音频下行走 WebRTC（本机直连，无需 TURN）。
 
 ## 开发日记（视频）
 
@@ -51,7 +51,7 @@ orchestrator（CPU，:8000）
 
 ```bash
 cp .env.example .env.local        # 写入 DEEPSEEK_API_KEY=sk-...（DeepSeek 控制台创建）
-bash scripts/mac_setup.sh         # 装环境 + 下模型（幂等，~8G）
+bash scripts/mac_setup.sh         # 装环境 + 下模型（幂等，~4G）
 bash scripts/start_mac.sh         # 起 pipeline + orchestrator
 open http://localhost:8000        # 开聊（建议戴耳机：外放会回声自激打断）
 ```

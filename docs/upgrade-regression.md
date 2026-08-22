@@ -12,7 +12,7 @@
 - orchestrator 依赖的 realtime 协议行为：`session.update` 结构、
   `response.create` 被拒（conversation_already_has_active_response）重试、
   `conversation.item.create` deferred 队列、`response.done` 计数、GA/beta 双名音频事件
-- RTC 音轨链路（sched.feed_audio / flush 打断清空）
+- RTC 音频轨链路（pacer.feed_audio / flush 打断清空）
 
 ## 阶段 0：隔离准备
 
