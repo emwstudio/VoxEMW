@@ -1,16 +1,19 @@
 # VoxEMW · 良子语音助手（本地 Mac 版）
 
-[![version](https://img.shields.io/badge/version-v2.7.0-blue)](https://github.com/emwstudio/VoxEMW/tags)
+[![version](https://img.shields.io/badge/version-v1.8.0-blue)](https://github.com/emwstudio/VoxEMW/tags)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6?logo=bilibili&logoColor=white)](https://space.bilibili.com/492428186)
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000?logo=youtube&logoColor=white)](https://www.youtube.com/@emw_studio)
 [![X](https://img.shields.io/badge/X-@emwstudio-000000?logo=x&logoColor=white)](https://x.com/emwstudio)
 
-对着浏览器说话，良子用她自己的声音回答你。**本地 Mac（Apple Silicon）可跑**：
-STT/TTS/编排全在本机，只有大脑走 DeepSeek API（按 token 计费，日常闲聊一天几毛）。
+对着浏览器说话，良子用她自己的声音回答你。
 
-> v2.0 形态变更：早期版本（云端 4090 + AVTR-1 数字人视频形象 + 本地 27B 全离线）
-> 见 git tag v1.7.x。当前主线为本地 Mac 纯语音版（无数字人画面）。
+**一台 Mac 就能本地跑起来**——不需要 GPU 服务器、不需要 Docker、不需要大内存：
+VAD 判停 / 语音转写 / 音色克隆 / 网页编排全部在本机完成（Apple Silicon，实测 M5 16GB 流畅），
+只有大脑走 DeepSeek API（按 token 计费，日常闲聊一天几毛）。两条命令部署，浏览器开箱即聊。
+
+> 形态说明：早期版本（云端 4090 + AVTR-1 数字人视频形象 + 本地 27B 全离线）
+> 见 git tag v1.7.x。当前主线为本地 Mac 纯语音版（星空交互，无数字人画面）。
 
 链路：浏览器（麦克风/扬声器）↔ 本机 orchestrator ↔ 本机语音管线
 （[huggingface/speech-to-speech](https://github.com/huggingface/speech-to-speech)）
@@ -27,7 +30,7 @@ STT/TTS/编排全在本机，只有大脑走 DeepSeek API（按 token 计费，�
 - 小红书：https://xhslink.cn/m/2B0XSJKDWBg
 - 视频号&公众号：微信搜索「电磁波Studio」
 
-## 架构（四块积木）
+## 架构（五块积木）
 
 ```
 浏览器（localhost:8000）
