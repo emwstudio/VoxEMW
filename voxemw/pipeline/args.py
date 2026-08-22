@@ -2,7 +2,7 @@
 
 上游 2026-08 重构后：--stt/--tts 的 choices 由 backend_registry 动态生成，
 launch.py 先调 register_custom_backends() 把我们的积木插进注册表，
-这里直接渲染 --stt sensevoice --tts voxcpm 即可（不再靠 parse 后改写）。
+这里直接渲染 --stt qwen3asr --tts qwen3 即可（不再靠 parse 后改写）。
 """
 
 from __future__ import annotations
@@ -43,8 +43,8 @@ def render_s2s_argv(config: dict, env: dict | None = None) -> list[str]:
         "--host", str(server.get("s2s_host", "127.0.0.1")),
         "--port", str(server.get("s2s_port", 8765)),
         "--log_level", str(server.get("log_level", "info")),
-        "--stt", str(stt.get("backend", "sensevoice")),
-        "--tts", str(tts.get("backend", "voxcpm")),
+        "--stt", str(stt.get("backend", "qwen3asr")),
+        "--tts", str(tts.get("backend", "qwen3")),
     ]
 
     # 上游内置 qwen3 TTS 后端（Mac/MLX 路线）：CLI 直传模型与克隆参考
@@ -100,18 +100,6 @@ def stt_setup_kwargs(config: dict) -> dict:
     """STT handler 的 setup_kwargs（由 launch 的自定义工厂使用）。"""
     stt = config["stt"]
     backend = stt.get("backend")
-    gen_kwargs = {
-        key[len("gen_"):]: value
-        for key, value in stt.items()
-        if key.startswith("gen_")
-    }
-    if backend == "sensevoice":
-        return {
-            "model_name": stt.get("model_name", "iic/SenseVoiceSmall"),
-            "device": stt.get("device", "cuda"),
-            "language": stt.get("language", "zh"),
-            "gen_kwargs": gen_kwargs,
-        }
     if backend == "qwen3asr":
         hotwords = stt.get("hotwords", [])
         if isinstance(hotwords, list):
@@ -125,38 +113,3 @@ def stt_setup_kwargs(config: dict) -> dict:
         }
     raise ValueError(f"不支持的 stt.backend: {backend!r}")
 
-
-def tts_setup_kwargs(config: dict) -> dict:
-    """TTS handler 的 setup_kwargs（由 launch 的自定义工厂使用）。
-
-    voices：personas 注册表全员（key = persona id），启动时预编码/登记，
-    session.update 的 audio.output.voice 热切换；默认音色 = personas.default。
-    """
-    tts = config["tts"]
-    backend = tts.get("backend")
-    personas = config["personas"]["resolved"]
-    default_id = config["personas"]["default"]
-    default = personas[default_id]
-
-    import json
-
-    voices = {
-        pid: {"ref_audio": p["ref_wav"], "ref_text": p["ref_text"]}
-        for pid, p in personas.items()
-    }
-    if backend != "voxcpm":
-        raise ValueError(f"不支持的 tts.backend: {backend!r}")
-    return {
-        "model_name": tts.get("model_name", "openbmb/VoxCPM2"),
-        "device": tts.get("device", "cuda"),
-        "ref_audio": default["ref_wav"],
-        "ref_text": default["ref_text"],
-        "voices": json.dumps(voices, ensure_ascii=False),
-        "sample_rate": int(tts.get("sample_rate", 16000)),
-        "blocksize": int(tts.get("blocksize", 512)),
-        "cfg_value": float(tts.get("cfg_value", 2.0)),
-        "inference_timesteps": int(tts.get("inference_timesteps", 10)),
-        "optimize": bool(tts.get("optimize", True)),
-        "load_denoiser": bool(tts.get("load_denoiser", False)),
-        "rate": float(tts.get("rate", 1.0)),
-    }

@@ -42,7 +42,7 @@ orchestrator（CPU，:8000）
 | 积木 | 模型 | 说明 |
 |---|---|---|
 | ① VAD 判停 | Silero + SmartTurn（CPU ONNX） | 64ms 软判停 + 语义复核（停顿不抢答） |
-| ② STT 语音转写 | Qwen3-ASR-0.6B-hf（transformers，MPS） | 人设热词注入，黑话近满分；备用回退 SenseVoiceSmall |
+| ② STT 语音转写 | Qwen3-ASR-0.6B-hf（transformers，MPS） | 人设热词注入，黑话近满分 |
 | ③ LLM 大脑 | DeepSeek v4-flash（API） | 关思考模式保时延；工具调用支持 |
 | ④ TTS 语音合成 | Qwen3-TTS-1.7B-Base（MLX 6bit） | **零样本音色克隆**：良子 ref.wav + 逐字台词注入，首音 ~0.5s |
 | Persona 人设 | 女娲 · Skill 造人术（nuwa-skill） | `personas/*.md`（含音色参考音/肖像三件套，注册即用） |
@@ -78,5 +78,5 @@ python3 -m venv .venv && .venv/bin/python -m pip install pytest pyyaml numpy aio
 ## 合规与许可
 
 - 代码以 [MIT](LICENSE) 发布；第三方模型遵循各自协议（speech-to-speech Apache-2.0、
-  Qwen3-TTS / Qwen3-ASR Apache-2.0、SenseVoice MIT 等），商用前请自行确认各模型协议
+  Qwen3-TTS / Qwen3-ASR Apache-2.0 等），商用前请自行确认各模型协议
 - 音色与肖像素材由使用者本人提供/授权；AI 生成内容需标注，不得用于冒充、欺诈

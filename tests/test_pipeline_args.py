@@ -1,21 +1,17 @@
 """s2s argv 渲染与自定义积木 setup_kwargs 的纯逻辑单测（无需 GPU/依赖）。"""
 
-import json
-
 import pytest
 
-from voxemw.pipeline.args import render_s2s_argv, stt_setup_kwargs, tts_setup_kwargs
+from voxemw.pipeline.args import render_s2s_argv, stt_setup_kwargs
 
 
 def _config():
     return {
         "vad": {"backend": "silero", "min_silence_ms": 600},
         "stt": {
-            "backend": "sensevoice",
-            "model_name": "iic/SenseVoiceSmall",
-            "device": "cuda",
-            "language": "zh",
-            "gen_max_new_tokens": 256,
+            "backend": "qwen3asr",
+            "model_name": "Qwen/Qwen3-ASR-0.6B-hf",
+            "hotwords": ["大胃袋", "味真足"],
         },
         "llm": {
             "backend": "chat-completions",
@@ -26,10 +22,9 @@ def _config():
             "chat_size": 30,
         },
         "tts": {
-            "backend": "voxcpm",
-            "model_name": "openbmb/VoxCPM2",
-            "device": "cuda",
-            "optimize": True,
+            "backend": "qwen3",
+            "model_name": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+            "device": "auto",
         },
         "avatar": {"enabled": True},
         "personas": {
@@ -79,8 +74,12 @@ def test_render_s2s_argv():
     assert pairs["--enable_live_transcription"] == "false"
     assert pairs["--num_pipelines"] == "1"
     # 上游 2026-08 重构后 CLI choices 由注册表生成——自定义积木先注册即合法
-    assert pairs["--stt"] == "sensevoice"
-    assert pairs["--tts"] == "voxcpm"
+    assert pairs["--stt"] == "qwen3asr"
+    assert pairs["--tts"] == "qwen3"
+    # qwen3 TTS：CLI 直传模型与克隆参考（默认人设的 ref_wav/ref_text）
+    assert pairs["--qwen3_tts_model_name"] == "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+    assert pairs["--qwen3_tts_ref_audio"] == "/abs/demo/ref.wav"
+    assert pairs["--qwen3_tts_ref_text"] == "逐字台词"
 
 
 def test_render_s2s_argv_streaming_llm():
@@ -108,29 +107,6 @@ def test_render_s2s_argv_transformers_llm():
 
 def test_stt_setup_kwargs():
     kwargs = stt_setup_kwargs(_config())
-    assert kwargs["model_name"] == "iic/SenseVoiceSmall"
-    assert kwargs["language"] == "zh"
-    assert kwargs["gen_kwargs"] == {"max_new_tokens": 256}
-
-
-def test_stt_setup_kwargs_sensevoice():
-    config = _config()
-    config["stt"] = {"backend": "sensevoice", "model_name": "iic/SenseVoiceSmall"}
-    kwargs = stt_setup_kwargs(config)
-    assert kwargs["model_name"] == "iic/SenseVoiceSmall"
-    assert kwargs["device"] == "cuda"
-    assert kwargs["language"] == "zh"
-    assert kwargs["gen_kwargs"] == {}
-
-
-def test_stt_setup_kwargs_qwen3asr():
-    config = _config()
-    config["stt"] = {
-        "backend": "qwen3asr",
-        "model_name": "Qwen/Qwen3-ASR-0.6B-hf",
-        "hotwords": ["大胃袋", "味真足"],
-    }
-    kwargs = stt_setup_kwargs(config)
     assert kwargs["model_name"] == "Qwen/Qwen3-ASR-0.6B-hf"
     assert kwargs["device"] == "auto"
     assert kwargs["language"] == "Chinese"
@@ -138,6 +114,9 @@ def test_stt_setup_kwargs_qwen3asr():
     assert kwargs["hotwords"] == "大胃袋, 味真足"
     assert kwargs["max_new_tokens"] == 256
 
+
+def test_stt_setup_kwargs_qwen3asr_defaults():
+    config = _config()
     # 字符串词表原样透传；缺省 model_name 兜底
     config["stt"] = {"backend": "qwen3asr", "hotwords": "大胃袋"}
     kwargs = stt_setup_kwargs(config)
@@ -145,25 +124,8 @@ def test_stt_setup_kwargs_qwen3asr():
     assert kwargs["hotwords"] == "大胃袋"
 
 
-def test_tts_setup_kwargs_voices_from_personas():
-    kwargs = tts_setup_kwargs(_config())
-    assert kwargs["model_name"] == "openbmb/VoxCPM2"
-    assert kwargs["optimize"] is True
-    # 默认音色 = personas.default
-    assert kwargs["ref_audio"] == "/abs/demo/ref.wav"
-    assert kwargs["ref_text"] == "逐字台词"
-    # voices 表 = personas 全员（key = persona id，供 session.update 热切换）
-    voices = json.loads(kwargs["voices"])
-    assert set(voices) == {"demo", "other"}
-    assert voices["other"] == {"ref_audio": "/abs/other/ref.wav", "ref_text": "另一段台词"}
-
-
 def test_setup_kwargs_reject_unknown_backend():
     config = _config()
     config["stt"]["backend"] = "whisper"
     with pytest.raises(ValueError):
         stt_setup_kwargs(config)
-    config = _config()
-    config["tts"]["backend"] = "kokoro"
-    with pytest.raises(ValueError):
-        tts_setup_kwargs(config)

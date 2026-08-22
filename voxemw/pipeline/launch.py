@@ -4,8 +4,8 @@
     python -m voxemw.pipeline.launch [--config configs/assistant.yaml] [--dry-run]
 
 - 上游 2026-08 重构（main @5a0c79f）：工厂函数废弃，改 BackendSpec 注册表。
-  我们先 register_custom_backends() 把 sensevoice/voxcpm 插进注册表，
-  之后 --stt sensevoice --tts voxcpm 就是合法 CLI 参数，走标准 parse/serve 流程。
+  我们先 register_custom_backends() 把 qwen3asr 插进注册表，
+  之后 --stt qwen3asr 就是合法 CLI 参数，走标准 parse/serve 流程。
 - persona 人设不进管线进程：realtime 模式下 instructions 由客户端
   （voxemw.avatar.orchestrator）经 session.update 注入。
 """
@@ -161,7 +161,7 @@ def main() -> None:
 
     # ── 以下需要 speech_to_speech 依赖与 GPU，仅在服务器上执行 ──
     # 注意顺序：ModuleArguments 的 stt/tts choices 在 import 时固化，
-    # 必须先注册自定义积木再 import s2s_pipeline，否则 --stt sensevoice 报 invalid choice
+    # 必须先注册自定义积木再 import s2s_pipeline，否则 --stt qwen3asr 报 invalid choice
     from voxemw.pipeline.backends import register_custom_backends
 
     register_custom_backends(config)

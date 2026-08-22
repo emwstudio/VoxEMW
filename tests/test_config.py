@@ -32,13 +32,13 @@ def _write_config(tmp_path, assets, extra_personas=""):
     cfg.write_text(
         f"""
 vad: {{ backend: silero, min_silence_ms: 600 }}
-stt: {{ backend: sensevoice, model_name: iic/SenseVoiceSmall }}
+stt: {{ backend: qwen3asr, model_name: Qwen/Qwen3-ASR-0.6B-hf }}
 llm:
   backend: chat-completions
   model_name: deepseek-v4-flash
   base_url: https://api.deepseek.com/v1
   api_key_env: TEST_LLM_KEY
-tts: {{ backend: voxcpm, model_name: openbmb/VoxCPM2, device: cuda }}
+tts: {{ backend: qwen3, model_name: Qwen/Qwen3-TTS-12Hz-1.7B-Base, device: auto }}
 avatar: {{ enabled: true }}
 personas:
   default: demo

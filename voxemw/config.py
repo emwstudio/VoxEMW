@@ -81,7 +81,7 @@ def load_config(path: Path) -> dict:
 
     - vad/stt/llm/tts/avatar 积木段原样保留
     - personas.list 每个 id 指向 persona md 文件：解析 frontmatter，
-      ref_wav 必须存在；ref_text 读入文本内容（VoxCPM 要的是文本）；
+      ref_wav 必须存在；ref_text 读入文本内容（TTS 克隆要逐字台词文本）；
       ref_image 缺失只告警（avatar 积木降级纯语音，不阻塞启动）
     """
     try:

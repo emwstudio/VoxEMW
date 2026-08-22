@@ -1,12 +1,9 @@
 # VoxEMW 本地 Mac 极简版 —— Apple Silicon（M5 16GB），无数字人/无唱歌
 #
-# 与云端 configs/assistant.yaml 的差异：
+# 形态：
 # - 无数字人（AVTR-1 是 TensorRT/NVIDIA 专用，Mac 死路）：avatar.enabled: false，
 #   前端自动降级纯语音模式（静态肖像）
-# - STT/TTS 走 MPS（Apple GPU）。VoxCPM2 在 MPS 上被官方强制 float32
-#  （bf16 数值漂移），2B 模型 ~8G 内存——16G 机器偏紧，optimize 必须关
-#  （torch.compile 是 CUDA 路径）
-# - LLM 不变：DeepSeek API（key 从 .env.local 读）
+# - STT/TTS 走 MPS（Apple GPU）；LLM 走 DeepSeek API（key 从 .env.local 读）
 # - RTC 保留（aiortc 在 Mac 正常，音频下行唯一通道）：localhost 直连，
 #   不需要 coturn/TURN（host candidate 即可）
 #
@@ -22,12 +19,9 @@ vad:
 
 # ---------------------------------------------------------------------------
 # STT：Qwen3-ASR-0.6B-hf（transformers 原生，bf16 走 MPS；2026-08-23 M5 实测
-# A/B：SenseVoice 人设黑话 CER 9-24%（大胃袋→大卫在梁无人组），本模型+热词
-# 四段满分。代价：自回归，2-5s 短句 0.3-1.0s vs SenseVoice 0.03-0.18s——
-# 用户拍板用每轮 ~0.5s 换准确率）。
+# A/B：人设黑话+热词四段满分。自回归，2-5s 短句 0.3-1.0s——用户拍板
+# 用每轮 ~0.5s 换准确率）。
 # hotwords：人设词表，经 chat-template system 注入（"Vocabulary: ..."）。
-# 回退 SenseVoice：backend 换 sensevoice、model_name 换 iic/SenseVoiceSmall、
-# device 换 mps、language 换 zh、删掉 hotwords。
 # ---------------------------------------------------------------------------
 stt:
   backend: qwen3asr
@@ -37,10 +31,8 @@ stt:
   hotwords: [大胃袋, 味真足, 任丘, 锅贴, 大窑, 胃袋, 良子, 李占良, 哎妈呀, 嘎嘎]
 
 # ---------------------------------------------------------------------------
-# LLM：DeepSeek API（deepseek-v4-flash）。本地 8B 实测回复质量不达标，
-# 弃用本地脑；key 放 .env.local 的 DEEPSEEK_API_KEY。
-# 回退本地脑：llama-server 跑 GGUF，base_url 换 http://127.0.0.1:8081/v1、
-# model_name 换对应 alias、api_key_env 换 LLM_API_KEY。
+# LLM：DeepSeek API（deepseek-v4-flash，key 放 .env.local 的
+# DEEPSEEK_API_KEY）。本地 8B 脑实测回复质量不达标，已彻底弃用并删除。
 # ---------------------------------------------------------------------------
 llm:
   backend: chat-completions
@@ -55,8 +47,7 @@ llm:
 # ---------------------------------------------------------------------------
 # TTS：Qwen3-TTS（上游内置后端，Mac 自动走 mlx-audio）。
 # Base 变体 = 零样本音色克隆（良子 ref.wav + ref.txt 由启动参数注入）；
-# Apple Silicon 自动映射到 mlx-community 6bit 版（~2G，M5 实测速度待验收）。
-# 克隆质量/速度不达标时的退路：云克隆 TTS API（MiniMax/百炼 CosyVoice）。
+# Apple Silicon 自动映射到 mlx-community 6bit 版（~2G）。
 # ---------------------------------------------------------------------------
 tts:
   backend: qwen3                                 # 上游注册名（CLI 选项是 --tts qwen3）
