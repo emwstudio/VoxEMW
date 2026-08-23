@@ -16,7 +16,6 @@ const SAMPLE_RATE = 16000;
 
 const els = {
   status: document.getElementById("status"),
-  avatarState: document.getElementById("avatar-state"),
   personaBar: document.getElementById("persona-bar"),
   transcript: document.getElementById("transcript"),
   micBtn: document.getElementById("mic-btn"),
@@ -263,24 +262,45 @@ function appendAssistantDelta(delta) {
 }
 
 // ---------------------------------------------------------------------------
-// 对话状态角标：listening（用户说话中）/ thinking（说完到开口前）显示角标，
-// speaking / idle 隐藏。同一状态机驱动星空模式（见 tickSpace）
+// 单一状态指示器（顶栏 #status）：连接状态 + 对话状态合一
+//   未连接/已断开 → 灰/琥珀；已连接（未开麦）→ 灰
+//   开麦后：idle=🎙 聆听中 / listening=👂 倾听中 / thinking=🤔 思考中 / speaking=🔊 说话中
+// avatarState 同时驱动星空模式（见 tickSpace）
 // ---------------------------------------------------------------------------
 
 let avatarState = "idle"; // idle | listening | thinking | speaking
+let wsConnected = false;
+
+function setIndicator() {
+  const el = els.status;
+  if (!wsConnected) {
+    el.textContent = "已断开";
+    el.className = "status warn";
+    return;
+  }
+  if (!mic) {
+    el.textContent = "已连接";
+    el.className = "status";
+    return;
+  }
+  if (avatarState === "listening") {
+    el.textContent = "👂 倾听中…";
+    el.className = "status state-listening";
+  } else if (avatarState === "thinking") {
+    el.textContent = "🤔 思考中…";
+    el.className = "status state-thinking";
+  } else if (avatarState === "speaking") {
+    el.textContent = "🔊 说话中";
+    el.className = "status state-speaking";
+  } else {
+    el.textContent = "🎙 聆听中";
+    el.className = "status live";
+  }
+}
 
 function setAvatarState(state) {
   avatarState = state;
-  const el = els.avatarState;
-  if (state === "listening") {
-    el.textContent = "👂 倾听中…";
-    el.className = "state-listening";
-  } else if (state === "thinking") {
-    el.textContent = "🤔 思考中…";
-    el.className = "state-thinking";
-  } else {
-    el.className = "hidden";
-  }
+  setIndicator();
 }
 
 // ---------------------------------------------------------------------------
@@ -530,11 +550,6 @@ if (new URLSearchParams(location.search).has("debug")) {
 // 连接与人设
 // ---------------------------------------------------------------------------
 
-function setStatus(text, cls) {
-  els.status.textContent = text;
-  els.status.className = `status ${cls || ""}`;
-}
-
 function updatePersonaBar() {
   // 只有一个人设时隐藏切换条（chip 标签没意义）；多个人设自动恢复
   els.personaBar.style.display = personas.length > 1 ? "" : "none";
@@ -563,12 +578,14 @@ function connect() {
   const qs = q.get("alead") ? `?alead=${encodeURIComponent(q.get("alead"))}` : "";
   ws = new WebSocket(`${proto}://${location.host}/ws${qs}`);
   ws.onopen = () => {
-    setStatus("已连接", "live");
+    wsConnected = true;
+    setIndicator();
     els.micBtn.disabled = false;
     // RTC 建连等 vox.status 到了启动
   };
   ws.onclose = () => {
-    setStatus("已断开", "warn");
+    wsConnected = false;
+    setIndicator();
     els.micBtn.disabled = true;
     stopRTC();
     // 简单重连：对话中断后 3s 重试
@@ -576,7 +593,10 @@ function connect() {
       if (mic) connect();
     }, 3000);
   };
-  ws.onerror = () => setStatus("连接错误", "warn");
+  ws.onerror = () => {
+    wsConnected = false;
+    setIndicator();
+  };
   ws.onmessage = (msg) => {
     if (typeof msg.data === "string") {
       handleTextMessage(msg.data);
@@ -602,14 +622,13 @@ els.micBtn.onclick = async () => {
     setAvatarState("idle");
     els.micBtn.textContent = "🎙 开始对话";
     els.micBtn.classList.remove("live");
-    setStatus("已连接（麦克风关）", "");
     return;
   }
   try {
     await startMic();
     els.micBtn.textContent = "■ 结束对话";
     els.micBtn.classList.add("live");
-    setStatus("聆听中", "live");
+    setIndicator();  // 开麦：显示 🎙 聆听中
     // 用户手势已发生：解锁/补播 RTC 音频元素（autoplay 策略要手势）
     ensureRtcAudio();
   } catch (e) {

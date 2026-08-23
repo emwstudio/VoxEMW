@@ -63,26 +63,29 @@ body {
   border-radius: 999px;
   padding: 1px 8px;
 }
-.status { font-size: 13px; color: var(--muted); }
+.status {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(7, 11, 26, 0.6);
+}
 .status.live { color: var(--live); }
 .status.warn { color: var(--warn); }
 
-/* 对话状态角标（顶栏）：倾听=绿、思考=琥珀，speaking/idle 时 hidden */
-#avatar-state {
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  color: var(--text);
-  background: rgba(7, 11, 26, 0.6);
-  border: 1px solid var(--border);
-}
-#avatar-state.state-listening {
-  color: #3fb950;
+/* 单一状态指示器：倾听=绿呼吸、思考=琥珀呼吸、说话=蓝呼吸 */
+.status.state-listening {
+  color: var(--live);
   animation: state-breathe 1.6s ease-in-out infinite;
 }
-#avatar-state.state-thinking {
-  color: #d29922;
+.status.state-thinking {
+  color: var(--warn);
   animation: state-breathe 1s ease-in-out infinite;
+}
+.status.state-speaking {
+  color: var(--accent);
+  animation: state-breathe 1.2s ease-in-out infinite;
 }
 @keyframes state-breathe {
   0%, 100% { opacity: 1; }
