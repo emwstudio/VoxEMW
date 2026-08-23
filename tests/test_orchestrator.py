@@ -77,6 +77,10 @@ def test_is_echo_catches_playback_leak():
     assert is_echo("来了，老弟。", recent) is True
     # 反向包含：回声转写比原句长（多收了尾巴）
     assert is_echo("来了老弟咋啦这是", ["来了老弟咋啦"]) is True
+    # 混入其他声音的回声（非干净包含）：覆盖率 4/7 ≈ 0.57 ≥ 0.5
+    assert is_echo("来了，老弟。你好啊。", recent) is True
+    # 字序碎裂的回声（她说"哎，来了老弟！"，回声成"来了老弟哎"）：覆盖率 4/5
+    assert is_echo("来了，老弟。哎。", ["哎，来了老弟！"]) is True
 
 
 def test_is_echo_passes_real_speech():

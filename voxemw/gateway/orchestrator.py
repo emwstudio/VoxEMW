@@ -111,19 +111,27 @@ _NORM_RE = re.compile(r"[\s，。！？、,.!?…~—「」『』\"'：:；;（�
 
 def is_echo(user_transcript: str, recent_assistant: list[str]) -> bool:
     """回声回合判定（纯函数，便于单测）：转写出的「用户话」其实是助手
-    自己的声音被麦克风收回去（外放泄漏）——特征是与近期助手文本互相包含。
+    自己的声音被麦克风收回去（外放泄漏）。
 
-    规则：去标点空白后，候选 ≥4 字 且 与任一近期助手文本存在包含关系
-    （候选 ⊆ 助手 或 助手 ⊆ 候选）。短句（<4 字）永不判回声——「你好啊」
-    这种真实短句撞车概率太高。助手历史由调用方限制在近 2 轮，口癖复读
-    （用户故意学说良子的话）长度够也会被误杀——接受这个代价，外放自激
-    更烦。"""
+    规则：去标点空白后，候选 ≥4 字 且 被任一近期助手文本「按序覆盖」≥50%
+    （SequenceMatcher 匹配块总长度 / 候选长度）。用覆盖率而不是包含关系——
+    真实回声常混入环境音/下一句或字序碎裂（"来了老弟你好啊"、"来了老弟哎"），
+    精确包含会漏（2026-08-23 实测两轮漏网）。
+    短句（<4 字）永不判回声——「你好啊」这种真实短句撞车概率太高。
+    已知误杀面：用户紧接着整句复读良子的话逗他，会被当回声掐掉——接受。"""
+    import difflib
+
     candidate = _NORM_RE.sub("", user_transcript or "")
     if len(candidate) < 4:
         return False
     for past in recent_assistant:
         p = _NORM_RE.sub("", past or "")
-        if p and (candidate in p or p in candidate):
+        if not p:
+            continue
+        matched = sum(
+            m.size for m in difflib.SequenceMatcher(None, candidate, p).get_matching_blocks()
+        )
+        if matched / len(candidate) >= 0.5:
             return True
     return False
 
