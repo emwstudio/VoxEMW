@@ -354,7 +354,8 @@ const realtimeHandlers = {
   },
   "response.done"() {
     assistantLine = null;
-    if (avatarState === "thinking") setAvatarState("idle");  // 无音频回复的兜底
+    // 回复结束：思考中/说话中都收回「聆听中」；用户正在说（listening）不动
+    if (avatarState !== "listening") setAvatarState("idle");
   },
   error(event) {
     addLine("sys", "", `⚠ ${(event.error && event.error.message) || "未知错误"}`);
