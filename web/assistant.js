@@ -528,10 +528,6 @@ function tickSpace(t) {
     g.fillStyle = `rgba(190, 214, 255, ${alpha.toFixed(3)})`;
     g.fill();
   }
-  // 光环按钮的能量输入：说话取 RTC 音频能量，倾听取麦克风能量，其余归零
-  els.orb.style.setProperty("--lvl",
-    (mode === "speaking" ? SPACE.ttsLevel
-      : mode === "listening" ? SPACE.micLevel : 0).toFixed(3));
   requestAnimationFrame(tickSpace);
 }
 

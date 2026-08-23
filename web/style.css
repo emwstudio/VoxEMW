@@ -226,12 +226,10 @@ body {
   0%, 100% { box-shadow: 0 0 14px rgba(140, 190, 255, 0.25); }
   50% { box-shadow: 0 0 26px rgba(140, 190, 255, 0.45); }
 }
-/* 说话中：蓝色涟漪随良子声音起伏（--lvl 来自服务端响度，用户点名保留） */
+/* 说话中：静态蓝环（用户拍板：只有等待态跳波动，说话态也安静） */
 .orb.state-speaking::before {
   border-color: rgba(106, 165, 255, 0.85);
-  animation: none;
-  transform: scale(calc(1 + var(--lvl) * 0.16));
-  box-shadow: 0 0 calc(18px + var(--lvl) * 34px) rgba(106, 165, 255, 0.5);
+  box-shadow: 0 0 20px rgba(106, 165, 255, 0.3);
 }
 
 .mic-btn {
