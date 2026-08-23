@@ -182,66 +182,51 @@ body {
   justify-content: center;
   --lvl: 0;   /* JS 每帧写入：音频/麦克风能量（0..1），驱动光环幅度 */
 }
-/* 光环本体：默认暗蓝邀请呼吸（纯装饰，pointer-events:none——
-   绝对定位元素会压在按钮上拦截点击，2026-08-23 实测踩坑） */
+/* 光环本体：静态细环（纯装饰，pointer-events:none——
+   绝对定位元素会压在按钮上拦截点击，2026-08-23 实测踩坑）。
+   用户拍板：只有等待态（思考/启动）跳波动，其余状态环全部安静。 */
 .orb::before {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  border: 2px solid rgba(106, 165, 255, 0.45);
+  border: 2px solid rgba(106, 165, 255, 0.4);
   pointer-events: none;
-  transform: scale(calc(1 + var(--lvl) * 0.12));
+  box-shadow: 0 0 16px rgba(106, 165, 255, 0.15);
   transition: border-color 0.25s, box-shadow 0.25s;
-  animation: orb-invite 2.6s ease-in-out infinite;
-  box-shadow: 0 0 18px rgba(106, 165, 255, 0.18);
 }
-@keyframes orb-invite {
-  0%, 100% { box-shadow: 0 0 14px rgba(106, 165, 255, 0.12); }
-  50% { box-shadow: 0 0 30px rgba(106, 165, 255, 0.35); }
-}
-/* 聆听中：绿色呼吸环 */
+/* 聆听中：静态绿环 */
 .orb.state-live::before {
-  border-color: rgba(63, 185, 80, 0.6);
-  box-shadow: 0 0 22px rgba(63, 185, 80, 0.25);
-  animation: orb-live 2s ease-in-out infinite;
+  border-color: rgba(63, 185, 80, 0.55);
+  box-shadow: 0 0 16px rgba(63, 185, 80, 0.2);
 }
-@keyframes orb-live {
-  0%, 100% { box-shadow: 0 0 14px rgba(63, 185, 80, 0.18); }
-  50% { box-shadow: 0 0 30px rgba(63, 185, 80, 0.4); }
-}
-/* 倾听中：绿环随你的声音收拢（--lvl 来自麦克风能量） */
+/* 倾听中：静态亮绿环 */
 .orb.state-listening::before {
   border-color: rgba(63, 185, 80, 0.85);
-  animation: none;
-  transform: scale(calc(1.04 - var(--lvl) * 0.10));
-  box-shadow: 0 0 calc(16px + var(--lvl) * 26px) rgba(63, 185, 80, 0.45);
+  box-shadow: 0 0 20px rgba(63, 185, 80, 0.3);
 }
-/* 思考中/启动中：与说话同款的「缩放+光晕」波动，换成琥珀/蓝色——
-   无真实能量输入，用节奏波代替（这套机制在所有状态下同构，零兼容玄学） */
+/* 思考中/启动中：等待态专属——缩放波动（克制的光晕，与其余状态同风格） */
 .orb.state-thinking::before {
-  border-color: rgba(255, 190, 60, 0.95);
-  border-width: 3px;
+  border-color: rgba(255, 190, 60, 0.85);
   animation: orb-pulse 1.1s ease-in-out infinite, orb-glow-warn 1.1s ease-in-out infinite;
 }
 .orb.state-loading::before {
-  border-color: rgba(140, 190, 255, 0.95);
-  border-width: 3px;
+  border-color: rgba(140, 190, 255, 0.85);
   animation: orb-pulse 1.1s ease-in-out infinite, orb-glow-blue 1.1s ease-in-out infinite;
 }
 @keyframes orb-pulse {
   0%, 100% { transform: scale(1.0); }
-  50% { transform: scale(1.14); }
+  50% { transform: scale(1.1); }
 }
 @keyframes orb-glow-warn {
-  0%, 100% { box-shadow: 0 0 16px rgba(255, 190, 60, 0.35), 0 0 44px rgba(255, 190, 60, 0.2); }
-  50% { box-shadow: 0 0 30px rgba(255, 190, 60, 0.75), 0 0 72px rgba(255, 190, 60, 0.4); }
+  0%, 100% { box-shadow: 0 0 14px rgba(255, 190, 60, 0.25); }
+  50% { box-shadow: 0 0 26px rgba(255, 190, 60, 0.45); }
 }
 @keyframes orb-glow-blue {
-  0%, 100% { box-shadow: 0 0 16px rgba(140, 190, 255, 0.35), 0 0 44px rgba(140, 190, 255, 0.2); }
-  50% { box-shadow: 0 0 30px rgba(140, 190, 255, 0.75), 0 0 72px rgba(140, 190, 255, 0.4); }
+  0%, 100% { box-shadow: 0 0 14px rgba(140, 190, 255, 0.25); }
+  50% { box-shadow: 0 0 26px rgba(140, 190, 255, 0.45); }
 }
-/* 说话中：蓝色涟漪随良子声音起伏（--lvl 来自 RTC 音频能量） */
+/* 说话中：蓝色涟漪随良子声音起伏（--lvl 来自服务端响度，用户点名保留） */
 .orb.state-speaking::before {
   border-color: rgba(106, 165, 255, 0.85);
   animation: none;

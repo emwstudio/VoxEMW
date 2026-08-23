@@ -126,10 +126,10 @@ def is_echo(user_transcript: str, recent_assistant: list[str]) -> bool:
     """回声回合判定（纯函数，便于单测）：转写出的「用户话」其实是助手
     自己的声音被麦克风收回去（外放泄漏）。
 
-    规则：去标点空白后，候选 ≥4 字 且 被任一近期助手文本「按序覆盖」≥50%
-    （SequenceMatcher 匹配块总长度 / 候选长度）。用覆盖率而不是包含关系——
-    真实回声常混入环境音/下一句或字序碎裂（"来了老弟你好啊"、"来了老弟哎"），
-    精确包含会漏（2026-08-23 实测两轮漏网）。
+    规则：去标点空白后，候选 ≥4 字 且 与任一近期助手文本存在 ≥4 字的
+    「连续」匹配块 且 总覆盖率 ≥50%。连续块要求是关键——回声重放的是连续
+    音频，必然带出长连续块；而真实短答只会撞上零散文案（「我吃了」撞
+    「你吃了吗」就 2-3 字），2026-08-23 实测三轮误杀后加这道。
     短句（<4 字）永不判回声——「你好啊」这种真实短句撞车概率太高。
     已知误杀面：用户紧接着整句复读良子的话逗他，会被当回声掐掉——接受。"""
     import difflib
@@ -141,10 +141,10 @@ def is_echo(user_transcript: str, recent_assistant: list[str]) -> bool:
         p = _NORM_RE.sub("", past or "")
         if not p:
             continue
-        matched = sum(
-            m.size for m in difflib.SequenceMatcher(None, candidate, p).get_matching_blocks()
-        )
-        if matched / len(candidate) >= 0.5:
+        blocks = difflib.SequenceMatcher(None, candidate, p).get_matching_blocks()
+        longest = max((m.size for m in blocks), default=0)
+        coverage = sum(m.size for m in blocks) / len(candidate)
+        if longest >= 4 and coverage >= 0.5:
             return True
     return False
 

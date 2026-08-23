@@ -94,6 +94,14 @@ def test_is_echo_passes_real_speech():
     assert is_echo("来点吃的推荐", []) is False
 
 
+def test_is_echo_passes_short_real_answers():
+    # 2026-08-23 误杀实录：用户真实短答撞上助手文案的零散文案，最长块 <4 字
+    her = ["你吃了没啊老弟？你良弟我这胃袋都空了。"]
+    assert is_echo("嗯，我吃了。", her) is False
+    assert is_echo("呃，我吃了呀，真的是。", her) is False
+    assert is_echo("是吧？浑身带劲儿吧。", ["今天这身板，带劲！"]) is False
+
+
 def test_is_vocabulary_recitation():
     hw = ["良子", "大胃袋", "味真足"]
     # 噪音被词表脑补的整段背诵 → 掐
