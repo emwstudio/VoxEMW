@@ -20,6 +20,23 @@ AUDIO_RATE = 48000               # Opus 要求 48k
 AUDIO_TICK_48K = 960             # 20ms
 
 
+def _patch_opus_quality() -> None:
+    """aiortc 的 Opus 编码器硬编 application=voip：SILK 偏向的语音优化会
+    抹平瞬态——回复开头第一个音发闷/发糊（用户实测可闻）。切 audio 模式
+    （全频 MDCT，瞬态保真）。96kbps 码率不变。编码器由 RTCRtpSender 内部
+    创建，只能在类层面包一层。"""
+    from aiortc.codecs import opus
+
+    orig_init = opus.OpusEncoder.__init__
+
+    def _init_audio(self):
+        orig_init(self)
+        self.codec.options = {"application": "audio"}
+
+    opus.OpusEncoder.__init__ = _init_audio
+    logger.info("Opus 编码器: application=audio（瞬态保真）")
+
+
 class RTCAudioTrack:  # 组合而非继承：构造在 aiortc 导入前不触发重依赖
     """20ms 一拍的音频轨：调度器取 16k PCM → 重采样 48k → Opus（aiortc 编码）。
     无 TTS 音频时发静音，保持 pts 时钟连续。"""
@@ -74,6 +91,7 @@ class RTCManager:
         self._turn_user = cfg.get("turn_username", "")
         self._turn_pass = cfg.get("turn_credential", "")
         self.browser_ice_servers = cfg.get("browser_ice_servers", [])  # 下发给前端
+        _patch_opus_quality()
         self._pcs: set = set()
 
     async def _server_ice(self):
