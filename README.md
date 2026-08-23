@@ -6,7 +6,7 @@
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000?logo=youtube&logoColor=white)](https://www.youtube.com/@emw_studio)
 [![X](https://img.shields.io/badge/X-@emwstudio-000000?logo=x&logoColor=white)](https://x.com/emwstudio)
 
-对着浏览器说话，良子用她自己的声音回答你。
+对着浏览器说话，良子用他自己的声音回答你——**你说完，他 ≈1.3s 就开口**（实测最快 1.26s，中位 ~1.6s）。
 
 **一台 Mac 就能本地跑起来**——不需要 GPU 服务器、不需要 Docker、不需要大内存：
 VAD 判停 / 语音转写 / 音色克隆 / 对话调度全部在本机完成（Apple Silicon，实测 M5 16GB 流畅），
@@ -81,7 +81,7 @@ Mac 换网络后 IP 变了：重跑 `make_lan_tls.sh` 并更新
 ## 特性
 
 - **音色克隆**：Qwen3-TTS Base 零样本克隆，人设参考音 + 逐字台词注册即用
-- **语义判停**：SmartTurn 复核——你停顿她沉住气，你说完她秒接
+- **语义判停**：SmartTurn 复核——你停顿他沉住气，你说完他秒接
 - **打断记忆**：中途打断，良子记得刚才说到哪（已播时长回报，已听内容写回上下文）
 - **流式字幕**：回答逐字上屏，不整句砸脸
 - **空回复兜底**：模型偶发失声自动追问重答，对话不断流
