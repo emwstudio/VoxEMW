@@ -182,13 +182,15 @@ body {
   justify-content: center;
   --lvl: 0;   /* JS 每帧写入：音频/麦克风能量（0..1），驱动光环幅度 */
 }
-/* 光环本体：默认暗蓝邀请呼吸 */
+/* 光环本体：默认暗蓝邀请呼吸（纯装饰，pointer-events:none——
+   绝对定位元素会压在按钮上拦截点击，2026-08-23 实测踩坑） */
 .orb::before {
   content: "";
   position: absolute;
   inset: 0;
   border-radius: 50%;
   border: 2px solid rgba(106, 165, 255, 0.45);
+  pointer-events: none;
   transform: scale(calc(1 + var(--lvl) * 0.12));
   transition: border-color 0.25s, box-shadow 0.25s;
   animation: orb-invite 2.6s ease-in-out infinite;
@@ -241,6 +243,8 @@ body {
 }
 
 .mic-btn {
+  position: relative;   /* 双保险：明确叠在光环伪元素之上 */
+  z-index: 1;
   width: 92px;
   height: 92px;
   border-radius: 50%;
