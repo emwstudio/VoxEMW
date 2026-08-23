@@ -154,6 +154,16 @@ body {
   box-shadow: 0 0 32px rgba(63, 185, 80, 0.45);
   animation: none;
 }
+/* 启动中：可见的呼吸脉冲（disabled 的 0.5 透明度被这里覆盖，防误触但不装死） */
+.mic-btn.loading {
+  opacity: 1;
+  cursor: wait;
+  animation: btn-loading 1s ease-in-out infinite;
+}
+@keyframes btn-loading {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
 @keyframes btn-invite {
   0%, 100% { box-shadow: 0 0 18px rgba(106, 165, 255, 0.25); }
   50% { box-shadow: 0 0 36px rgba(106, 165, 255, 0.55); }

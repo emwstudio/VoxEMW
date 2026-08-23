@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import AVFAudio
 
 /// 良子语音助手的服务端地址（跑在你 Mac 上的 orchestrator）。
 /// 换网络/换机器时改这里：https://<Mac 局域网 IP>:9443
@@ -17,8 +18,24 @@ struct LiangziVoiceApp: App {
                 .onAppear {
                     // 通话期间不自动锁屏
                     UIApplication.shared.isIdleTimerDisabled = true
+                    configureAudioSession()
                 }
         }
+    }
+}
+
+/// 语音通话音频会话：playAndRecord + voiceChat 模式——这是 iOS 上开启系统级
+/// 回声消除（AEC/Voice Processing IO）的开关。不开的话，良子的声音从扬声器
+/// 出来会被麦克风收回去，VAD 误判成用户说话，自己触发下一轮（自激）。
+private func configureAudioSession() {
+    let session = AVAudioSession.sharedInstance()
+    do {
+        try session.setCategory(.playAndRecord, mode: .voiceChat,
+                                options: [.defaultToSpeaker, .allowBluetoothHFP])
+        try session.setActive(true)
+    } catch {
+        // 配置失败不致命：只是可能回声自激，通话本身仍能进行
+        print("AVAudioSession 配置失败: \(error)")
     }
 }
 

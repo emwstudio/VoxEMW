@@ -617,7 +617,10 @@ async function init() {
   connect();
 }
 
+let micStarting = false;  // 启动流程进行中（防首次慢启动时误触连点）
+
 els.micBtn.onclick = async () => {
+  if (micStarting) return;
   if (mic) {
     stopMic();
     setAvatarState("idle");
@@ -625,6 +628,11 @@ els.micBtn.onclick = async () => {
     els.micBtn.classList.remove("live");
     return;
   }
+  // 首次启动要拉起麦克风权限/AudioContext/建连，有数百毫秒空窗——进 loading 态防误触
+  micStarting = true;
+  els.micBtn.disabled = true;
+  els.micBtn.classList.add("loading");
+  els.micBtn.textContent = "⏳ 启动中…";
   try {
     await startMic();
     els.micBtn.textContent = "■ 结束对话";
@@ -634,7 +642,11 @@ els.micBtn.onclick = async () => {
     ensureRtcAudio();
   } catch (e) {
     addLine("sys", "", `⚠ 麦克风不可用: ${e.message}`);
-    return;
+    els.micBtn.textContent = "🎙 开始对话";
+  } finally {
+    micStarting = false;
+    els.micBtn.disabled = false;
+    els.micBtn.classList.remove("loading");
   }
 };
 
