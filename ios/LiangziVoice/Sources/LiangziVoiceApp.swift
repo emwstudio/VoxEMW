@@ -12,6 +12,8 @@ struct LiangziVoiceApp: App {
         WindowGroup {
             WebPageView(url: serverURL)
                 .ignoresSafeArea()
+                // 深色页面：状态栏时间/电量用浅色，不然暗底上看不清
+                .preferredColorScheme(.dark)
                 .onAppear {
                     // 通话期间不自动锁屏
                     UIApplication.shared.isIdleTimerDisabled = true

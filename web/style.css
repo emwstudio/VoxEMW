@@ -37,6 +37,10 @@ body {
   width: min(880px, 100vw);
   min-height: 100vh;
   padding: 16px;
+  /* iOS 壳是全屏 WebView（ignoresSafeArea）：内容让出刘海/状态栏和 Home 条，
+     星空背景照常铺满；桌面浏览器这两个 env 值是 0，无影响 */
+  padding-top: calc(16px + env(safe-area-inset-top));
+  padding-bottom: calc(16px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   gap: 12px;
