@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260823m";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260823n";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;

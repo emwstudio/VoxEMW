@@ -217,11 +217,12 @@ body {
   transform: scale(calc(1.04 - var(--lvl) * 0.10));
   box-shadow: 0 0 calc(16px + var(--lvl) * 26px) rgba(63, 185, 80, 0.45);
 }
-/* 思考中：琥珀旋转虚线弧 */
+/* 思考中：彗星弧旋转（conic-gradient 裁出平滑光弧，不再是半个黄圈） */
 .orb.state-thinking::before {
-  border-color: transparent;
-  border-top-color: var(--warn);
-  border-right-color: var(--warn);
+  border: none;
+  background: conic-gradient(from 0deg, transparent 0turn, rgba(210, 153, 34, 0.05) 0.55turn, var(--warn) 0.8turn, transparent 0.9turn);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
   animation: orb-spin 0.9s linear infinite;
   box-shadow: none;
 }
@@ -233,11 +234,12 @@ body {
   transform: scale(calc(1 + var(--lvl) * 0.16));
   box-shadow: 0 0 calc(18px + var(--lvl) * 34px) rgba(106, 165, 255, 0.5);
 }
-/* 启动中：虚线旋转（loading） */
+/* 启动中：同款彗星弧（蓝色） */
 .orb.state-loading::before {
-  border-color: transparent;
-  border-top-color: var(--accent);
-  border-style: dashed;
+  border: none;
+  background: conic-gradient(from 0deg, transparent 0turn, rgba(106, 165, 255, 0.05) 0.55turn, var(--accent) 0.8turn, transparent 0.9turn);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
   animation: orb-spin 1.1s linear infinite;
   box-shadow: none;
 }
