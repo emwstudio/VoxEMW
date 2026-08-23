@@ -21,3 +21,6 @@ assets/*/ref.txt
 # macOS / 测试缓存
 .DS_Store
 .pytest_cache/
+
+# Xcode 用户态
+xcuserdata/
