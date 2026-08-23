@@ -19,6 +19,7 @@ const els = {
   personaBar: document.getElementById("persona-bar"),
   transcript: document.getElementById("transcript"),
   micBtn: document.getElementById("mic-btn"),
+  orb: document.getElementById("orb"),
 };
 
 let ws = null;
@@ -139,11 +140,10 @@ async function startRTC() {
     body: JSON.stringify({
       sdp: conn.localDescription.sdp,
       type: conn.localDescription.type,
-      vbr: parseInt(new URLSearchParams(location.search).get("vbr") || "0", 10) || undefined,
     }),
   });
   if (!res.ok) {
-    addLine("sys", "", `⚠ WebRTC 建连失败（HTTP ${res.status}），看静态图`);
+    addLine("sys", "", `⚠ WebRTC 建连失败（HTTP ${res.status}），刷新重试`);
     if (pc === conn) pc = null;
     conn.close();
     return;
@@ -238,18 +238,29 @@ function stopMic() {
 // ---------------------------------------------------------------------------
 
 function addLine(cls, who, text) {
+  // 首条消息出现时摘掉空态提示
+  document.getElementById("empty-hint")?.remove();
   const div = document.createElement("div");
   div.className = `line ${cls}`;
-  if (who) {
-    const span = document.createElement("span");
-    span.className = "who";
-    span.textContent = who;
-    div.appendChild(span);
+  if (cls === "sys") {
+    div.appendChild(document.createTextNode(text));
+  } else {
+    // 气泡结构：div.line > div.bubble > span.who + 文本
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    if (who) {
+      const span = document.createElement("span");
+      span.className = "who";
+      span.textContent = who;
+      bubble.appendChild(span);
+    }
+    bubble.appendChild(document.createTextNode(text));
+    div.appendChild(bubble);
   }
-  div.appendChild(document.createTextNode(text));
   els.transcript.appendChild(div);
   els.transcript.scrollTop = els.transcript.scrollHeight;
-  return div;
+  // 返回气泡（sys 行返回行本身），流式 delta 往里追加
+  return div.querySelector(".bubble") || div;
 }
 
 function appendAssistantDelta(delta) {
@@ -273,28 +284,33 @@ let wsConnected = false;
 
 function setIndicator() {
   const el = els.status;
+  let orbState = "";
   if (!wsConnected) {
     el.textContent = "已断开";
     el.className = "status warn";
-    return;
-  }
-  if (!mic) {
+  } else if (!mic) {
     el.textContent = "已连接";
     el.className = "status";
-    return;
-  }
-  if (avatarState === "listening") {
+  } else if (avatarState === "listening") {
     el.textContent = "👂 倾听中…";
     el.className = "status state-listening";
+    orbState = "state-listening";
   } else if (avatarState === "thinking") {
     el.textContent = "🤔 思考中…";
     el.className = "status state-thinking";
+    orbState = "state-thinking";
   } else if (avatarState === "speaking") {
     el.textContent = "🔊 说话中";
     el.className = "status state-speaking";
+    orbState = "state-speaking";
   } else {
     el.textContent = "🎙 聆听中";
     el.className = "status live";
+    orbState = "state-live";
+  }
+  // 光环按钮同步状态（loading 态由按钮点击流程直接控制，不覆盖）
+  if (!els.orb.classList.contains("state-loading")) {
+    els.orb.className = `orb ${orbState}`.trim();
   }
 }
 
@@ -519,6 +535,10 @@ function tickSpace(t) {
     g.fillStyle = `rgba(190, 214, 255, ${alpha.toFixed(3)})`;
     g.fill();
   }
+  // 光环按钮的能量输入：说话取 RTC 音频能量，倾听取麦克风能量，其余归零
+  els.orb.style.setProperty("--lvl",
+    (mode === "speaking" ? SPACE.ttsLevel
+      : mode === "listening" ? SPACE.micLevel : 0).toFixed(3));
   requestAnimationFrame(tickSpace);
 }
 
@@ -624,7 +644,7 @@ els.micBtn.onclick = async () => {
   if (mic) {
     stopMic();
     setAvatarState("idle");
-    els.micBtn.textContent = "🎙 开始对话";
+    els.micBtn.textContent = "🎙";
     els.micBtn.classList.remove("live");
     return;
   }
@@ -632,17 +652,20 @@ els.micBtn.onclick = async () => {
   micStarting = true;
   els.micBtn.disabled = true;
   els.micBtn.classList.add("loading");
-  els.micBtn.textContent = "⏳ 启动中…";
+  els.micBtn.textContent = "⏳";
+  els.orb.className = "orb state-loading";
   try {
     await startMic();
-    els.micBtn.textContent = "■ 结束对话";
+    els.micBtn.textContent = "■";
     els.micBtn.classList.add("live");
-    setIndicator();  // 开麦：显示 🎙 聆听中
+    els.orb.classList.remove("state-loading");
+    setIndicator();  // 开麦：🎙 聆听中 + 光环同步
     // 用户手势已发生：解锁/补播 RTC 音频元素（autoplay 策略要手势）
     ensureRtcAudio();
   } catch (e) {
     addLine("sys", "", `⚠ 麦克风不可用: ${e.message}`);
-    els.micBtn.textContent = "🎙 开始对话";
+    els.micBtn.textContent = "🎙";
+    els.orb.classList.remove("state-loading");
   } finally {
     micStarting = false;
     els.micBtn.disabled = false;
