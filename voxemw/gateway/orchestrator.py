@@ -170,6 +170,19 @@ class Session:
         self._reply_audio_samples = 0   # 本轮回复已生成音频采样数（同上）
         self._assistant_history: list[str] = []  # 近 2 轮完整回复（回声判定用）
         self._suppress_ghost = False    # 回声回合压制中：丢弃该回合全部 response 事件
+        self._playback_watch = None     # 播放清空监听任务（response.done ≠ 播完）
+
+    async def _notify_playback_done(self) -> None:
+        """等 pacer 里的音频真正播完，再通知前端（vox.playback_done）。
+        上限 90s 兜底（RTC 未建连时队列不会被消费，防永远等不到）。"""
+        for _ in range(900):
+            if self.pacer is None or self.pacer.buffered_audio_seconds <= 0.02:
+                break
+            await asyncio.sleep(0.1)
+        try:
+            await self.browser.send_str(json.dumps({"type": "vox.playback_done"}))
+        except Exception:
+            pass
 
     async def run(self) -> None:
         import websockets
@@ -275,6 +288,12 @@ class Session:
                 self._resp_had_content = True
             elif etype == "response.done":
                 self._assistant_speaking = False
+                # 生成完毕 ≠ 播放完毕：pacer 队列里还有没播的音频。
+                # 通知前端播放真正清空（或即将清空）的时刻，前端据此收「说话中」
+                if self.pacer is None:
+                    await self.browser.send_str(json.dumps({"type": "vox.playback_done"}))
+                elif self._playback_watch is None or self._playback_watch.done():
+                    self._playback_watch = asyncio.create_task(self._notify_playback_done())
                 status = (event.get("response") or {}).get("status")
                 if (not self._resp_had_content and not self._empty_nudged
                         and status in (None, "completed")):

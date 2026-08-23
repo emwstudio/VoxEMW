@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260823p";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260823q";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -280,6 +280,7 @@ function appendAssistantDelta(delta) {
 
 let avatarState = "idle"; // idle | listening | thinking | speaking
 let wsConnected = false;
+let pbGuard = null;     // vox.playback_done 的 45s 兜底定时器
 
 function setIndicator() {
   const el = els.status;
@@ -372,8 +373,20 @@ const realtimeHandlers = {
   },
   "response.done"() {
     assistantLine = null;
-    // 回复结束：思考中/说话中都收回「聆听中」；用户正在说（listening）不动
-    if (avatarState !== "listening") setAvatarState("idle");
+    if (avatarState === "thinking") setAvatarState("idle");  // 无音频回复的兜底
+    // 「说话中」的收尾等 vox.playback_done（生成完 ≠ 播完，服务端按播放队列清空发）；
+    // 45s 兜底防它因任何原因没到
+    if (avatarState === "speaking") {
+      clearTimeout(pbGuard);
+      pbGuard = setTimeout(() => {
+        if (avatarState === "speaking") setAvatarState("idle");
+      }, 45000);
+    }
+  },
+  "vox.playback_done"() {
+    // 服务端：回复音频真正播完了
+    clearTimeout(pbGuard);
+    if (avatarState === "speaking") setAvatarState("idle");
   },
   error(event) {
     addLine("sys", "", `⚠ ${(event.error && event.error.message) || "未知错误"}`);
@@ -456,8 +469,13 @@ function tickSpace(t) {
   const cy = h / 2;
   const mode = avatarState;  // idle | listening | thinking | speaking
 
-  // 良子响度随音频事件刷新（见 realtimeHandlers），帧间缓慢衰减
-  SPACE.ttsLevel *= 0.985;
+  // 良子响度随音频事件刷新（见 realtimeHandlers），帧间缓慢衰减；
+  // 生成完毕后音频还在播（playback_done 未到）：留一个波纹地板，不装死
+  if (mode === "speaking") {
+    SPACE.ttsLevel = Math.max(SPACE.ttsLevel * 0.995, 0.12);
+  } else {
+    SPACE.ttsLevel *= 0.985;
+  }
   SPACE.micLevel *= mode === "listening" ? 1 : 0.94;  // 非倾听期麦克风能量淡出
 
   g.clearRect(0, 0, w, h);
