@@ -6,6 +6,7 @@ from voxemw.gateway.orchestrator import (
     build_session_update,
     classify_s2s_event,
     heard_prefix,
+    is_echo,
 )
 
 
@@ -68,3 +69,21 @@ def test_classify_other_events_passthrough():
         assert relay is True
         assert is_interrupt is False
         assert tapped is None
+
+
+def test_is_echo_catches_playback_leak():
+    # 良子的回答被麦克风收回去：候选被近期助手文本包含
+    recent = ["来了老弟！咋啦，这是等着看你良弟吃播来啦？"]
+    assert is_echo("来了，老弟。", recent) is True
+    # 反向包含：回声转写比原句长（多收了尾巴）
+    assert is_echo("来了老弟咋啦这是", ["来了老弟咋啦"]) is True
+
+
+def test_is_echo_passes_real_speech():
+    recent = ["火锅整起来，羊肉片子涮上，大窑一开，味真足！"]
+    assert is_echo("今晚吃啥好？给点建议", recent) is False
+    # 短句撞车不判回声（「你好啊」这种真实短句必须放行）
+    assert is_echo("你好啊", ["你好啊老弟"]) is False
+    # 空输入/空历史不判
+    assert is_echo("", recent) is False
+    assert is_echo("来点吃的推荐", []) is False

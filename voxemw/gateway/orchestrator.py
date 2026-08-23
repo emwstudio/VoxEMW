@@ -34,6 +34,7 @@ import base64
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -105,6 +106,28 @@ def heard_prefix(transcript: str, audio_seconds: float, played_seconds: float) -
     return cut
 
 
+_NORM_RE = re.compile(r"[\s，。！？、,.!?…~—「」『』\"'：:；;（）()【】\[\]]+")
+
+
+def is_echo(user_transcript: str, recent_assistant: list[str]) -> bool:
+    """回声回合判定（纯函数，便于单测）：转写出的「用户话」其实是助手
+    自己的声音被麦克风收回去（外放泄漏）——特征是与近期助手文本互相包含。
+
+    规则：去标点空白后，候选 ≥4 字 且 与任一近期助手文本存在包含关系
+    （候选 ⊆ 助手 或 助手 ⊆ 候选）。短句（<4 字）永不判回声——「你好啊」
+    这种真实短句撞车概率太高。助手历史由调用方限制在近 2 轮，口癖复读
+    （用户故意学说良子的话）长度够也会被误杀——接受这个代价，外放自激
+    更烦。"""
+    candidate = _NORM_RE.sub("", user_transcript or "")
+    if len(candidate) < 4:
+        return False
+    for past in recent_assistant:
+        p = _NORM_RE.sub("", past or "")
+        if p and (candidate in p or p in candidate):
+            return True
+    return False
+
+
 class Session:
     """一个浏览器连接 ↔ 一路 s2s 的编排。"""
 
@@ -124,6 +147,8 @@ class Session:
         self._empty_nudged = False      # 本轮是否已追问过（防追问死循环）
         self._reply_transcript = ""     # 本轮回复的转写文本（打断回报估算用）
         self._reply_audio_samples = 0   # 本轮回复已生成音频采样数（同上）
+        self._assistant_history: list[str] = []  # 近 2 轮完整回复（回声判定用）
+        self._suppress_ghost = False    # 回声回合压制中：丢弃该回合全部 response 事件
 
     async def run(self) -> None:
         import websockets
@@ -194,8 +219,24 @@ class Session:
                 continue
             relay, is_interrupt, pcm = classify_s2s_event(event)
             etype = event.get("type", "")
+            # ── 回声回合压制：外放泄漏把助手自己的话收成「用户说」──
+            if self._suppress_ghost:
+                if etype == "response.done" or is_interrupt:
+                    self._suppress_ghost = False  # 幽灵回合结束/真人新开口：解除
+                elif etype.startswith("response."):
+                    continue  # 幽灵回合事件全丢：不上屏、不出声、不计数
+            if etype == "conversation.item.input_audio_transcription.completed":
+                heard = event.get("transcript", "")
+                if is_echo(heard, self._assistant_history + [self._reply_transcript]):
+                    logger.info("回声回合压制：%r 与近期助手文本重合，掐掉", heard[:30])
+                    self._suppress_ghost = True
+                    await self.s2s.send(json.dumps({"type": "response.cancel"}))
+                    continue  # 转写不上屏
             # 空回复兜底追踪：本轮有任何文本/音频产出即视为有内容
             if etype == "response.created":
+                if self._reply_transcript:
+                    self._assistant_history = (
+                        self._assistant_history + [self._reply_transcript])[-2:]
                 self._resp_had_content = False
                 self._reply_transcript = ""     # 本轮回复转写（打断回报用）
                 self._reply_audio_samples = 0   # 本轮回复已生成音频采样
