@@ -244,7 +244,12 @@ function addLine(cls, who, text) {
   if (cls === "sys") {
     div.appendChild(document.createTextNode(text));
   } else {
-    // 气泡结构：div.line > div.bubble > span.who + 文本
+    // 结构：div.line > img.avatar + div.bubble > span.who + 文本
+    const img = document.createElement("img");
+    img.className = "avatar";
+    img.src = cls === "user" ? "/static/avatars/wo.jpeg" : "/static/avatars/liangzi.png";
+    img.alt = "";
+    img.onerror = () => { img.style.display = "none"; };  // 克隆仓库无个人照片时不破洞
     const bubble = document.createElement("div");
     bubble.className = "bubble";
     if (who) {
@@ -254,7 +259,13 @@ function addLine(cls, who, text) {
       bubble.appendChild(span);
     }
     bubble.appendChild(document.createTextNode(text));
-    div.appendChild(bubble);
+    if (cls === "user") {
+      div.appendChild(bubble);
+      div.appendChild(img);
+    } else {
+      div.appendChild(img);
+      div.appendChild(bubble);
+    }
   }
   els.transcript.appendChild(div);
   els.transcript.scrollTop = els.transcript.scrollHeight;

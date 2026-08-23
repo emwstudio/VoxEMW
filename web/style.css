@@ -132,7 +132,16 @@ body {
   pointer-events: none;
 }
 
-.line { margin-bottom: 10px; display: flex; }
+.line { margin-bottom: 10px; display: flex; align-items: flex-start; gap: 8px; }
+.line .avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+  margin-top: 2px;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.4);
+}
 .line .bubble {
   max-width: 78%;
   padding: 9px 14px;
