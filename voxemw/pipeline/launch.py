@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -94,13 +95,28 @@ def _patch_smart_turn_gpu() -> None:
     st_mod.SmartTurnAnalyzer.__init__ = _init_gpu
 
 
-def _patch_speechable_keep_cjk_punct() -> None:
+_STAGE_DIRECTION = re.compile(r"[（(][^（）()]{1,20}[)）]")
+
+
+def strip_stage_directions(text: str) -> str:
+    """删除括号舞台指示（（乐）（拍大腿）等——纯函数，便于单测）。
+
+    LLM 偶尔输出这类动作标注（人设禁止但没强制力），不剥掉 TTS 会照字面
+    把「括号乐」念出来。必须在句子级调用（delta 级括号对会被 token 切开）。"""
+    return _STAGE_DIRECTION.sub(" ", text)
+
+
+def _patch_text_filters() -> None:
     """两件套:
     1) 上游 remove_unspeechable 的白名单只含 ASCII 标点,中文标点(。、?!)被剥;
        CJK 标点加回白名单(显示有标点,TTS 也能按标点停顿)。
-    2) LLM 偶尔输出（笑）（拍大腿）等括号动作(人设禁止但没强制力),
-       在 remove_unspeechable 前整段删除——转写和 TTS 都不再出现。
+    2) 括号舞台指示（（乐）（笑）等）整段删除——转写和 TTS 都不再出现。
+       ⚠️ 挂接点必须是 remove_markdown（句子级：流式在每个句子入 batch 前
+       调用，非流式对全文本调用），不能是 remove_unspeechable（流式路径里
+       逐 delta 调用，（乐）拆成几个 token 永远配不上对——旧版挂这里，
+       实测（乐）被原样念出）。
        注意 handler 是 from-import 绑定,必须 patch 其模块命名空间里的引用。"""
+    import importlib
     import re
 
     from speech_to_speech.LLM import utils as llm_utils
@@ -111,21 +127,18 @@ def _patch_speechable_keep_cjk_punct() -> None:
         flags=re.UNICODE,
     )
 
-    orig_remove = llm_utils.remove_unspeechable
-    paren_action = re.compile(r"[（(][^（）()]{1,20}[)）]")
+    orig_remove_markdown = llm_utils.remove_markdown
 
-    def remove_unspeechable_no_actions(text: str) -> str:
-        return orig_remove(paren_action.sub(" ", text))
+    def remove_markdown_no_actions(text: str) -> str:
+        return orig_remove_markdown(strip_stage_directions(text))
 
     for mod_name in (
         "speech_to_speech.LLM.base_openai_compatible_language_model",
         "speech_to_speech.LLM.language_model",
     ):
-        import importlib
-
         mod = importlib.import_module(mod_name)
-        if getattr(mod, "remove_unspeechable", None) is orig_remove:
-            mod.remove_unspeechable = remove_unspeechable_no_actions
+        if getattr(mod, "remove_markdown", None) is orig_remove_markdown:
+            mod.remove_markdown = remove_markdown_no_actions
 
 
 def main() -> None:
@@ -170,7 +183,7 @@ def main() -> None:
 
     _patch_torch_flex_attention_compat()
     _patch_torch_hub_offline_fallback()
-    _patch_speechable_keep_cjk_punct()
+    _patch_text_filters()
     _patch_smart_turn_gpu()
 
     # 新上游标准 serve 流程（s2s_pipeline.run_pipeline_command 复刻）
