@@ -26,8 +26,9 @@ stt:
   model_name: Qwen/Qwen3-ASR-0.6B-hf
   device: auto                  # device_map=auto → MPS
   language: Chinese
-  # 热词偏置（概率性，靠前的词权重更高——良子务必第一位）
-  hotwords: [良子, 李占良, 大胃袋, 味真足, 任丘, 锅贴, 大窑, 胃袋, 哎妈呀, 嘎嘎]
+  # 热词偏置（概率性，务必克制：词越多模型越容易把没说的话脑补成词表内容——
+  # 2026-08-23 实测 10 个词时整段幻觉出词表。只留人设核心三词 + corrections 兜底）
+  hotwords: [良子, 大胃袋, 味真足]
   # 确定性后校正（转写后直接替换）：同音误写的兜底修复
   corrections:
     梁子: 良子
