@@ -407,8 +407,31 @@ def main() -> None:
     server = config.get("server") or {}
     host = str(server.get("host", "0.0.0.0"))
     port = int(server.get("port", 8000))
-    logger.info("orchestrator 就绪: http://%s:%d", host, port)
-    web.run_app(create_app(config), host=host, port=port, print=None)
+
+    # 可选 LAN TLS 入口（iPhone/iPad 用：iOS 的 getUserMedia 只在 https 下可用）。
+    # 证书由 scripts/make_lan_tls.sh 生成，环境变量缺省/文件不存在则只开 http。
+    tls_cert = os.environ.get("VOX_TLS_CERT", "")
+    tls_key = os.environ.get("VOX_TLS_KEY", "")
+    tls_port = int(os.environ.get("VOX_TLS_PORT", "9443"))
+    ssl_ctx = None
+    if tls_cert and tls_key and Path(tls_cert).is_file() and Path(tls_key).is_file():
+        import ssl
+
+        ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ssl_ctx.load_cert_chain(tls_cert, tls_key)
+
+    async def serve() -> None:
+        runner = web.AppRunner(create_app(config))
+        await runner.setup()
+        await web.TCPSite(runner, host, port).start()
+        logger.info("orchestrator 就绪: http://%s:%d", host, port)
+        if ssl_ctx is not None:
+            # LAN 入口必须绑 0.0.0.0（http 入口可以只绑回环）
+            await web.TCPSite(runner, "0.0.0.0", tls_port, ssl_context=ssl_ctx).start()
+            logger.info("LAN TLS 入口就绪: https://0.0.0.0:%d（iPhone 用这个）", tls_port)
+        await asyncio.Event().wait()  # 常驻
+
+    asyncio.run(serve())
 
 
 if __name__ == "__main__":

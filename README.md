@@ -61,6 +61,23 @@ open http://localhost:8000        # 开聊
 
 启停：`bash scripts/start_mac.sh [stop]`。
 
+## iPhone 壳（可选）
+
+Mac 当服务器，iPhone 走局域网 https 访问（iOS 的麦克风只在 https 页面里可用）：
+
+```bash
+bash scripts/make_lan_tls.sh   # 生成局域网证书（一次性，幂等）
+```
+
+1. 把 `scripts/lan_tls/rootCA-for-iphone.pem` AirDrop 到 iPhone，
+   设置里安装描述文件，并在「关于本机 → 证书信任设置」中启用
+2. Xcode 打开 `ios/LiangziVoice/LiangziVoice.xcodeproj`，
+   Signing & Capabilities 选你自己的 Team，真机运行（免费账号可侧载）
+3. 日常使用：Mac 上 `bash scripts/start_mac.sh`，iPhone 点开 App 即可
+
+Mac 换网络后 IP 变了：重跑 `make_lan_tls.sh` 并更新
+`ios/LiangziVoice/Sources/LiangziVoiceApp.swift` 顶部的 `serverURL`。
+
 ## 特性
 
 - **音色克隆**：Qwen3-TTS Base 零样本克隆，人设参考音 + 逐字台词注册即用

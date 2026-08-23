@@ -39,6 +39,13 @@ for i in $(seq 1 60); do
 done
 
 echo "==> 启动 orchestrator（.venv-mac，:8000）"
+# LAN TLS 入口（iPhone 用，https://<局域网IP>:9443）：证书在 scripts/lan_tls/，
+# 由 scripts/make_lan_tls.sh 生成；没有证书就只开本机 http
+if [ -f scripts/lan_tls/cert.pem ] && [ -f scripts/lan_tls/key.pem ]; then
+    export VOX_TLS_CERT="$PWD/scripts/lan_tls/cert.pem"
+    export VOX_TLS_KEY="$PWD/scripts/lan_tls/key.pem"
+    echo "    （检测到 LAN 证书，将同时开 https :9443）"
+fi
 nohup .venv-mac/bin/python -m voxemw.gateway.orchestrator --config "$VOXEMW_CONFIG" \
     > logs/orchestrator.log 2>&1 &
 echo "    PID=$!，日志 logs/orchestrator.log"

@@ -11,6 +11,9 @@ logs/
 __pycache__/
 *.pyc
 
+# LAN TLS 证书与私钥（scripts/make_lan_tls.sh 可重新生成，不入库）
+scripts/lan_tls/
+
 # 用户提供的音色素材（个人材料，不入库）
 assets/*/ref.wav
 assets/*/ref.txt
