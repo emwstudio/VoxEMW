@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260823e";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260823m";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -603,13 +603,22 @@ function connect() {
     setIndicator();
     els.micBtn.disabled = false;
     // RTC 建连等 vox.status 到了启动
+    if (wantMic) {
+      // 断线时点按钮发起的重连：连上后接着自动开麦
+      wantMic = false;
+      micStarting = false;
+      els.micBtn.classList.remove("loading");
+      els.orb.classList.remove("state-loading");
+      els.micBtn.onclick();
+    }
   };
   ws.onclose = () => {
     wsConnected = false;
     setIndicator();
-    els.micBtn.disabled = true;
+    // 按钮保持可点：断线状态下它就是重连入口（见 micBtn.onclick）
+    els.micBtn.disabled = false;
     stopRTC();
-    // 简单重连：对话中断后 3s 重试
+    // 对话中断后 3s 自动重连；没开麦的页面则等用户点按钮（防两台设备互踢死循环）
     setTimeout(() => {
       if (mic) connect();
     }, 3000);
@@ -638,6 +647,7 @@ async function init() {
 }
 
 let micStarting = false;  // 启动流程进行中（防首次慢启动时误触连点）
+let wantMic = false;      // 断线时点按钮 = 重连并自动开麦（onopen 里兑现）
 
 els.micBtn.onclick = async () => {
   if (micStarting) return;
@@ -646,6 +656,17 @@ els.micBtn.onclick = async () => {
     setAvatarState("idle");
     els.micBtn.textContent = "🎙";
     els.micBtn.classList.remove("live");
+    return;
+  }
+  if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN) {
+    // 断线状态：按钮就是重连入口（比如被另一台设备顶掉会话后）
+    wantMic = true;
+    micStarting = true;
+    els.micBtn.disabled = true;
+    els.micBtn.classList.add("loading");
+    els.micBtn.textContent = "⏳";
+    els.orb.className = "orb state-loading";
+    connect();
     return;
   }
   // 首次启动要拉起麦克风权限/AudioContext/建连，有数百毫秒空窗——进 loading 态防误触
