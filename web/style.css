@@ -217,38 +217,22 @@ body {
   transform: scale(calc(1.04 - var(--lvl) * 0.10));
   box-shadow: 0 0 calc(16px + var(--lvl) * 26px) rgba(63, 185, 80, 0.45);
 }
-/* 思考中/启动中：SVG 旋转弧（stroke-dasharray + 整圈旋转，全浏览器零兼容问题；
-   conic-gradient+mask 的彗星画法在部分 WebKit 上不动，2026-08-23 实测踩坑） */
-.orb-spin-ring {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.2s;
+/* 思考中/启动中：与说话同款的「缩放+光晕」波动，换成琥珀/蓝色——
+   无真实能量输入，用节奏波代替（这套机制在所有状态下同构，零兼容玄学） */
+.orb.state-thinking::before {
+  border-color: rgba(210, 153, 34, 0.85);
+  animation: orb-wave-warn 1.1s ease-in-out infinite;
+  box-shadow: 0 0 18px rgba(210, 153, 34, 0.3);
 }
-.orb-spin-ring .track {
-  fill: none;
-  stroke: rgba(255, 255, 255, 0.08);
-  stroke-width: 3;
+.orb.state-loading::before {
+  border-color: rgba(106, 165, 255, 0.85);
+  animation: orb-wave-warn 1.1s ease-in-out infinite;
+  box-shadow: 0 0 18px rgba(106, 165, 255, 0.3);
 }
-.orb-spin-ring .arc {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 3;
-  stroke-linecap: round;
-  stroke-dasharray: 62 227;   /* r=46 周长 ≈ 289：约 1/5 圈实色弧 */
+@keyframes orb-wave-warn {
+  0%, 100% { transform: scale(1.0); }
+  50% { transform: scale(1.12); }
 }
-.orb.state-thinking .orb-spin-ring,
-.orb.state-loading .orb-spin-ring {
-  opacity: 1;
-  animation: orb-spin 0.9s linear infinite;
-}
-.orb.state-thinking .orb-spin-ring .arc { stroke: var(--warn); }
-.orb.state-thinking::before,
-.orb.state-loading::before { display: none; }  /* 这两态的光环交给 SVG */
-@keyframes orb-spin { to { transform: rotate(360deg); } }
 /* 说话中：蓝色涟漪随良子声音起伏（--lvl 来自 RTC 音频能量） */
 .orb.state-speaking::before {
   border-color: rgba(106, 165, 255, 0.85);
