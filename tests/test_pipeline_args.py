@@ -120,6 +120,12 @@ def test_stt_setup_kwargs_qwen3asr_defaults():
     kwargs = stt_setup_kwargs(config)
     assert kwargs["model_name"] == "Qwen/Qwen3-ASR-0.6B-hf"
     assert kwargs["hotwords"] == "大胃袋"
+    assert kwargs["corrections"] == {}
+
+    # corrections 替换表透传（转写后确定性校正用）
+    config["stt"]["corrections"] = {"梁子": "良子"}
+    kwargs = stt_setup_kwargs(config)
+    assert kwargs["corrections"] == {"梁子": "良子"}
 
 
 def test_setup_kwargs_reject_unknown_backend():

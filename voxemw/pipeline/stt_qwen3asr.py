@@ -30,6 +30,16 @@ console = Console()
 TARGET_SAMPLE_RATE = 16000
 
 
+def apply_corrections(text: str, corrections: dict[str, str]) -> str:
+    """转写后确定性校正（纯函数，便于单测）：人设专名的同音误写直接替换。
+
+    例：本产品语境里用户说的「梁子」只可能是「良子」——热词偏置是概率性的，
+    这层是兜底的确定性修复，零延迟。"""
+    for wrong, right in corrections.items():
+        text = text.replace(wrong, right)
+    return text
+
+
 class Qwen3ASRSTTHandler(BaseSTTHandler):
     """
     Handles the Speech To Text generation using Qwen3-ASR (transformers -hf).
@@ -42,23 +52,26 @@ class Qwen3ASRSTTHandler(BaseSTTHandler):
         language: str = "Chinese",
         hotwords: str = "",
         max_new_tokens: int = 256,
+        corrections: dict[str, str] | None = None,
         gen_kwargs: dict[str, Any] | None = None,
     ) -> None:
         import torch
         from transformers import AutoModelForMultimodalLM, AutoProcessor
 
         self.language = language
-        # 词表原文（"大胃袋, 味真足"）；空串则不注 system，裸跑
+        # 词表原文（"良子, 大胃袋, 味真足"）；空串则不注 system，裸跑
         self.hotwords = hotwords.strip()
         self.max_new_tokens = max_new_tokens
+        # 转写后确定性校正（同音误写替换表，如 梁子→良子）
+        self.corrections = corrections or {}
         self.processor = AutoProcessor.from_pretrained(model_name)
         self.model = AutoModelForMultimodalLM.from_pretrained(
             model_name, dtype=torch.bfloat16, device_map="auto",
         )
         logger.info(
-            "Qwen3-ASR loaded: %s | device=%s dtype=%s | hotwords=%s",
+            "Qwen3-ASR loaded: %s | device=%s dtype=%s | hotwords=%s | corrections=%s",
             model_name, self.model.device, self.model.dtype,
-            self.hotwords or "(无)",
+            self.hotwords or "(无)", self.corrections or "(无)",
         )
         self.warmup()
 
@@ -94,7 +107,8 @@ class Qwen3ASRSTTHandler(BaseSTTHandler):
                 **inputs, max_new_tokens=self.max_new_tokens, do_sample=False,
             )
         gen = out[:, inputs["input_ids"].shape[1]:]
-        return self.processor.decode(gen, return_format="transcription_only")[0].strip()
+        text = self.processor.decode(gen, return_format="transcription_only")[0].strip()
+        return apply_corrections(text, self.corrections)
 
     def process(self, vad_audio: STTIn) -> Iterator[STTOut]:
         logger.debug("infering qwen3asr...")

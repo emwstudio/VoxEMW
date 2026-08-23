@@ -110,6 +110,7 @@ def stt_setup_kwargs(config: dict) -> dict:
             "language": stt.get("language", "Chinese"),
             "hotwords": hotwords,
             "max_new_tokens": int(stt.get("max_new_tokens", 256)),
+            "corrections": dict(stt.get("corrections") or {}),
         }
     raise ValueError(f"不支持的 stt.backend: {backend!r}")
 

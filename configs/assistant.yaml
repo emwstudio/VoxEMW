@@ -26,7 +26,11 @@ stt:
   model_name: Qwen/Qwen3-ASR-0.6B-hf
   device: auto                  # device_map=auto → MPS
   language: Chinese
-  hotwords: [大胃袋, 味真足, 任丘, 锅贴, 大窑, 胃袋, 良子, 李占良, 哎妈呀, 嘎嘎]
+  # 热词偏置（概率性，靠前的词权重更高——良子务必第一位）
+  hotwords: [良子, 李占良, 大胃袋, 味真足, 任丘, 锅贴, 大窑, 胃袋, 哎妈呀, 嘎嘎]
+  # 确定性后校正（转写后直接替换）：同音误写的兜底修复
+  corrections:
+    梁子: 良子
 
 # ---------------------------------------------------------------------------
 # LLM：DeepSeek API（deepseek-v4-flash，key 放 .env.local 的
