@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260823o";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260823p";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -69,10 +69,6 @@ function ensureRtcAudio() {
     rtcAudioEl.style.display = "none";
     document.body.appendChild(rtcAudioEl);
   }
-  // 借用户手势唤醒音频分析 context（自动播放策略下它可能是 suspended）
-  if (typeof SPACE !== "undefined" && SPACE.ttsCtx && SPACE.ttsCtx.state === "suspended") {
-    SPACE.ttsCtx.resume();
-  }
   rtcAudioEl.play().catch(() => {});
   return rtcAudioEl;
 }
@@ -104,7 +100,6 @@ async function startRTC() {
       const el = ensureRtcAudio();
       el.srcObject = new MediaStream([e.track]);
       el.play().catch(() => {});
-      attachTtsAnalyser(e.streams[0] || new MediaStream([e.track]));
     }
   };
   conn.onconnectionstatechange = () => {
@@ -366,10 +361,13 @@ const realtimeHandlers = {
     lineGotDeltas = false;
   },
   "response.output_audio.delta"(event) {
-    // 事件被服务端剥了音频体（音频走 RTC 音轨），但事件本身仍标志「开口」
+    // 事件被服务端剥了音频体（音频走 RTC 音轨），但事件本身仍标志「开口」；
+    // lvl = 服务端算好的响度，驱动星空/光环能量动画
+    if (typeof event.lvl === "number") SPACE.ttsLevel = event.lvl;
     if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
   },
   "response.audio.delta"(event) {
+    if (typeof event.lvl === "number") SPACE.ttsLevel = event.lvl;
     if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
   },
   "response.done"() {
@@ -409,7 +407,8 @@ function handleTextMessage(data) {
 //   idle      无人说话：无序漂移 + 闪烁
 //   listening 你在说话：径向声波随你的音量跳动（麦克风 RMS 驱动）
 //   thinking  良子在想：持续缓慢内流 + 深呼吸
-//   speaking  良子说话：径向声波随她的音量跳动（RTC 音频 RMS 驱动）
+//   speaking  良子说话：径向声波随她的音量跳动（响度由服务端随音频事件下发，
+//             不再用客户端 WebAudio 分析器——RTC 重连/自动播放挂起/WebKit 都会弄哑它）
 // ---------------------------------------------------------------------------
 
 const SPACE = {
@@ -417,33 +416,9 @@ const SPACE = {
   w: 0,
   h: 0,
   micLevel: 0,      // 麦克风 RMS（0..1，快攻慢放）
-  ttsLevel: 0,      // RTC 音频 RMS（0..1，快攻慢放）
-  ttsCtx: null,
-  ttsSrc: null,
-  ttsStream: null,
-  ttsAnalyser: null,
-  ttsData: null,
+  ttsLevel: 0,      // 良子响度（0..1，服务端随音频事件下发，帧间缓慢衰减）
   last: 0,
 };
-
-function attachTtsAnalyser(stream) {
-  // RTC 断线重连会产生新流：流变了必须重建分析源，否则分析的是死流，
-  // 读到恒零——「说话只跳前几秒」的元凶（2026-08-23 实测）
-  if (SPACE.ttsStream === stream) return;
-  SPACE.ttsStream = stream;
-  try {
-    if (!SPACE.ttsCtx) SPACE.ttsCtx = new AudioContext();
-    if (SPACE.ttsCtx.state === "suspended") SPACE.ttsCtx.resume();
-    if (SPACE.ttsSrc) SPACE.ttsSrc.disconnect();
-    SPACE.ttsSrc = SPACE.ttsCtx.createMediaStreamSource(stream);
-    if (!SPACE.ttsAnalyser) {
-      SPACE.ttsAnalyser = SPACE.ttsCtx.createAnalyser();
-      SPACE.ttsAnalyser.fftSize = 1024;
-      SPACE.ttsData = new Uint8Array(SPACE.ttsAnalyser.fftSize);
-    }
-    SPACE.ttsSrc.connect(SPACE.ttsAnalyser);  // 只分析不回放（声音走隐藏 <audio>）
-  } catch (_) { /* 分析失败只是星空不波动，不影响通话 */ }
-}
 
 function initSpace() {
   const canvas = document.getElementById("space");
@@ -481,23 +456,8 @@ function tickSpace(t) {
   const cy = h / 2;
   const mode = avatarState;  // idle | listening | thinking | speaking
 
-  // RTC 音频能量（speaking 波动输入）；说话中若 context 被浏览器挂起就唤它
-  if (mode === "speaking" && SPACE.ttsCtx && SPACE.ttsCtx.state === "suspended") {
-    SPACE.ttsCtx.resume();
-  }
-  if (SPACE.ttsAnalyser) {
-    SPACE.ttsAnalyser.getByteTimeDomainData(SPACE.ttsData);
-    let sum = 0;
-    const d = SPACE.ttsData;
-    for (let i = 0; i < d.length; i += 4) {
-      const v = (d[i] - 128) / 128;
-      sum += v * v;
-    }
-    const rms = Math.sqrt(sum / Math.max(1, d.length / 4));
-    SPACE.ttsLevel = Math.max(Math.min(rms * 6, 1), SPACE.ttsLevel * 0.88);
-  } else {
-    SPACE.ttsLevel *= 0.9;
-  }
+  // 良子响度随音频事件刷新（见 realtimeHandlers），帧间缓慢衰减
+  SPACE.ttsLevel *= 0.985;
   SPACE.micLevel *= mode === "listening" ? 1 : 0.94;  // 非倾听期麦克风能量淡出
 
   g.clearRect(0, 0, w, h);

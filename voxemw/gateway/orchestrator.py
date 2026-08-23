@@ -43,6 +43,19 @@ sys.path.insert(0, str(REPO_ROOT))
 
 logger = logging.getLogger(__name__)
 
+
+def audio_level(pcm: bytes) -> float:
+    """音频块的响度（0..1，RMS 归一化 ×5 增益）——随音频事件下发给前端，
+    驱动星空/光环的能量动画。服务端算是因为客户端 WebAudio 分析在
+    RTC 重连/自动播放挂起/WebKit  quirks 下不可靠（2026-08-23 实测）。"""
+    import numpy as np
+
+    samples = np.frombuffer(pcm, dtype=np.int16)
+    if samples.size == 0:
+        return 0.0
+    rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)) / 32768.0)
+    return round(min(rms * 5.0, 1.0), 3)
+
 # s2s 事件 → 编排动作（纯函数分类，便于单测）
 AUDIO_DELTA_EVENTS = {"response.output_audio.delta", "response.audio.delta"}  # GA / beta 名都收
 INTERRUPT_EVENTS = {
@@ -299,8 +312,10 @@ class Session:
                 self.pacer.feed_audio(pcm)  # RTC 音频轨
             if relay:
                 if pcm is not None:
-                    # 音频走 RTC 音轨，WS 只留事件本身（剥掉 base64 音频体省带宽）
+                    # 音频走 RTC 音轨，WS 只留事件本身（剥掉 base64 音频体省带宽）；
+                    # 附带响度（lvl）供前端驱动能量动画
                     event = {k: v for k, v in event.items() if k != "delta"}
+                    event["lvl"] = audio_level(pcm)
                     await self.browser.send_str(json.dumps(event))
                 else:
                     await self.browser.send_str(raw)
