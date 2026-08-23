@@ -1,6 +1,6 @@
 # VoxEMW · 良子语音助手
 
-[![version](https://img.shields.io/badge/version-v1.8.0-blue)](https://github.com/emwstudio/VoxEMW/tags)
+[![version](https://img.shields.io/badge/version-v1.8.1-blue)](https://github.com/emwstudio/VoxEMW/tags)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6?logo=bilibili&logoColor=white)](https://space.bilibili.com/492428186)
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000?logo=youtube&logoColor=white)](https://www.youtube.com/@emw_studio)
@@ -88,6 +88,22 @@ Mac 换网络后 IP 变了：重跑 `make_lan_tls.sh` 并更新
 - **iOS 客户端**：壳 App 局域网直连；voiceChat 音频会话（系统级回声消除，
   外放不自激）；通话防锁屏；单按钮 + 状态灯交互
 - **时延实测（M5）**：说完到首音 ≈ 1.3s（短句闲聊实测最快 1.26s，长句 ~2s）
+
+## 更新日志
+
+### v1.8.1（补丁版）
+
+- **音质修复**：Opus 编码 voip→audio 模式——voip 的 SILK 偏向会抹平瞬态，
+  每轮开头第一个音发闷；已逐段验证（源码 PCM 干净 → 编码器模式是元凶）
+- **iOS 壳加固**：voiceChat 音频会话（系统级 AEC，外放不再自激触发下一轮）、
+  通话防锁屏、刘海/Home 条安全区适配、状态栏浅色
+- **幽灵回合防线（服务端）**：回声压制（外放泄漏把良子自己的话收成用户输入，
+  整轮掐掉）+ 热词背诵压制（噪音被热词先验脑补成词表，整轮掐掉）——
+  均带单测锁定
+- **前端「星空电台」改版**：主角光环按钮（仅等待态跳波动）、悬浮气泡 +
+  微信风对话头像、双状态灯合一、断线后按钮即重连入口
+- **星空波纹全程在线**：服务端随音频事件下发响度（lvl），
+  播放完毕信号（playback_done）让「说话中」跟播放走而不是跟生成走
 
 ## 本地开发（跑测试）
 
