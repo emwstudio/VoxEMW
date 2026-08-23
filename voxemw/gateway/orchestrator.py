@@ -149,12 +149,32 @@ def is_echo(user_transcript: str, recent_assistant: list[str]) -> bool:
     return False
 
 
+def is_vocabulary_recitation(transcript: str, hotwords: list[str]) -> bool:
+    """热词表背诵判定（纯函数，便于单测）：噪音/杂声被热词先验脑补成
+    「良子，大胃袋，味真足。」这种整段词表复读（2026-08-23 实测出现）。
+
+    规则：候选去标点空白后逐一剥掉热词（长词优先），命中 ≥2 个且剥完
+    无残余 = 背诵。真实短句安全：单热词（「大胃袋」）或带残余
+    （「味真足啊」剩「啊」）都放行。"""
+    candidate = _NORM_RE.sub("", transcript or "")
+    if len(candidate) < 2:
+        return False
+    hits = 0
+    for word in sorted(set(hotwords), key=len, reverse=True):
+        w = _NORM_RE.sub("", str(word))
+        if w and w in candidate:
+            hits += 1
+            candidate = candidate.replace(w, "")
+    return hits >= 2 and not candidate
+
+
 class Session:
     """一个浏览器连接 ↔ 一路 s2s 的编排。"""
 
     def __init__(self, browser_ws, s2s_url: str,
                  personas: dict, default_persona: str,
-                 rtc_pacer=None, rtc_ice_servers: list | None = None):
+                 rtc_pacer=None, rtc_ice_servers: list | None = None,
+                 hotwords: list | None = None):
         self.browser = browser_ws
         self.s2s_url = s2s_url
         # WebRTC 音频轨：下行音频走 RTC，WS 只留控制/转写
@@ -162,6 +182,7 @@ class Session:
         self._rtc_ice_servers = rtc_ice_servers or []
         self.personas = personas
         self.persona_id = default_persona
+        self._hotwords = hotwords or []  # STT 热词表（背诵判定用）
         self.s2s = None
         self._assistant_speaking = False  # 本轮回复有音频在播（打断回报判定用）
         self._resp_had_content = False  # 本轮回复是否有任何文本/音频产出（空回复兜底用）
@@ -261,6 +282,11 @@ class Session:
                     continue  # 幽灵回合事件全丢：不上屏、不出声、不计数
             if etype == "conversation.item.input_audio_transcription.completed":
                 heard = event.get("transcript", "")
+                if is_vocabulary_recitation(heard, self._hotwords):
+                    logger.info("热词背诵压制（噪音被词表脑补）：%r，掐掉", heard[:30])
+                    self._suppress_ghost = True
+                    await self.s2s.send(json.dumps({"type": "response.cancel"}))
+                    continue  # 转写不上屏
                 if is_echo(heard, self._assistant_history + [self._reply_transcript]):
                     logger.info("回声回合压制：%r 与近期助手文本重合，掐掉", heard[:30])
                     self._suppress_ghost = True
@@ -346,6 +372,10 @@ def create_app(config: dict):
     server = config.get("server") or {}
     personas = config["personas"]["resolved"]
     default_persona = config["personas"]["default"]
+    # STT 热词表（热词背诵压制用；配置里允许 list 或逗号串）
+    stt_hotwords = (config.get("stt") or {}).get("hotwords") or []
+    if isinstance(stt_hotwords, str):
+        stt_hotwords = [w.strip() for w in stt_hotwords.split(",") if w.strip()]
 
     s2s_url = f"ws://{server.get('s2s_host', '127.0.0.1')}:{server.get('s2s_port', 8765)}/v1/realtime"
 
@@ -438,7 +468,8 @@ def create_app(config: dict):
             from voxemw.gateway.audio_pacer import AudioPacer
             pacer = AudioPacer(audio_lead=lead)
         session = Session(ws, s2s_url, personas, default_persona,
-                          rtc_pacer=pacer, rtc_ice_servers=rtc_ice_servers)
+                          rtc_pacer=pacer, rtc_ice_servers=rtc_ice_servers,
+                          hotwords=stt_hotwords)
         current_session["session"] = session
         try:
             await session.run()

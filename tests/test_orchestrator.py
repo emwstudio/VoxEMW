@@ -7,6 +7,7 @@ from voxemw.gateway.orchestrator import (
     classify_s2s_event,
     heard_prefix,
     is_echo,
+    is_vocabulary_recitation,
 )
 
 
@@ -91,3 +92,18 @@ def test_is_echo_passes_real_speech():
     # 空输入/空历史不判
     assert is_echo("", recent) is False
     assert is_echo("来点吃的推荐", []) is False
+
+
+def test_is_vocabulary_recitation():
+    hw = ["良子", "大胃袋", "味真足"]
+    # 噪音被词表脑补的整段背诵 → 掐
+    assert is_vocabulary_recitation("良子，大胃袋，味真足。", hw) is True
+    assert is_vocabulary_recitation("大胃袋味真足", hw) is True
+    # 单个热词（真人叫他）→ 放行
+    assert is_vocabulary_recitation("大胃袋", hw) is False
+    # 带残余的真实短句 → 放行
+    assert is_vocabulary_recitation("味真足啊", hw) is False
+    assert is_vocabulary_recitation("良子今晚吃啥", hw) is False
+    # 空/超短 → 放行
+    assert is_vocabulary_recitation("", hw) is False
+    assert is_vocabulary_recitation("嗯", hw) is False
