@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260823n";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260823o";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -68,6 +68,10 @@ function ensureRtcAudio() {
     rtcAudioEl.volume = 1.0;
     rtcAudioEl.style.display = "none";
     document.body.appendChild(rtcAudioEl);
+  }
+  // 借用户手势唤醒音频分析 context（自动播放策略下它可能是 suspended）
+  if (typeof SPACE !== "undefined" && SPACE.ttsCtx && SPACE.ttsCtx.state === "suspended") {
+    SPACE.ttsCtx.resume();
   }
   rtcAudioEl.play().catch(() => {});
   return rtcAudioEl;
@@ -403,9 +407,9 @@ function handleTextMessage(data) {
 // ---------------------------------------------------------------------------
 // 星空背景：全屏 canvas，跟随对话状态（avatarState）的三种动态
 //   idle      无人说话：无序漂移 + 闪烁
-//   listening 你在说话：减速收拢向中心，随你的音量呼吸（专注倾听感）
+//   listening 你在说话：径向声波随你的音量跳动（麦克风 RMS 驱动）
 //   thinking  良子在想：持续缓慢内流 + 深呼吸
-//   speaking  良子说话：从中心向外的径向波动（能量取自 RTC 音频 RMS）
+//   speaking  良子说话：径向声波随她的音量跳动（RTC 音频 RMS 驱动）
 // ---------------------------------------------------------------------------
 
 const SPACE = {
@@ -414,21 +418,30 @@ const SPACE = {
   h: 0,
   micLevel: 0,      // 麦克风 RMS（0..1，快攻慢放）
   ttsLevel: 0,      // RTC 音频 RMS（0..1，快攻慢放）
+  ttsCtx: null,
+  ttsSrc: null,
+  ttsStream: null,
   ttsAnalyser: null,
   ttsData: null,
   last: 0,
 };
 
 function attachTtsAnalyser(stream) {
-  if (SPACE.ttsAnalyser) return;
+  // RTC 断线重连会产生新流：流变了必须重建分析源，否则分析的是死流，
+  // 读到恒零——「说话只跳前几秒」的元凶（2026-08-23 实测）
+  if (SPACE.ttsStream === stream) return;
+  SPACE.ttsStream = stream;
   try {
-    const actx = new AudioContext();
-    const src = actx.createMediaStreamSource(stream);
-    const an = actx.createAnalyser();
-    an.fftSize = 1024;
-    src.connect(an);  // 只分析不回放（声音走隐藏 <audio>），无需接 destination
-    SPACE.ttsAnalyser = an;
-    SPACE.ttsData = new Uint8Array(an.fftSize);
+    if (!SPACE.ttsCtx) SPACE.ttsCtx = new AudioContext();
+    if (SPACE.ttsCtx.state === "suspended") SPACE.ttsCtx.resume();
+    if (SPACE.ttsSrc) SPACE.ttsSrc.disconnect();
+    SPACE.ttsSrc = SPACE.ttsCtx.createMediaStreamSource(stream);
+    if (!SPACE.ttsAnalyser) {
+      SPACE.ttsAnalyser = SPACE.ttsCtx.createAnalyser();
+      SPACE.ttsAnalyser.fftSize = 1024;
+      SPACE.ttsData = new Uint8Array(SPACE.ttsAnalyser.fftSize);
+    }
+    SPACE.ttsSrc.connect(SPACE.ttsAnalyser);  // 只分析不回放（声音走隐藏 <audio>）
   } catch (_) { /* 分析失败只是星空不波动，不影响通话 */ }
 }
 
@@ -468,7 +481,10 @@ function tickSpace(t) {
   const cy = h / 2;
   const mode = avatarState;  // idle | listening | thinking | speaking
 
-  // RTC 音频能量（speaking 波动输入）
+  // RTC 音频能量（speaking 波动输入）；说话中若 context 被浏览器挂起就唤它
+  if (mode === "speaking" && SPACE.ttsCtx && SPACE.ttsCtx.state === "suspended") {
+    SPACE.ttsCtx.resume();
+  }
   if (SPACE.ttsAnalyser) {
     SPACE.ttsAnalyser.getByteTimeDomainData(SPACE.ttsData);
     let sum = 0;
@@ -489,29 +505,28 @@ function tickSpace(t) {
 
   for (const st of stars) {
     let boost = 0;   // 额外亮度（0..1）
-    if (mode === "listening") {
-      // 专注：减速 + 向中心收拢，你声音越大收得越紧
-      st.vx *= 0.985; st.vy *= 0.985;
-      const pull = (0.0004 + SPACE.micLevel * 0.0035) * dt;
-      st.x += (cx - st.x) * pull;
-      st.y += (cy - st.y) * pull;
-      boost = SPACE.micLevel * 0.5;
+    if (mode === "listening" || mode === "speaking") {
+      // 径向声波：以中心为源的正弦波，幅度随音量——你说随麦克风、她说随 RTC 音频
+      const lvl = mode === "speaking" ? SPACE.ttsLevel : SPACE.micLevel;
+      const dx = st.x - cx;
+      const dy = st.y - cy;
+      const dist = Math.hypot(dx, dy) || 1;
+      const wave = Math.sin(dist * 0.014 - t * 0.007);
+      const amp = lvl * 7 * dt;
+      st.x += (dx / dist) * wave * amp;
+      st.y += (dy / dist) * wave * amp;
+      boost = lvl * (0.35 + 0.4 * wave);
+      if (mode === "listening") {
+        // 倾听保留一丝内流：专注感还在，但主角是声波
+        st.x += (cx - st.x) * 0.0003 * dt;
+        st.y += (cy - st.y) * 0.0003 * dt;
+      }
     } else if (mode === "thinking") {
       st.vx *= 0.99; st.vy *= 0.99;
       const pull = (0.0002 + breath * 0.0005) * dt;
       st.x += (cx - st.x) * pull;
       st.y += (cy - st.y) * pull;
       boost = breath * 0.2;
-    } else if (mode === "speaking") {
-      // 声波：以中心为源的径向正弦波，幅度随音频能量
-      const dx = st.x - cx;
-      const dy = st.y - cy;
-      const dist = Math.hypot(dx, dy) || 1;
-      const wave = Math.sin(dist * 0.014 - t * 0.007);
-      const amp = SPACE.ttsLevel * 7 * dt;
-      st.x += (dx / dist) * wave * amp;
-      st.y += (dy / dist) * wave * amp;
-      boost = SPACE.ttsLevel * (0.35 + 0.4 * wave);
     } else {
       // idle：无序漂移，偶尔轻拐个弯
       if (Math.random() < 0.002) {
