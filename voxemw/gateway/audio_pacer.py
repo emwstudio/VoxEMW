@@ -17,6 +17,23 @@ AUDIO_TICK_SAMPLES = 320         # 音频轨每次取用量：20ms @16k
 
 DEFAULT_AUDIO_LEAD = 0.0         # 新回复音频压后秒数（云时代 0.20 是等 avatar 渲染）
 
+FADE_IN_SAMPLES = 128            # 新回复开头淡入长度（8ms @16k）
+
+
+def fade_in(pcm: bytes, n: int = FADE_IN_SAMPLES) -> bytes:
+    """起步淡入（纯函数，便于单测）：前 n 个采样乘 0→1 线性坡，
+    磨平回复开头的瞬态毛刺（破音/click）。短于 n 的块整体只按首部比例衰减。"""
+    import numpy as np
+
+    samples = np.frombuffer(pcm, dtype=np.int16)
+    if samples.size == 0:
+        return pcm
+    k = min(n, samples.size)
+    ramp = np.linspace(0.0, 1.0, k, dtype=np.float32)
+    out = samples.astype(np.float32)
+    out[:k] *= ramp
+    return out.astype(np.int16).tobytes()
+
 
 class AudioPacer:
     """音频字节队列 + 播放计数。全部方法在 orchestrator 单 loop 内调用。"""
@@ -35,11 +52,13 @@ class AudioPacer:
     # ── 生产者（Session 转发协程调用）──
 
     def feed_audio(self, pcm: bytes) -> None:
-        """TTS PCM（int16 16k mono）。"""
+        """TTS PCM（int16 16k mono）。新回复开头做 ~8ms 淡入，磨平起步瞬态
+        （编码/重采样链路在回复起点的毛刺——「第一个音破音」实测修复）。"""
         if not self._audio:
             # 队列从空到非空 = 新回复开始：压后 lead 秒（默认 0 = 到即播）
             self._audio_ready_at = time.monotonic() + self._audio_lead
             self._played_at_reply_start = self._audio_samples_played
+            pcm = fade_in(pcm)
         self._audio.extend(pcm)
         self._audio_samples_fed += len(pcm) // 2
 
