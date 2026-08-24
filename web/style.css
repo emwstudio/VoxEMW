@@ -156,7 +156,6 @@ body {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
 }
-.line .who { font-weight: 600; margin-right: 6px; }
 /* 良子：左侧青绿气泡 */
 .line.assistant { justify-content: flex-start; }
 .line.assistant .bubble {
@@ -164,7 +163,6 @@ body {
   border: 1px solid rgba(63, 185, 80, 0.28);
   border-bottom-left-radius: 4px;
 }
-.line.assistant .who { color: var(--live); }
 /* 你：右侧蓝气泡 */
 .line.user { justify-content: flex-end; }
 .line.user .bubble {
@@ -172,7 +170,6 @@ body {
   border: 1px solid rgba(106, 165, 255, 0.32);
   border-bottom-right-radius: 4px;
 }
-.line.user .who { color: var(--accent); }
 /* 系统提示：居中淡色小字 */
 .line.sys {
   justify-content: center;

@@ -142,7 +142,7 @@ async function startRTC() {
     }),
   });
   if (!res.ok) {
-    addLine("sys", "", `⚠ WebRTC 建连失败（HTTP ${res.status}），刷新重试`);
+    addLine("sys", `⚠ WebRTC 建连失败（HTTP ${res.status}），刷新重试`);
     if (pc === conn) pc = null;
     conn.close();
     return;
@@ -236,7 +236,7 @@ function stopMic() {
 // 转写区
 // ---------------------------------------------------------------------------
 
-function addLine(cls, who, text) {
+function addLine(cls, text) {
   // 首条消息出现时摘掉空态提示
   document.getElementById("empty-hint")?.remove();
   const div = document.createElement("div");
@@ -244,7 +244,7 @@ function addLine(cls, who, text) {
   if (cls === "sys") {
     div.appendChild(document.createTextNode(text));
   } else {
-    // 结构：div.line > img.avatar + div.bubble > span.who + 文本
+    // 结构：div.line > img.avatar + div.bubble > 文本（有头像不带昵称）
     const img = document.createElement("img");
     img.className = "avatar";
     img.src = cls === "user" ? "/static/avatars/wo.jpeg" : "/static/avatars/liangzi.png";
@@ -252,12 +252,6 @@ function addLine(cls, who, text) {
     img.onerror = () => { img.style.display = "none"; };  // 克隆仓库无个人照片时不破洞
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    if (who) {
-      const span = document.createElement("span");
-      span.className = "who";
-      span.textContent = who;
-      bubble.appendChild(span);
-    }
     bubble.appendChild(document.createTextNode(text));
     if (cls === "user") {
       div.appendChild(bubble);
@@ -275,8 +269,7 @@ function addLine(cls, who, text) {
 
 function appendAssistantDelta(delta) {
   if (!assistantLine) {
-    const name = (personas.find((p) => p.id === currentPersona) || {}).name || "助手";
-    assistantLine = addLine("assistant", `${name}:`, "");
+    assistantLine = addLine("assistant", "");
   }
   assistantLine.appendChild(document.createTextNode(delta));
   els.transcript.scrollTop = els.transcript.scrollHeight;
@@ -346,7 +339,7 @@ const realtimeHandlers = {
   },
   "conversation.item.input_audio_transcription.completed"(event) {
     const text = (event.transcript || "").trim();
-    if (text) addLine("user", "你:", text);
+    if (text) addLine("user", text);
   },
   "response.output_audio_transcript.delta"(event) {
     if (event.delta) {
@@ -400,7 +393,7 @@ const realtimeHandlers = {
     if (avatarState === "speaking") setAvatarState("idle");
   },
   error(event) {
-    addLine("sys", "", `⚠ ${(event.error && event.error.message) || "未知错误"}`);
+    addLine("sys", `⚠ ${(event.error && event.error.message) || "未知错误"}`);
   },
 };
 
@@ -417,7 +410,7 @@ function handleTextMessage(data) {
     rtcEnabled = !!(event.rtc && event.rtc.enabled);
     if (rtcEnabled) {
       startRTC().catch((e) =>
-        addLine("sys", "", `⚠ WebRTC 建连异常: ${e.message}`)
+        addLine("sys", `⚠ WebRTC 建连异常: ${e.message}`)
       );
     }
     return;
@@ -684,7 +677,7 @@ els.micBtn.onclick = async () => {
     // 用户手势已发生：解锁/补播 RTC 音频元素（autoplay 策略要手势）
     ensureRtcAudio();
   } catch (e) {
-    addLine("sys", "", `⚠ 麦克风不可用: ${e.message}`);
+    addLine("sys", `⚠ 麦克风不可用: ${e.message}`);
     els.micBtn.textContent = "🎙";
     els.orb.classList.remove("state-loading");
   } finally {
