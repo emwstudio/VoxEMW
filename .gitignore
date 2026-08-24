@@ -17,6 +17,7 @@ scripts/lan_tls/
 # 用户提供的音色素材与照片（个人材料，不入库）
 assets/*/ref.wav
 assets/*/ref.txt
+assets/*/ref_original.wav
 web/avatars/
 
 # macOS / 测试缓存
