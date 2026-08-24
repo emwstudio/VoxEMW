@@ -7,18 +7,21 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		3DD6674D47BC0B9BC15E82C3 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1114C94EDF772DAA97C4BB97 /* Assets.xcassets */; };
 		725E75532BC24CD6B40817E1 /* LiangziVoiceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65293AE36C5EC7FC1344362A /* LiangziVoiceApp.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		1114C94EDF772DAA97C4BB97 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		65293AE36C5EC7FC1344362A /* LiangziVoiceApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiangziVoiceApp.swift; sourceTree = "<group>"; };
-		99831ECEB99ED19CB9BAEC0A /* LiangziVoice.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LiangziVoice.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		99831ECEB99ED19CB9BAEC0A /* LiangziVoice.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = LiangziVoice.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
 		21A35EE92C14814211FCB0BC = {
 			isa = PBXGroup;
 			children = (
+				1114C94EDF772DAA97C4BB97 /* Assets.xcassets */,
 				D2B8885D9120F2505009B6AA /* Sources */,
 				38F87A166B723ABD3199EDF3 /* Products */,
 			);
@@ -48,6 +51,7 @@
 			buildConfigurationList = 6A7829AB18D9ABFC99128000 /* Build configuration list for PBXNativeTarget "LiangziVoice" */;
 			buildPhases = (
 				5317E9C73709FE5D4190EA53 /* Sources */,
+				3DEF7B2CAB9287F69DC3C911 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -92,6 +96,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		3DEF7B2CAB9287F69DC3C911 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3DD6674D47BC0B9BC15E82C3 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		5317E9C73709FE5D4190EA53 /* Sources */ = {
@@ -228,7 +243,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = N5AZFWXT88;
 				INFOPLIST_FILE = Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -248,7 +262,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = N5AZFWXT88;
 				INFOPLIST_FILE = Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (

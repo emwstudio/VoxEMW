@@ -19,6 +19,7 @@ assets/*/ref.wav
 assets/*/ref.txt
 assets/*/ref_original.wav
 web/avatars/
+ios/*/Assets.xcassets/AppIcon.appiconset/AppIcon.png
 
 # macOS / 测试缓存
 .DS_Store
