@@ -57,6 +57,7 @@ tts:
   backend: qwen3                                 # 上游注册名（CLI 选项是 --tts qwen3）
   model_name: Qwen/Qwen3-TTS-12Hz-1.7B-Base   # Base=克隆；CustomVoice=预设音色
   device: auto                                 # darwin 上自动选 mlx-audio
+  # mlx_quantization: bf16  # 别升：实测 TTFA 翻倍且生成跟不上播放（内存带宽 2.6x）
   sample_rate: 16000                           # 管线全程 16kHz，勿改
 
 # ---------------------------------------------------------------------------

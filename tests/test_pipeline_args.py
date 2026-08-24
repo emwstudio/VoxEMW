@@ -78,6 +78,12 @@ def test_render_s2s_argv():
     assert pairs["--qwen3_tts_model_name"] == "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
     assert pairs["--qwen3_tts_ref_audio"] == "/abs/demo/ref.wav"
     assert pairs["--qwen3_tts_ref_text"] == "逐字台词"
+    # 未配 mlx_quantization 时不下发（上游默认 6bit）
+    assert "--qwen3_tts_mlx_quantization" not in pairs
+    config = _config()
+    config["tts"]["mlx_quantization"] = "bf16"
+    pairs = _pairs(render_s2s_argv(config, env={"TEST_LLM_KEY": "sk-test"}))
+    assert pairs["--qwen3_tts_mlx_quantization"] == "bf16"
 
 
 def test_render_s2s_argv_streaming_llm():

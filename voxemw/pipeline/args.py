@@ -57,6 +57,9 @@ def render_s2s_argv(config: dict, env: dict | None = None) -> list[str]:
             "--qwen3_tts_ref_audio", str(persona["ref_wav"]),
             "--qwen3_tts_ref_text", persona["ref_text"],
         ]
+        # MLX 量化档位（6bit 省内存 / bf16 保音质）
+        if tts.get("mlx_quantization"):
+            argv += ["--qwen3_tts_mlx_quantization", str(tts["mlx_quantization"])]
 
     for key in _VAD_PASSTHROUGH:
         if key in vad:
