@@ -222,6 +222,30 @@ async function startMic() {
   node.connect(gain);
   gain.connect(ctx.destination);
   mic = { ctx, stream, node };
+  // iOS WKWebView 会在播放间隙把音频会话挂起，麦克风轨道被系统 mute/end，
+  // 页面看起来正常但上行再没声音（聊几轮就「自动不聊」的元凶，2026-08-24 日志实锤：
+  // 管线 listening re-enabled 后再没收到任何音频）。挂上监听，自动重启麦克风。
+  const track = stream.getAudioTracks()[0];
+  if (track) {
+    track.onended = () => restartMic("ended");
+    track.onmute = () => {
+      // 临时静音可能只是路由切换，给 3s 自愈窗口，没恢复就重启
+      setTimeout(() => {
+        if (mic && track.muted) restartMic("muted");
+      }, 3000);
+    };
+  }
+}
+
+async function restartMic(reason) {
+  if (!mic || micStarting) return;  // 用户主动停的/正在启动，不动
+  addLine("sys", `⚠ 麦克风被系统挂起（${reason}），自动重启`);
+  stopMic();
+  try {
+    await startMic();
+  } catch (e) {
+    addLine("sys", `⚠ 麦克风重启失败: ${e.message}`);
+  }
 }
 
 function stopMic() {
