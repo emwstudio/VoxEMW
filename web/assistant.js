@@ -511,6 +511,8 @@ function tickSpace(t) {
 
   for (const st of stars) {
     let boost = 0;   // 额外亮度（0..1）
+    let rx = st.x;   // 渲染位置：波动只改渲染，不改基准位置（防斯托克斯漂移外扩）
+    let ry = st.y;
     if (mode === "listening" || mode === "speaking") {
       // 径向声波：以中心为源的正弦波，幅度随音量——你说随麦克风、她说随 RTC 音频
       const lvl = mode === "speaking" ? SPACE.ttsLevel : SPACE.micLevel;
@@ -518,9 +520,9 @@ function tickSpace(t) {
       const dy = st.y - cy;
       const dist = Math.hypot(dx, dy) || 1;
       const wave = Math.sin(dist * 0.014 - t * 0.007);
-      const amp = lvl * 7 * dt;
-      st.x += (dx / dist) * wave * amp;
-      st.y += (dy / dist) * wave * amp;
+      const off = wave * lvl * 14;
+      rx = st.x + (dx / dist) * off;
+      ry = st.y + (dy / dist) * off;
       boost = lvl * (0.35 + 0.4 * wave);
       if (mode === "listening") {
         // 倾听保留一丝内流：专注感还在，但主角是声波
@@ -541,10 +543,10 @@ function tickSpace(t) {
       }
       st.vx = Math.max(-0.35, Math.min(0.35, st.vx));
       st.vy = Math.max(-0.35, Math.min(0.35, st.vy));
+      st.x += st.vx * dt;
+      st.y += st.vy * dt;
     }
-    st.x += st.vx * dt;
-    st.y += st.vy * dt;
-    // 出界回卷
+    // 出界回卷（基准位置）
     if (st.x < -4) st.x = w + 4; else if (st.x > w + 4) st.x = -4;
     if (st.y < -4) st.y = h + 4; else if (st.y > h + 4) st.y = -4;
 
@@ -552,7 +554,7 @@ function tickSpace(t) {
     const alpha = Math.min(1, tw * (0.45 + boost) + boost * 0.3);
     const rad = st.r * (1 + boost * 0.9);
     g.beginPath();
-    g.arc(st.x, st.y, rad, 0, Math.PI * 2);
+    g.arc(rx, ry, rad, 0, Math.PI * 2);
     g.fillStyle = `rgba(190, 214, 255, ${alpha.toFixed(3)})`;
     g.fill();
   }
