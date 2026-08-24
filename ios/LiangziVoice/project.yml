@@ -11,6 +11,7 @@ targets:
       path: Info.plist
       properties:
         UILaunchScreen: {}
+        CFBundleDisplayName: "VoxEMW"
         NSMicrophoneUsageDescription: "良子语音助手需要麦克风来和你语音对话。"
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

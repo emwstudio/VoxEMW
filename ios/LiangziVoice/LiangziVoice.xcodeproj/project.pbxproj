@@ -14,7 +14,7 @@
 /* Begin PBXFileReference section */
 		1114C94EDF772DAA97C4BB97 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		65293AE36C5EC7FC1344362A /* LiangziVoiceApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiangziVoiceApp.swift; sourceTree = "<group>"; };
-		99831ECEB99ED19CB9BAEC0A /* LiangziVoice.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LiangziVoice.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		99831ECEB99ED19CB9BAEC0A /* LiangziVoice.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = LiangziVoice.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -243,7 +243,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = N5AZFWXT88;
 				INFOPLIST_FILE = Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -263,7 +262,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = N5AZFWXT88;
 				INFOPLIST_FILE = Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
