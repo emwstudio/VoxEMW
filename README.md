@@ -6,15 +6,15 @@
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000?logo=youtube&logoColor=white)](https://www.youtube.com/@emw_studio)
 [![X](https://img.shields.io/badge/X-@emwstudio-000000?logo=x&logoColor=white)](https://x.com/emwstudio)
 
-对着手机（或浏览器）说话，良子用他自己的声音回答你——**你说完，他 ≈1.3s 就开口**（实测最快 1.26s，中位 ~1.6s）。
+对着浏览器说话，良子用他自己的声音回答你——**你说完，他 ≈1.3s 就开口**（实测最快 1.26s，中位 ~1.6s）。
 
-**定位：Mac 做本地服务器，iOS 做客户端。** 全部语音积木（判停 / 转写 / 克隆合成 /
+**一台 MacBook 全搞定。** 全部语音积木（判停 / 转写 / 克隆合成 /
 对话调度）跑在你家 Mac 上（Apple Silicon，实测 M5 16GB 流畅），只有大脑上云
-（DeepSeek API，按 token 计费，日常闲聊一天几毛）。iPhone/iPad 装个壳 App
-走局域网 https 连进来；不装 App 用浏览器直连也一样玩。
+（DeepSeek API，按 token 计费，日常闲聊一天几毛）。打开浏览器就能聊；
+想躺床上玩，还有个可选的 iPhone 壳 App（局域网 https 连进来当客户端）。
 
 > 形态说明：早期版本（云端 4090 + AVTR-1 数字人视频形象 + 本地 27B 全离线）
-> 见 git tag v1.7.x。当前主线：Mac 本地服务器 + iOS 客户端（纯语音 + 星空交互）。
+> 见 git tag v1.7.x。当前主线：Mac 本地纯语音版（星空交互，iOS 壳可选）。
 
 ## 开发日记（视频）
 
