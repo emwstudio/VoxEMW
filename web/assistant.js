@@ -609,6 +609,23 @@ function switchPersona(id) {
   updatePersonaBar();
 }
 
+// ---------------------------------------------------------------------------
+// 前台自愈：iOS WKWebView 切后台/锁屏会被挂起，回前台时 ws/RTC/麦克风可能都死了。
+// 回前台那一刻统一巡检，哪个死了重启哪个（麦克风走 restartMic 的 mute/end 监听，
+// 这里补 ws + RTC 两条路）
+// ---------------------------------------------------------------------------
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (!wsConnected || !ws || ws.readyState !== WebSocket.OPEN) {
+    connect();  // ws 死了：重连（vox.status 到了会触发 RTC 重建）
+    return;
+  }
+  if (mic && rtcEnabled && !pc) {
+    startRTC().catch(() => {});  // ws 活着但 RTC 死了（consent expired 之类）：重建
+  }
+});
+
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   // ?alead=毫秒：新回复音频压后量（云时代等数字人渲染的遗产，默认 0，调试用）
