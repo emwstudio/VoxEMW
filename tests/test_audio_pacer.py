@@ -94,3 +94,30 @@ def test_fade_in_smooths_reply_onset():
     assert fade_in(b"") == b""
     short = np.frombuffer(fade_in(_pcm(100)), dtype=np.int16)
     assert len(short) == 100
+
+
+def test_lip_frames_follow_playback():
+    """音素帧随音频入队、按播放游标弹出；flush 清空。"""
+    p = AudioPacer(audio_lead=0)
+    frames = [{"A": 0.9}, {"O": 0.8}, {"U": 0.7}]
+    p.feed_audio(_pcm(512 * 3), frames)
+    # 未播放时不弹出
+    assert p.pop_played_lip() == []
+    # 播 320 采样（未及首帧中心 512）→ 仍不弹；再播到 ≥512 → 首帧弹出
+    p.next_audio_tick()
+    assert p.pop_played_lip() == []
+    p.next_audio_tick()
+    assert p.pop_played_lip() == [{"A": 0.9}]
+    # 播完剩余（尾不足一拍被 pacer 滞留），第二帧弹出
+    _play(p, 512 * 3)
+    rest = p.pop_played_lip()
+    assert rest == [{"O": 0.8}]
+    # 后续块到达把滞留尾部冲过播放游标，最后一帧弹出
+    p.feed_audio(_pcm(AUDIO_TICK_SAMPLES * 2))
+    _play(p, AUDIO_TICK_SAMPLES * 2)
+    assert p.pop_played_lip() == [{"U": 0.7}]
+    # flush 后队列清空
+    p.feed_audio(_pcm(512 * 2), [{"A": 1.0}])
+    p.flush()
+    _play(p, 512 * 2)
+    assert p.pop_played_lip() == []

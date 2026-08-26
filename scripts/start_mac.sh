@@ -20,6 +20,11 @@ fi
 # 模型已全部预下载，离线加载；首次 silero 需要联网（torch.hub），有缓存后离线
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 
+# 本机有全局代理（http_proxy 等）时，orchestrator→管线（127.0.0.1:8765）的 ws
+# 会被 websockets 库按环境变量走路由代理导致握手 EOF，本机地址必须直连
+export no_proxy="${no_proxy:+$no_proxy,}127.0.0.1,localhost,::1"
+export NO_PROXY="$no_proxy"
+
 mkdir -p logs
 pkill -f "voxemw.pipeline.launch" 2>/dev/null || true
 pkill -f "voxemw.gateway.orchestrator" 2>/dev/null || true
@@ -51,5 +56,5 @@ nohup .venv-mac/bin/python -m voxemw.gateway.orchestrator --config "$VOXEMW_CONF
 echo "    PID=$!，日志 logs/orchestrator.log"
 
 echo ""
-echo "全部启动。浏览器打开 http://localhost:8000（纯语音模式，无数字人）"
+echo "全部启动。浏览器打开 http://localhost:8000（星空 + VRM 数字人）"
 echo "排障：tail -f logs/{pipeline,orchestrator}.log"

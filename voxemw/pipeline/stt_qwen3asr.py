@@ -33,7 +33,7 @@ TARGET_SAMPLE_RATE = 16000
 def apply_corrections(text: str, corrections: dict[str, str]) -> str:
     """转写后确定性校正（纯函数，便于单测）：人设专名的同音误写直接替换。
 
-    例：本产品语境里用户说的「梁子」只可能是「良子」——热词偏置是概率性的，
+    例：本产品语境里用户说的「鸟儿」更可能是「妮儿」——热词偏置是概率性的，
     这层是兜底的确定性修复，零延迟。"""
     for wrong, right in corrections.items():
         text = text.replace(wrong, right)
@@ -59,10 +59,10 @@ class Qwen3ASRSTTHandler(BaseSTTHandler):
         from transformers import AutoModelForMultimodalLM, AutoProcessor
 
         self.language = language
-        # 词表原文（"良子, 大胃袋, 味真足"）；空串则不注 system，裸跑
+        # 词表原文（如 "河南妮儿, 恁, 中"）；空串则不注 system，裸跑
         self.hotwords = hotwords.strip()
         self.max_new_tokens = max_new_tokens
-        # 转写后确定性校正（同音误写替换表，如 梁子→良子）
+        # 转写后确定性校正（同音误写替换表，如 鸟儿→妮儿）
         self.corrections = corrections or {}
         self.processor = AutoProcessor.from_pretrained(model_name)
         self.model = AutoModelForMultimodalLM.from_pretrained(

@@ -38,6 +38,8 @@ import re
 import sys
 from pathlib import Path
 
+from voxemw.gateway.phoneme import analyze as lip_analyze
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -168,13 +170,45 @@ def is_vocabulary_recitation(transcript: str, hotwords: list[str]) -> bool:
     return hits >= 2 and not candidate
 
 
+_EMO_SENT_RE = re.compile(r"[^。！？!?…~]{2,}[。！？!?…~]+")
+_EMO_LABELS = ("happy", "angry", "sad", "surprised", "neutral")
+
+
+async def _classify_emotion(client, llm: dict, sentence: str) -> str | None:
+    """一句话情绪分类（复用 llm 配置，非思考模式，max_tokens 8）。失败静默 None。"""
+    try:
+        r = await client.post("/chat/completions", json={
+            "model": llm["model"],
+            "messages": [
+                {"role": "system", "content":
+                 "你是情绪分类器。输入是直播主播说的一句中文口语，判断说话人的情绪，"
+                 "只回复一个标签：happy（开心/得意/兴奋/炫耀）、angry（生气/急眼/怼人）、"
+                 "sad（难过/委屈/走心/温情）、surprised（惊讶/震惊/懵）、"
+                 "neutral（平静叙述/以上都不是）。只输出标签本身，任何多余字都不要。"},
+                {"role": "user", "content": sentence},
+            ],
+            "max_tokens": 8,
+            "temperature": 0,
+            "stream": False,
+            "reasoning_effort": "none",
+        })
+        text = (r.json()["choices"][0]["message"]["content"] or "").strip().lower()
+        for label in _EMO_LABELS:
+            if label in text:
+                return label
+    except Exception as e:
+        logger.debug("情绪分类失败（忽略）: %r", e)
+    return None
+
+
 class Session:
     """一个浏览器连接 ↔ 一路 s2s 的编排。"""
 
     def __init__(self, browser_ws, s2s_url: str,
                  personas: dict, default_persona: str,
                  rtc_pacer=None, rtc_ice_servers: list | None = None,
-                 hotwords: list | None = None):
+                 hotwords: list | None = None,
+                 emo_llm: dict | None = None):
         self.browser = browser_ws
         self.s2s_url = s2s_url
         # WebRTC 音频轨：下行音频走 RTC，WS 只留控制/转写
@@ -192,6 +226,27 @@ class Session:
         self._assistant_history: list[str] = []  # 近 2 轮完整回复（回声判定用）
         self._suppress_ghost = False    # 回声回合压制中：丢弃该回合全部 response 事件
         self._playback_watch = None     # 播放清空监听任务（response.done ≠ 播完）
+        self._lip_carry = b""           # 音素分析：跨 PCM 块的帧尾留存
+        # 情绪分类（数字人表情驱动）：转写按句切分，整句异步判情绪发 vox.emotion。
+        # 复用 llm 配置的独立小调用，不阻塞语音链路，失败静默
+        self._emo_llm = emo_llm
+        self._emo_client = None
+        self._emo_buf = ""
+        self._emo_seq = 0
+        self._emo_tasks: set = set()
+
+    async def _lip_watch(self) -> None:
+        """把 pacer 实际播出的音素帧转发浏览器（vox.lip）——口型对齐播出时刻。"""
+        while True:
+            await asyncio.sleep(0.03)
+            if self.pacer is None:
+                continue
+            frames = self.pacer.pop_played_lip()
+            if frames:
+                try:
+                    await self.browser.send_str(json.dumps({"type": "vox.lip", "frames": frames}))
+                except Exception:
+                    return
 
     async def _notify_playback_done(self) -> None:
         """等 pacer 里的音频真正播完，再通知前端（vox.playback_done）。
@@ -205,16 +260,49 @@ class Session:
         except Exception:
             pass
 
-    async def run(self) -> None:
+    async def _connect_s2s_with_retry(self):
+        """连管线，槽位占用时自动重试。
+
+        管线只有 1 个会话槽：上个会话断开后 SESSION_END 要等 handler 链
+        排空才释放（TTS 还在生成时能拖到 ~10s），这期间新连接被 accept 后
+        秒拒（session_limit_reached + 1008）。表现就是「刷新/首点必连不上」。
+        槽位释放在几秒级，此处重试几次即可透明吸收（2026-08-25 实测）。
+        """
         import websockets
 
-        async with websockets.connect(self.s2s_url, max_size=16 * 1024 * 1024) as s2s:
+        for attempt in range(6):
+            try:
+                s2s = await websockets.connect(self.s2s_url, max_size=16 * 1024 * 1024)
+                try:
+                    # 判活：正常会话首条必是 session.created；秒拒则拿到 error/被关
+                    raw = await asyncio.wait_for(s2s.recv(), timeout=3)
+                    if json.loads(raw).get("type") == "session.created":
+                        if attempt:
+                            logger.info("s2s 第 %d 次重试连上", attempt + 1)
+                        # session.created 前端无 handler，吞掉无影响（日志留痕）
+                        return s2s
+                    logger.info("s2s 秒拒（槽位释放中），1.5s 后第 %d 次重试", attempt + 2)
+                    await s2s.close()
+                except (TimeoutError, websockets.exceptions.ConnectionClosed):
+                    logger.info("s2s 连接后未就绪（槽位释放中），1.5s 后第 %d 次重试", attempt + 2)
+            except Exception as e:
+                logger.info("s2s 连接失败: %r，1.5s 后第 %d 次重试", e, attempt + 2)
+            await asyncio.sleep(1.5)
+        return None
+
+    async def run(self) -> None:
+        s2s = await self._connect_s2s_with_retry()
+        if s2s is None:
+            logger.warning("s2s 多次重试仍未连上，放弃本会话")
+            return
+        async with s2s:
             self.s2s = s2s
             await self._apply_persona(self.persona_id)
             await self._send_status()
             tasks = [
                 asyncio.create_task(self._browser_to_s2s()),
                 asyncio.create_task(self._s2s_to_browser()),
+                asyncio.create_task(self._lip_watch()),
             ]
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
@@ -239,6 +327,51 @@ class Session:
             "persona": self.persona_id,
             "rtc": {"enabled": self.pacer is not None, "ice_servers": self._rtc_ice_servers},
         }))
+
+    # ── 情绪分类（数字人表情驱动）──
+
+    def _emo_feed(self, delta: str) -> None:
+        """流式转写按句切分，整句送去判情绪。"""
+        if self._emo_llm is None:
+            return
+        self._emo_buf += delta
+        pos = 0
+        for m in _EMO_SENT_RE.finditer(self._emo_buf):
+            pos = m.end()
+            self._emo_classify(m.group(0))
+        self._emo_buf = self._emo_buf[pos:]
+
+    def _emo_flush(self) -> None:
+        """response.done：不足一句的尾巴也判（短回复全靠它）。"""
+        tail = self._emo_buf.strip()
+        self._emo_buf = ""
+        if self._emo_llm is not None and len(tail) >= 2:
+            self._emo_classify(tail)
+
+    def _emo_classify(self, sentence: str) -> None:
+        self._emo_seq += 1
+        task = asyncio.create_task(self._emo_classify_send(self._emo_seq, sentence))
+        self._emo_tasks.add(task)
+        task.add_done_callback(self._emo_tasks.discard)
+
+    def _emo_http(self):
+        if self._emo_client is None:
+            import httpx
+            self._emo_client = httpx.AsyncClient(
+                base_url=self._emo_llm["base_url"],
+                headers={"Authorization": f"Bearer {self._emo_llm['api_key']}"},
+                timeout=10)
+        return self._emo_client
+
+    async def _emo_classify_send(self, seq: int, sentence: str) -> None:
+        emo = await _classify_emotion(self._emo_http(), self._emo_llm, sentence)
+        if not emo:
+            return
+        try:
+            await self.browser.send_str(json.dumps(
+                {"type": "vox.emotion", "seq": seq, "emotion": emo, "text": sentence[:40]}))
+        except Exception:
+            pass
 
     async def _apply_persona(self, persona_id: str) -> None:
         persona = self.personas[persona_id]
@@ -300,8 +433,10 @@ class Session:
                 self._resp_had_content = False
                 self._reply_transcript = ""     # 本轮回复转写（打断回报用）
                 self._reply_audio_samples = 0   # 本轮回复已生成音频采样
+                self._emo_buf = ""              # 情绪判定缓冲（新一轮）
             if etype == "response.output_audio_transcript.delta":
                 self._reply_transcript += event.get("delta", "")
+                self._emo_feed(event.get("delta", ""))
             if pcm is not None:
                 self._reply_audio_samples += len(pcm) // 2
                 self._assistant_speaking = True
@@ -314,6 +449,7 @@ class Session:
                 self._resp_had_content = True
             elif etype == "response.done":
                 self._assistant_speaking = False
+                self._emo_flush()  # 尾巴判情绪
                 # 生成完毕 ≠ 播放完毕：pacer 队列里还有没播的音频。
                 # 通知前端播放真正清空（或即将清空）的时刻，前端据此收「说话中」
                 if self.pacer is None:
@@ -336,6 +472,7 @@ class Session:
             if is_interrupt:
                 was_speaking = self._assistant_speaking  # 判定要在状态翻转前取
                 self._assistant_speaking = False
+                self._emo_buf = ""  # 打断：尾巴不判
                 self._empty_nudged = False  # 新一轮对话，重置追问名额
                 if was_speaking and self.pacer is not None:
                     # 打断回报：上游会把整条回复从上下文回滚，但用户实际已经
@@ -352,18 +489,47 @@ class Session:
                             "item": {"type": "message", "role": "assistant",
                                      "content": [{"type": "output_text", "text": prefix}]}}))
                 if self.pacer is not None:
-                    self.pacer.flush()  # 打断：清 RTC 音频队列
+                    # 打断：清 RTC 音频队列。response.done 后 was_speaking 已归 False，
+                    # 打断回报不触发，但 flush 照样会清掉没播完的尾巴——无日志时
+                    # 「她的话被谁吃了」无从查证（2026-08-25「三遍只说两遍」实为
+                    # 用户抢话打断，排查全靠这条）
+                    dropped_s = self.pacer.buffered_audio_seconds
+                    self.pacer.flush()
+                    if dropped_s > 0.1:
+                        logger.info("打断清队：丢弃未播音频 %.1fs（response.done 后抢话）",
+                                    dropped_s)
+            lip_frames = []
+            if pcm is not None:
+                lip_frames, self._lip_carry = lip_analyze(pcm, self._lip_carry)
             if pcm is not None and self.pacer is not None:
-                self.pacer.feed_audio(pcm)  # RTC 音频轨
+                self.pacer.feed_audio(pcm, lip_frames)  # RTC 音频轨（音素帧随队播出）
             if relay:
                 if pcm is not None:
                     # 音频走 RTC 音轨，WS 只留事件本身（剥掉 base64 音频体省带宽）；
-                    # 附带响度（lvl）供前端驱动能量动画
+                    # 附带响度（lvl）供前端驱动能量动画。口型音素（lip）只在无 pacer
+                    # 时挂事件（生成时刻）；有 pacer 时走 vox.lip 播出侧通道对齐播放
                     event = {k: v for k, v in event.items() if k != "delta"}
                     event["lvl"] = audio_level(pcm)
+                    if lip_frames and self.pacer is None:
+                        event["lip"] = lip_frames
                     await self.browser.send_str(json.dumps(event))
                 else:
                     await self.browser.send_str(raw)
+
+
+def _build_emo_llm(config: dict) -> dict | None:
+    """情绪分类的 LLM 配置（复用 llm 节）。key 缺失时功能静默关闭。"""
+    llm_cfg = config.get("llm") or {}
+    try:
+        from voxemw.config import resolve_api_key
+        api_key = resolve_api_key(llm_cfg)
+    except SystemExit:
+        return None
+    return {
+        "base_url": str(llm_cfg.get("base_url", "https://api.deepseek.com")).rstrip("/"),
+        "model": str(llm_cfg.get("model_name", "deepseek-chat")),
+        "api_key": api_key,
+    }
 
 
 def create_app(config: dict):
@@ -378,6 +544,7 @@ def create_app(config: dict):
         stt_hotwords = [w.strip() for w in stt_hotwords.split(",") if w.strip()]
 
     s2s_url = f"ws://{server.get('s2s_host', '127.0.0.1')}:{server.get('s2s_port', 8765)}/v1/realtime"
+    emo_llm = _build_emo_llm(config)
 
     async def index(_request):
         return web.FileResponse(REPO_ROOT / "web" / "index.html")
@@ -469,7 +636,7 @@ def create_app(config: dict):
             pacer = AudioPacer(audio_lead=lead)
         session = Session(ws, s2s_url, personas, default_persona,
                           rtc_pacer=pacer, rtc_ice_servers=rtc_ice_servers,
-                          hotwords=stt_hotwords)
+                          hotwords=stt_hotwords, emo_llm=emo_llm)
         current_session["session"] = session
         try:
             await session.run()

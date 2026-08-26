@@ -33,11 +33,11 @@ def test_heard_prefix_no_punctuation_keeps_raw_cut():
 
 
 def test_build_session_update():
-    event = build_session_update("liangzi", "你是良子。")
+    event = build_session_update("henannier", "你是河南妮儿。")
     assert event["type"] == "session.update"
     session = event["session"]
-    assert session["instructions"] == "你是良子。"
-    assert session["audio"]["output"]["voice"] == "liangzi"
+    assert session["instructions"] == "你是河南妮儿。"
+    assert session["audio"]["output"]["voice"] == "henannier"
     assert session["audio"]["input"]["turn_detection"]["interrupt_response"] is True
 
 
@@ -73,7 +73,7 @@ def test_classify_other_events_passthrough():
 
 
 def test_is_echo_catches_playback_leak():
-    # 良子的回答被麦克风收回去：候选被近期助手文本包含
+    # 助手的回答被麦克风收回去：候选被近期助手文本包含
     recent = ["来了老弟！咋啦，这是等着看你良弟吃播来啦？"]
     assert is_echo("来了，老弟。", recent) is True
     # 反向包含：回声转写比原句长（多收了尾巴）
@@ -103,15 +103,15 @@ def test_is_echo_passes_short_real_answers():
 
 
 def test_is_vocabulary_recitation():
-    hw = ["良子", "大胃袋", "味真足"]
+    hw = ["河南妮儿", "恁", "中"]
     # 噪音被词表脑补的整段背诵 → 掐
-    assert is_vocabulary_recitation("良子，大胃袋，味真足。", hw) is True
-    assert is_vocabulary_recitation("大胃袋味真足", hw) is True
-    # 单个热词（真人叫他）→ 放行
-    assert is_vocabulary_recitation("大胃袋", hw) is False
+    assert is_vocabulary_recitation("河南妮儿，恁，中。", hw) is True
+    assert is_vocabulary_recitation("恁中", hw) is True
+    # 单个热词（真人叫她）→ 放行
+    assert is_vocabulary_recitation("河南妮儿", hw) is False
     # 带残余的真实短句 → 放行
-    assert is_vocabulary_recitation("味真足啊", hw) is False
-    assert is_vocabulary_recitation("良子今晚吃啥", hw) is False
+    assert is_vocabulary_recitation("中啊", hw) is False
+    assert is_vocabulary_recitation("妮儿今晚吃啥", hw) is False
     # 空/超短 → 放行
     assert is_vocabulary_recitation("", hw) is False
     assert is_vocabulary_recitation("嗯", hw) is False

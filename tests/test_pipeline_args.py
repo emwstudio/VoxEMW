@@ -129,9 +129,9 @@ def test_stt_setup_kwargs_qwen3asr_defaults():
     assert kwargs["corrections"] == {}
 
     # corrections 替换表透传（转写后确定性校正用）
-    config["stt"]["corrections"] = {"梁子": "良子"}
+    config["stt"]["corrections"] = {"鸟儿": "妮儿"}
     kwargs = stt_setup_kwargs(config)
-    assert kwargs["corrections"] == {"梁子": "良子"}
+    assert kwargs["corrections"] == {"鸟儿": "妮儿"}
 
 
 def test_setup_kwargs_reject_unknown_backend():

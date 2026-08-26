@@ -1,4 +1,4 @@
-/* 良子语音助手前端（纯语音模式，星空背景即全部画面）。
+/* 河南妮儿语音助手前端（星空 + VRM 数字人）。
  *
  * 下行音频：WebRTC——POST /rtc/offer 建连，音频（Opus）走 RTP 轨，
  *           挂隐藏 <audio> 播放（Chrome 对 RTC 音轨的解码只在媒体元素上才启动）。
@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260823q";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260825f";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -70,6 +70,8 @@ function ensureRtcAudio() {
     document.body.appendChild(rtcAudioEl);
   }
   rtcAudioEl.play().catch(() => {});
+  // 喂给数字人层做口型音素分析（元素级 tap，RTC 重连换 srcObject 不影响）
+  if (window.VoxAvatar) window.VoxAvatar.attachAudio(rtcAudioEl);
   return rtcAudioEl;
 }
 
@@ -271,7 +273,7 @@ function addLine(cls, text) {
     // 结构：div.line > img.avatar + div.bubble > 文本（有头像不带昵称）
     const img = document.createElement("img");
     img.className = "avatar";
-    img.src = cls === "user" ? "/static/avatars/wo.jpeg" : "/static/avatars/liangzi.png";
+    img.src = cls === "user" ? "/static/avatars/wo.jpeg" : "/static/avatars/henannier.png";
     img.alt = "";
     img.onerror = () => { img.style.display = "none"; };  // 克隆仓库无个人照片时不破洞
     const bubble = document.createElement("div");
@@ -391,12 +393,14 @@ const realtimeHandlers = {
   },
   "response.output_audio.delta"(event) {
     // 事件被服务端剥了音频体（音频走 RTC 音轨），但事件本身仍标志「开口」；
-    // lvl = 服务端算好的响度，驱动星空/光环能量动画
+    // lvl = 服务端算好的响度，驱动星空/光环能量动画；lip = 服务端音素权重（口型）
     if (typeof event.lvl === "number") SPACE.ttsLevel = event.lvl;
+    if (Array.isArray(event.lip) && window.VoxAvatar) window.VoxAvatar.feedLip(event.lip);
     if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
   },
   "response.audio.delta"(event) {
     if (typeof event.lvl === "number") SPACE.ttsLevel = event.lvl;
+    if (Array.isArray(event.lip) && window.VoxAvatar) window.VoxAvatar.feedLip(event.lip);
     if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
   },
   "response.done"() {
@@ -410,6 +414,14 @@ const realtimeHandlers = {
         if (avatarState === "speaking") setAvatarState("idle");
       }, 45000);
     }
+  },
+  "vox.lip"(event) {
+    // 服务端 pacer 实际播出的音素帧（口型，对齐播出时刻）
+    if (Array.isArray(event.frames) && window.VoxAvatar) window.VoxAvatar.feedLip(event.frames);
+  },
+  "vox.emotion"(event) {
+    // 服务端按句判好的情绪（seq 保序），驱动数字人表情
+    if (window.VoxAvatar) window.VoxAvatar.setEmotion(event.emotion, event.seq);
   },
   "vox.playback_done"() {
     // 服务端：回复音频真正播完了
@@ -445,9 +457,9 @@ function handleTextMessage(data) {
 
 // ---------------------------------------------------------------------------
 // 星空背景：全屏 canvas，跟随对话状态（avatarState）的三种动态
-//   idle      无人说话：无序漂移 + 闪烁
-//   listening 你在说话：径向声波随你的音量跳动（麦克风 RMS 驱动）
-//   thinking  良子在想：持续缓慢内流 + 深呼吸
+//   idle      无人说话：无序漂移 + 闪烁 + 朝本位弱回弹
+//   listening 你在说话：径向声波随你的音量跳动（麦克风 RMS 驱动）+ 有界内流收拢
+//   thinking  良子在想：有界内流随呼吸深浅变化（锚定本位，不会无限缩向中心）
 //   speaking  良子说话：径向声波随她的音量跳动（响度由服务端随音频事件下发，
 //             不再用客户端 WebAudio 分析器——RTC 重连/自动播放挂起/WebKit 都会弄哑它）
 // ---------------------------------------------------------------------------
@@ -474,15 +486,20 @@ function initSpace() {
     canvas.height = SPACE.h * dpr;
     SPACE.ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
     const n = Math.min(340, Math.floor((SPACE.w * SPACE.h) / 4200));
-    SPACE.stars = Array.from({ length: n }, () => ({
-      x: Math.random() * SPACE.w,
-      y: Math.random() * SPACE.h,
-      vx: (Math.random() - 0.5) * 0.18,   // 无序漂移速度
-      vy: (Math.random() - 0.5) * 0.18,
-      r: 0.5 + Math.random() * 1.3,       // 基础半径
-      p: Math.random() * Math.PI * 2,     // 闪烁相位
-      s: 0.4 + Math.random() * 1.2,       // 闪烁速率
-    }));
+    SPACE.stars = Array.from({ length: n }, () => {
+      const x = Math.random() * SPACE.w;
+      const y = Math.random() * SPACE.h;
+      return {
+        x, y,
+        hx: x,                // 本位：收拢以此为中心锚点，保证有界（防越聊越缩成一团）
+        hy: y,
+        vx: (Math.random() - 0.5) * 0.18,   // 无序漂移速度
+        vy: (Math.random() - 0.5) * 0.18,
+        r: 0.5 + Math.random() * 1.3,       // 基础半径
+        p: Math.random() * Math.PI * 2,     // 闪烁相位
+        s: 0.4 + Math.random() * 1.2,       // 闪烁速率
+      };
+    });
   };
   window.addEventListener("resize", resize);
   resize();
@@ -525,26 +542,31 @@ function tickSpace(t) {
       ry = st.y + (dy / dist) * off;
       boost = lvl * (0.35 + 0.4 * wave);
       if (mode === "listening") {
-        // 倾听保留一丝内流：专注感还在，但主角是声波
-        st.x += (cx - st.x) * 0.0003 * dt;
-        st.y += (cy - st.y) * 0.0003 * dt;
+        // 倾听保留内流收拢：有界地朝「本位→中心」35% 处的锚点收，松手后 idle 弹回
+        const tx = st.hx + (cx - st.hx) * 0.35;
+        const ty = st.hy + (cy - st.hy) * 0.35;
+        st.x += (tx - st.x) * 0.012 * dt;
+        st.y += (ty - st.y) * 0.012 * dt;
       }
     } else if (mode === "thinking") {
       st.vx *= 0.99; st.vy *= 0.99;
-      const pull = (0.0002 + breath * 0.0005) * dt;
-      st.x += (cx - st.x) * pull;
-      st.y += (cy - st.y) * pull;
+      // 内流同样有界：收拢深度随呼吸在 18%..33% 之间
+      const k = 0.18 + breath * 0.15;
+      const tx = st.hx + (cx - st.hx) * k;
+      const ty = st.hy + (cy - st.hy) * k;
+      st.x += (tx - st.x) * 0.01 * dt;
+      st.y += (ty - st.y) * 0.01 * dt;
       boost = breath * 0.2;
     } else {
-      // idle：无序漂移，偶尔轻拐个弯
+      // idle：无序漂移 + 朝本位的弱回弹（收拢期攒下的位移慢慢归位）
       if (Math.random() < 0.002) {
         st.vx += (Math.random() - 0.5) * 0.06;
         st.vy += (Math.random() - 0.5) * 0.06;
       }
       st.vx = Math.max(-0.35, Math.min(0.35, st.vx));
       st.vy = Math.max(-0.35, Math.min(0.35, st.vy));
-      st.x += st.vx * dt;
-      st.y += st.vy * dt;
+      st.x += st.vx * dt + (st.hx - st.x) * 0.002 * dt;
+      st.y += st.vy * dt + (st.hy - st.y) * 0.002 * dt;
     }
     // 出界回卷（基准位置）
     if (st.x < -4) st.x = w + 4; else if (st.x > w + 4) st.x = -4;
@@ -558,6 +580,8 @@ function tickSpace(t) {
     g.fillStyle = `rgba(190, 214, 255, ${alpha.toFixed(3)})`;
     g.fill();
   }
+  // 数字人层（VRM）：同一套状态/响度输入；模块未加载或加载失败时静默跳过
+  if (window.VoxAvatar) window.VoxAvatar.frame(dt, mode, SPACE.ttsLevel, SPACE.micLevel, t);
   requestAnimationFrame(tickSpace);
 }
 
@@ -572,12 +596,17 @@ if (new URLSearchParams(location.search).has("debug")) {
     "font:12px monospace;padding:6px 10px;border-radius:6px;z-index:99;white-space:pre";
   document.body.appendChild(dbg);
   setInterval(async () => {
-    if (!pc) { dbg.textContent = "RTC 未建连"; return; }
     let text = "";
+    if (window.VoxAvatar) {
+      const li = window.VoxAvatar.lipInfo();
+      const top = Object.entries(li.w).sort((a, b) => b[1] - a[1])[0];
+      text = `口型 ${li.src}${li.nodeReady ? "" : "(无节点)"} vol=${li.vol} ${top[0]}=${top[1].toFixed(2)}\n`;
+    }
+    if (!pc) { dbg.textContent = text + "RTC 未建连"; return; }
     const stats = await pc.getStats();
     stats.forEach((r) => {
       if (r.type === "inbound-rtp" && r.kind === "audio") {
-        text =
+        text +=
           `音频: ${((r.bytesReceived || 0) / 131072).toFixed(1)}Mb 丢包:${r.packetsLost || 0}\n` +
           `抖动: ${((r.jitter || 0) * 1000).toFixed(0)}ms 连接: ${pc.connectionState}`;
       }

@@ -1,4 +1,4 @@
-# VoxEMW 本地 Mac 极简版 —— Apple Silicon（M5 16GB），纯语音（无数字人/无唱歌）
+# VoxEMW 本地 Mac 极简版 —— Apple Silicon（M5 16GB），语音 + VRM 数字人
 #
 # 形态：
 # - 纯语音：数字人（AVTR-1）代码已整体拆除，前端静态肖像 + RTC 音频轨
@@ -27,12 +27,10 @@ stt:
   device: auto                  # device_map=auto → MPS
   language: Chinese
   # 热词偏置（概率性，务必克制：词越多模型越容易把没说的话脑补成词表内容——
-  # 2026-08-23 实测 10 个词时整段幻觉出词表。只留人设核心三词 + corrections 兜底）
-  hotwords: [良子, 大胃袋, 味真足]
+  # 2026-08-23 实测 10 个词时整段幻觉出词表。只留人设核心词 + corrections 兜底）
+  hotwords: [河南妮儿, 恁, 中, 得劲]
   # 确定性后校正（转写后直接替换）：同音误写的兜底修复
-  corrections:
-    梁子: 良子
-    两两: 良子
+  corrections: {}
 
 # ---------------------------------------------------------------------------
 # LLM：DeepSeek API（deepseek-v4-flash，key 放 .env.local 的
@@ -71,9 +69,9 @@ rtc:
 # 人设注册表（良子唯一）
 # ---------------------------------------------------------------------------
 personas:
-  default: liangzi
+  default: henannier
   list:
-    liangzi: personas/liangzi.md
+    henannier: personas/henannier.md
 
 # ---------------------------------------------------------------------------
 # 服务参数

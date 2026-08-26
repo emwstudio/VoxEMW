@@ -31,9 +31,24 @@ body {
   z-index: 0;
 }
 
+/* 数字人（VRM）层：星空之上、对话 UI 之下；透明底，加载完成淡入 */
+#vrm {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: none;   /* 不挡字幕区滚动和按钮点击 */
+  opacity: 0;
+  transition: opacity 1.2s ease;
+}
+#vrm.ready {
+  opacity: 1;
+}
+
 .stage {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   width: min(880px, 100vw);
   /* 固定一屏高（dvh 适配移动端动态工具栏），字幕区超出内部滚动，布局不随对话变长 */
   height: 100vh;
@@ -106,6 +121,11 @@ body {
 }
 
 /* ── 字幕区：无框，气泡悬浮在星空上 ── */
+/* 数字人模式：不出聊天框，画面只有数字人（气泡仍写进 DOM，排障可恢复显示） */
+.transcript {
+  display: none;
+}
+
 .transcript {
   position: relative;
   flex: 1;
@@ -176,7 +196,7 @@ body {
 }
 
 /* ── 主角光环按钮 ── */
-.controls { text-align: center; padding-top: 4px; }
+.controls { text-align: center; padding-top: 4px; margin-top: auto; }  /* 聊天框隐藏后把按钮钉在底部 */
 
 .orb {
   position: relative;
