@@ -66,7 +66,10 @@ def register_custom_backends(config: dict) -> None:
                 ctx.stop_event,
                 queue_in=ctx.queue_in,
                 queue_out=ctx.queue_out,
-                setup_kwargs=tts_setup_kwargs(config),
+                # 上游内置 TTS 走 setup_args=(ctx.should_listen,)；
+                # 自定义工厂等价地从 HandlerContext 取
+                setup_kwargs={"should_listen": ctx.should_listen,
+                              **tts_setup_kwargs(config)},
             )
             handler.cancel_scope = ctx.cancel_scope
             handler.speculative_turns = ctx.speculative_turns
