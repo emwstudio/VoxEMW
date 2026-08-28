@@ -1,0 +1,52 @@
+# VoxEMW 满血版（4090/24GB）—— 见 docs/plan-4090.md
+# STT: Qwen3-ASR-1.7B / TTS: VoxCPM2 全精度 / LLM: DeepSeek API / 数字人: SoulX-FlashHead
+# 眼睛: MiniCPM-V-4.6（vLLM）。Mac 轻量档见 configs/assistant.yaml + git tag v1.9.0
+
+vad:
+  backend: silero
+  min_silence_ms: 64
+stt:
+  backend: qwen3asr
+  model_name: Qwen/Qwen3-ASR-1.7B
+  device: cuda
+  language: Chinese
+  hotwords:
+  - 河南妮儿
+  - 恁
+  - 中
+  - 得劲
+  corrections: {}
+llm:
+  backend: chat-completions
+  model_name: deepseek-v4-flash
+  base_url: https://api.deepseek.com
+  api_key_env: DEEPSEEK_API_KEY
+  stream: true
+  stream_batch_sentences: 1
+  chat_size: 30
+  reasoning_effort: none
+tts:
+  backend: voxcpm2
+  model_name: openbmb/VoxCPM2
+  device: cuda
+  cfg_value: 2.0
+  inference_timesteps: 10
+  sample_rate: 16000
+rtc:
+  enabled: true
+  browser_ice_servers: []
+vision:
+  enabled: true
+  vlm_url: http://127.0.0.1:18099
+personas:
+  default: henannier
+  list:
+    henannier: personas/henannier.md
+server:
+  s2s_host: 127.0.0.1
+  s2s_port: 8765
+  host: 0.0.0.0
+  port: 8000
+  log_level: info
+  enable_live_transcription: false
+  num_pipelines: 1

@@ -23,13 +23,14 @@ class Qwen3ASRArgs:
 
 
 def register_custom_backends(config: dict) -> None:
-    """把 qwen3asr 注册进上游后端注册表（幂等）。"""
+    """把 qwen3asr（STT）与 voxcpm2（TTS，4090 满血版）注册进上游后端注册表（幂等）。"""
     from speech_to_speech.backend_registry import (
         STT_BACKENDS,
+        TTS_BACKENDS,
         BackendSpec,
     )
 
-    from voxemw.pipeline.args import stt_setup_kwargs
+    from voxemw.pipeline.args import stt_setup_kwargs, tts_setup_kwargs
 
     def _create_stt_qwen3asr(ctx, _cfg):
         from voxemw.pipeline.stt_qwen3asr import Qwen3ASRSTTHandler
@@ -48,3 +49,24 @@ def register_custom_backends(config: dict) -> None:
         name="qwen3asr", kind="stt",
         config_type=Qwen3ASRArgs, create_handler=_create_stt_qwen3asr,
     ))
+
+    tts_cfg = (config.get("tts") or {})
+    if tts_cfg.get("backend") == "voxcpm2":
+        def _create_tts_voxcpm2(ctx, _cfg):
+            from voxemw.pipeline.tts_voxcpm2 import VoxCPM2TTSHandler
+
+            handler = VoxCPM2TTSHandler(
+                ctx.stop_event,
+                queue_in=ctx.queue_in,
+                queue_out=ctx.queue_out,
+                setup_kwargs=tts_setup_kwargs(config),
+            )
+            handler.cancel_scope = ctx.cancel_scope
+            handler.speculative_turns = ctx.speculative_turns
+            return handler
+
+        TTS_BACKENDS.setdefault("voxcpm2", BackendSpec(
+            name="voxcpm2", kind="tts",
+            config_type=Qwen3ASRArgs,  # 参数走 YAML，复用空壳类防重复选项冲突
+            create_handler=_create_tts_voxcpm2,
+        ))

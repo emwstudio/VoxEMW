@@ -117,3 +117,19 @@ def stt_setup_kwargs(config: dict) -> dict:
         }
     raise ValueError(f"不支持的 stt.backend: {backend!r}")
 
+
+def tts_setup_kwargs(config: dict) -> dict:
+    """VoxCPM2 handler 的 setup_kwargs（由 launch 的自定义工厂使用）。"""
+    tts = config["tts"]
+    if tts.get("backend") != "voxcpm2":
+        raise ValueError(f"不支持的 tts.backend: {tts.get('backend')!r}")
+    persona = config["personas"]["resolved"][config["personas"]["default"]]
+    return {
+        "model_name": tts.get("model_name", "openbmb/VoxCPM2"),
+        "ref_audio": str(persona["ref_wav"]),
+        "ref_text": persona["ref_text"],
+        "cfg_value": float(tts.get("cfg_value", 2.0)),
+        "inference_timesteps": int(tts.get("inference_timesteps", 10)),
+        "device": str(tts.get("device", "cuda")),
+    }
+
