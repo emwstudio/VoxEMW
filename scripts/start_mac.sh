@@ -43,6 +43,20 @@ for i in $(seq 1 60); do
     sleep 5
 done
 
+# 视觉边车（妮儿的眼睛）：llama-server 跑 MiniCPM-V-4.6，GGUF 齐了才启动
+VLM_DIR="$HOME/.cache/models/minicpm-v-4.6-gguf"
+if [ -f "$VLM_DIR/MiniCPM-V-4_6-Q4_K_M.gguf" ] && [ -f "$VLM_DIR/mmproj-model-f16.gguf" ] && \
+   command -v llama-server > /dev/null; then
+    pkill -f "llama-server.*18099" 2>/dev/null || true
+    echo "==> 启动视觉边车 llama-server（:18099）"
+    nohup llama-server -m "$VLM_DIR/MiniCPM-V-4_6-Q4_K_M.gguf" \
+        --mmproj "$VLM_DIR/mmproj-model-f16.gguf" \
+        --host 127.0.0.1 --port 18099 > logs/vlm.log 2>&1 &
+    echo "    PID=$!，日志 logs/vlm.log"
+else
+    echo "==> 跳过视觉边车（GGUF 或 llama-server 未就绪，视觉功能关闭）"
+fi
+
 echo "==> 启动 orchestrator（.venv-mac，:8000）"
 # LAN TLS 入口（iPhone 用，https://<局域网IP>:9443）：证书在 scripts/lan_tls/，
 # 由 scripts/make_lan_tls.sh 生成；没有证书就只开本机 http

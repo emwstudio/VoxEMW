@@ -70,8 +70,6 @@ function ensureRtcAudio() {
     document.body.appendChild(rtcAudioEl);
   }
   rtcAudioEl.play().catch(() => {});
-  // 喂给数字人层做口型音素分析（元素级 tap，RTC 重连换 srcObject 不影响）
-  if (window.VoxAvatar) window.VoxAvatar.attachAudio(rtcAudioEl);
   return rtcAudioEl;
 }
 
@@ -393,14 +391,12 @@ const realtimeHandlers = {
   },
   "response.output_audio.delta"(event) {
     // 事件被服务端剥了音频体（音频走 RTC 音轨），但事件本身仍标志「开口」；
-    // lvl = 服务端算好的响度，驱动星空/光环能量动画；lip = 服务端音素权重（口型）
+    // lvl = 服务端算好的响度，驱动星空/光环能量动画
     if (typeof event.lvl === "number") SPACE.ttsLevel = event.lvl;
-    if (Array.isArray(event.lip) && window.VoxAvatar) window.VoxAvatar.feedLip(event.lip);
     if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
   },
   "response.audio.delta"(event) {
     if (typeof event.lvl === "number") SPACE.ttsLevel = event.lvl;
-    if (Array.isArray(event.lip) && window.VoxAvatar) window.VoxAvatar.feedLip(event.lip);
     if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
   },
   "response.done"() {
@@ -414,14 +410,6 @@ const realtimeHandlers = {
         if (avatarState === "speaking") setAvatarState("idle");
       }, 45000);
     }
-  },
-  "vox.lip"(event) {
-    // 服务端 pacer 实际播出的音素帧（口型，对齐播出时刻）
-    if (Array.isArray(event.frames) && window.VoxAvatar) window.VoxAvatar.feedLip(event.frames);
-  },
-  "vox.emotion"(event) {
-    // 服务端按句判好的情绪（seq 保序），驱动数字人表情
-    if (window.VoxAvatar) window.VoxAvatar.setEmotion(event.emotion, event.seq);
   },
   "vox.playback_done"() {
     // 服务端：回复音频真正播完了
@@ -580,8 +568,6 @@ function tickSpace(t) {
     g.fillStyle = `rgba(190, 214, 255, ${alpha.toFixed(3)})`;
     g.fill();
   }
-  // 数字人层（VRM）：同一套状态/响度输入；模块未加载或加载失败时静默跳过
-  if (window.VoxAvatar) window.VoxAvatar.frame(dt, mode, SPACE.ttsLevel, SPACE.micLevel, t);
   requestAnimationFrame(tickSpace);
 }
 
@@ -597,12 +583,7 @@ if (new URLSearchParams(location.search).has("debug")) {
   document.body.appendChild(dbg);
   setInterval(async () => {
     let text = "";
-    if (window.VoxAvatar) {
-      const li = window.VoxAvatar.lipInfo();
-      const top = Object.entries(li.w).sort((a, b) => b[1] - a[1])[0];
-      text = `口型 ${li.src}${li.nodeReady ? "" : "(无节点)"} vol=${li.vol} ${top[0]}=${top[1].toFixed(2)}\n`;
-    }
-    if (!pc) { dbg.textContent = text + "RTC 未建连"; return; }
+    if (!pc) { dbg.textContent = "RTC 未建连"; return; }
     const stats = await pc.getStats();
     stats.forEach((r) => {
       if (r.type === "inbound-rtp" && r.kind === "audio") {

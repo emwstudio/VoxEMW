@@ -1,5 +1,9 @@
 # VoxEMW · 河南妮儿语音助手
 
+> **⚠ 版本迁移中**：主线正在迁移到 4090/24GB 满血版（SoulX-FlashHead 写实数字人 + VoxCPM2 TTS +
+> Qwen3-ASR-1.7B + MiniCPM-V-4.6 视觉）。Mac + VRM 二次元数字人版存档于 **git tag v1.9.0**，
+> 当前 main 为过渡态（语音链路完整，数字人层已拆除待重建）。
+
 [![version](https://img.shields.io/badge/version-v1.9.0-blue)](https://github.com/emwstudio/VoxEMW/tags)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6?logo=bilibili&logoColor=white)](https://space.bilibili.com/492428186)

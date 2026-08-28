@@ -9,21 +9,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#070b1a" />
   <title>河南妮儿语音助手 · DeepSeek 驱动</title>
-  <!-- 数字人（VRM）依赖：本地 vendor 的 three + @pixiv/three-vrm，importmap 免构建 -->
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "/static/vendor/three/build/three.module.js",
-      "three/addons/": "/static/vendor/three/examples/jsm/",
-      "@pixiv/three-vrm": "/static/vendor/three-vrm/three-vrm.module.js"
-    }
-  }
-  </script>
-  <link rel="stylesheet" href="/static/style.css?v=20260825b" />
+  <link rel="stylesheet" href="/static/style.css?v=20260828a" />
 </head>
 <body>
   <canvas id="space"></canvas>
-  <canvas id="vrm"></canvas>
   <main class="stage">
     <header class="topbar">
       <h1>河南妮儿语音助手</h1>
@@ -43,7 +32,6 @@
       <p class="hint">点一下开聊，随时可以打断他 · DeepSeek 驱动</p>
     </footer>
   </main>
-  <script src="/static/assistant.js?v=20260825g"></script>
-  <script type="module" src="/static/avatar-vrm.js?v=20260825m"></script>
+  <script src="/static/assistant.js?v=20260828a"></script>
 </body>
 </html>

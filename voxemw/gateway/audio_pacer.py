@@ -41,12 +41,6 @@ class AudioPacer:
     def __init__(self, audio_lead: float = DEFAULT_AUDIO_LEAD) -> None:
         self._audio = bytearray()
         self._audio_samples_fed = 0     # 累计喂入采样
-        # 口型音素帧（与音频同队列推进）：入队时记绝对采样位（取分析窗中心
-        # i*512+512），出队播放游标越过即弹出，由 Session 转发浏览器——
-        # 口型对齐的是「播出时刻」而不是「生成时刻」（队列深时差几百 ms，
-        # 生成时刻下发会全程对不上，2026-08-25 实测）
-        self._lip_queue: list[tuple[int, dict]] = []
-        self._lip_played: list[dict] = []
         self._audio_lead = audio_lead
         self._audio_ready_at = 0.0      # 音频队列可播放的最早时刻（单调钟）
         # 已真实播出去的采样数（RTC 音频轨每取一拍真音频 +=320）——
@@ -57,14 +51,9 @@ class AudioPacer:
 
     # ── 生产者（Session 转发协程调用）──
 
-    def feed_audio(self, pcm: bytes, lip_frames: list[dict] | None = None) -> None:
+    def feed_audio(self, pcm: bytes) -> None:
         """TTS PCM（int16 16k mono）。新回复开头做 ~8ms 淡入，磨平起步瞬态
-        （编码/重采样链路在回复起点的毛刺——「第一个音破音」实测修复）。
-        lip_frames：该块对应的音素权重帧（512 采样步长，见 gateway.phoneme）。"""
-        if lip_frames:
-            base = self._audio_samples_fed
-            for i, w in enumerate(lip_frames):
-                self._lip_queue.append((base + i * 512 + 512, w))
+        （编码/重采样链路在回复起点的毛刺——「第一个音破音」实测修复）。"""
         if not self._audio:
             # 队列从空到非空 = 新回复开始：压后 lead 秒（默认 0 = 到即播）
             self._audio_ready_at = time.monotonic() + self._audio_lead
@@ -79,8 +68,6 @@ class AudioPacer:
         self._audio_samples_fed = 0
         self._audio_samples_played = 0
         self._played_at_reply_start = 0
-        self._lip_queue.clear()
-        self._lip_played.clear()
 
     # ── 消费者（RTC track recv 调用）──
 
@@ -91,15 +78,8 @@ class AudioPacer:
             out = bytes(self._audio[:need])
             del self._audio[:need]
             self._audio_samples_played += AUDIO_TICK_SAMPLES
-            while self._lip_queue and self._lip_queue[0][0] <= self._audio_samples_played:
-                self._lip_played.append(self._lip_queue.pop(0)[1])
             return out
         return b"\x00" * need
-
-    def pop_played_lip(self) -> list[dict]:
-        """取走自上次以来已播出的音素帧（Session 转发浏览器用）。"""
-        out, self._lip_played = self._lip_played, []
-        return out
 
     # ── 观测用只读状态 ──
 
