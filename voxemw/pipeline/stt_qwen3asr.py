@@ -91,11 +91,18 @@ class Qwen3ASRSTTHandler(BaseSTTHandler):
                 {"role": "user", "content": [
                     {"type": "audio", "audio": audio,
                      "sampling_rate": TARGET_SAMPLE_RATE}]},
-                {"role": "assistant", "content": [
-                    {"type": "text", "text": f"language {self.language}<asr_text>"}]},
             ]]
-            inputs = self.processor.apply_chat_template(
-                conv, tokenize=True, return_dict=True, continue_final_message=True,
+            # 手工拼 assistant 预填：transformers 5.16 的 continue_final_message
+            # 校验与该模板不兼容（渲染结果不含末条消息 → ValueError）。
+            # add_generation_prompt 出的前缀以 <|im_start|>assistant\n 结尾，
+            # 直接拼预填串等价于 continue_final_message 的效果。
+            prompt = self.processor.apply_chat_template(
+                conv, tokenize=False, add_generation_prompt=True,
+            )[0]
+            prompt += f"language {self.language}<asr_text>"
+            inputs = self.processor(
+                text=prompt, audio=[audio],
+                sampling_rate=TARGET_SAMPLE_RATE, return_tensors="pt",
             )
         else:
             inputs = self.processor.apply_transcription_request(
