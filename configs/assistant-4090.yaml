@@ -33,7 +33,10 @@ tts:
   inference_timesteps: 10
   sample_rate: 16000
 rtc:
-  enabled: true
+  # 4090/AutoDL 远程部署：浏览器只能走 TCP 隧道，WebRTC 的 UDP 媒体过不去
+  # （ICE 永远卡 checking）。关掉 RTC，下行音频走 WS（前端 WebAudio 播放）。
+  # Mac 本地/LAN 部署回 true（低延迟 Opus 音轨）。
+  enabled: false
   browser_ice_servers: []
 vision:
   enabled: true

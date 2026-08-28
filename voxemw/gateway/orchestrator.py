@@ -6,7 +6,7 @@
 
 职责：
 - 下行：s2s 的 TTS 音频 delta → AudioPacer（RTC 音频轨，Opus 48k）；
-  WS 只留控制/转写事件（音频 delta 剥掉 base64 音频体省带宽）
+  无 RTC 时（TCP-only 隧道）delta 原样走 WS，前端 WebAudio 播放
 - 上行：浏览器麦克风音频/控制消息 → 转发 s2s
 - persona：浏览器发 {"type": "vox.persona", "id": ...} 切换人设，
   本进程把人设正文/音色经 session.update 注入 s2s（instructions + voice）
@@ -409,10 +409,14 @@ class Session:
                 self.pacer.feed_audio(pcm)  # RTC 音频轨
             if relay:
                 if pcm is not None:
-                    # 音频走 RTC 音轨，WS 只留事件本身（剥掉 base64 音频体省带宽）；
+                    event = dict(event)
                     # 附带响度（lvl）供前端驱动能量动画
-                    event = {k: v for k, v in event.items() if k != "delta"}
                     event["lvl"] = audio_level(pcm)
+                    if self.pacer is not None:
+                        # RTC 模式：音频走 RTC 音轨，WS 剥掉 base64 音频体省带宽
+                        event.pop("delta", None)
+                    # WS 音频模式（无 RTC，如 SSH 隧道/AutoDL TCP-only）：
+                    # delta 原样随事件下发，前端 WebAudio 队列播放
                     await self.browser.send_str(json.dumps(event))
                 else:
                     await self.browser.send_str(raw)

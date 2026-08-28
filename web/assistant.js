@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260825f";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829a";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -257,6 +257,51 @@ function stopMic() {
 }
 
 // ---------------------------------------------------------------------------
+// WS 音频下行（无 RTC 场景：SSH 隧道 / AutoDL 等 TCP-only 链路，WebRTC 的 UDP
+// 媒体过不去）。response.output_audio.delta 的 base64 PCM16 16k 直接进
+// WebAudio 队列无缝续播；打断（speech_started）本地清队，与服务端 flush 同步。
+// ---------------------------------------------------------------------------
+
+const wsPlayer = {
+  ctx: null,
+  nextStart: 0,        // AudioContext 时间轴上下一块的起播时刻
+  sources: new Set(),  // 已排程未播完的源（打断时批量 stop）
+  ensure() {
+    if (!this.ctx) this.ctx = new AudioContext();
+    if (this.ctx.state === "suspended") this.ctx.resume().catch(() => {});
+    return this.ctx;
+  },
+  feed(base64) {
+    const ctx = this.ensure();
+    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    const int16 = new Int16Array(bytes.buffer);
+    const f32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) f32[i] = int16[i] / 32768;
+    const buf = ctx.createBuffer(1, f32.length, 16000);  // source 播放时自动重采样到 ctx 率
+    buf.copyToChannel(f32, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    const t = Math.max(ctx.currentTime + 0.03, this.nextStart);  // 30ms  jitter 余量
+    src.start(t);
+    this.nextStart = t + buf.duration;
+    this.sources.add(src);
+    src.onended = () => this.sources.delete(src);
+  },
+  flush() {
+    for (const s of this.sources) {
+      try { s.stop(); } catch (_) { /* 已停的忽略 */ }
+    }
+    this.sources.clear();
+    this.nextStart = 0;
+  },
+  remainingMs() {
+    if (!this.ctx || !this.nextStart) return 0;
+    return Math.max(0, (this.nextStart - this.ctx.currentTime) * 1000);
+  },
+};
+
+// ---------------------------------------------------------------------------
 // 转写区
 // ---------------------------------------------------------------------------
 
@@ -353,7 +398,8 @@ function setAvatarState(state) {
 
 const realtimeHandlers = {
   "input_audio_buffer.speech_started"() {
-    // 用户开口（打断）：服务端 flush 音频队列，本地只需更新状态
+    // 用户开口（打断）：服务端 flush 音频队列，本地同步清 WS 播放队列
+    wsPlayer.flush();
     assistantLine = null;
     setAvatarState("listening");
   },
@@ -390,29 +436,35 @@ const realtimeHandlers = {
     lineGotDeltas = false;
   },
   "response.output_audio.delta"(event) {
-    // 事件被服务端剥了音频体（音频走 RTC 音轨），但事件本身仍标志「开口」；
+    // RTC 模式：事件被服务端剥了音频体（音频走 RTC 音轨），事件本身标志「开口」；
+    // WS 音频模式：delta 带 base64 PCM，直接进 WebAudio 队列。
     // lvl = 服务端算好的响度，驱动星空/光环能量动画
+    if (!rtcEnabled && event.delta) wsPlayer.feed(event.delta);
     if (typeof event.lvl === "number") SPACE.ttsLevel = event.lvl;
     if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
   },
   "response.audio.delta"(event) {
+    if (!rtcEnabled && event.delta) wsPlayer.feed(event.delta);
     if (typeof event.lvl === "number") SPACE.ttsLevel = event.lvl;
     if (avatarState === "listening" || avatarState === "thinking") setAvatarState("speaking");
   },
   "response.done"() {
     assistantLine = null;
     if (avatarState === "thinking") setAvatarState("idle");  // 无音频回复的兜底
-    // 「说话中」的收尾等 vox.playback_done（生成完 ≠ 播完，服务端按播放队列清空发）；
-    // 45s 兜底防它因任何原因没到
+    // 「说话中」的收尾：RTC 模式等服务端 vox.playback_done（生成完 ≠ 播完）；
+    // WS 音频模式服务端不知道本地队列，按本地剩余时长自行收尾（45s 兜底防挂死）
     if (avatarState === "speaking") {
       clearTimeout(pbGuard);
+      const wait = rtcEnabled ? 45000 : Math.min(wsPlayer.remainingMs() + 200, 45000);
       pbGuard = setTimeout(() => {
         if (avatarState === "speaking") setAvatarState("idle");
-      }, 45000);
+      }, wait);
     }
   },
   "vox.playback_done"() {
-    // 服务端：回复音频真正播完了
+    // 服务端：回复音频真正播完了（仅 RTC 模式可信；WS 音频模式它在生成完即触发，
+    // 本地队列还在播，忽略之，收尾交给 response.done 的本地计时）
+    if (!rtcEnabled) return;
     clearTimeout(pbGuard);
     if (avatarState === "speaking") setAvatarState("idle");
   },
@@ -727,8 +779,10 @@ els.micBtn.onclick = async () => {
     els.micBtn.classList.add("live");
     els.orb.classList.remove("state-loading");
     setIndicator();  // 开麦：🎙 聆听中 + 光环同步
-    // 用户手势已发生：解锁/补播 RTC 音频元素（autoplay 策略要手势）
+    // 用户手势已发生：解锁/补播 RTC 音频元素（autoplay 策略要手势）；
+    // WS 音频模式的播放 ctx 也趁手势预热，免得首个 delta 落在 suspended 态
     ensureRtcAudio();
+    if (!rtcEnabled) wsPlayer.ensure();
   } catch (e) {
     addLine("sys", `⚠ 麦克风不可用: ${e.message}`);
     els.micBtn.textContent = "🎙";
