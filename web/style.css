@@ -266,3 +266,19 @@ body {
   color: var(--muted);
   opacity: 0.8;
 }
+
+/* 数字人视频画布（SoulX-FlashHead 帧流，首帧到达时才显示） */
+.avatar-stage {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+.avatar-stage[hidden] { display: none; }
+#avatar-canvas {
+  width: min(62vw, 380px);
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: 20px;
+  background: #0b1020;
+  box-shadow: 0 8px 40px rgba(80, 120, 255, 0.25);
+}

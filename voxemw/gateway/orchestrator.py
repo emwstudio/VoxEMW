@@ -177,7 +177,8 @@ class Session:
                  personas: dict, default_persona: str,
                  rtc_pacer=None, rtc_ice_servers: list | None = None,
                  hotwords: list | None = None,
-                 vision: VisionService | None = None):
+                 vision: VisionService | None = None,
+                 avatar_cfg: dict | None = None):
 
         self.browser = browser_ws
         self.s2s_url = s2s_url
@@ -199,6 +200,12 @@ class Session:
         # 视觉（妮儿的眼睛）：llama-server 边车，用户说「看看」时抓帧描述注入
         self._vision = vision
         self._vision_busy = False
+        # 数字人（SoulX-FlashHead 渲染服务）：TTS 音频按播放时刻 paced 喂过去，
+        # JPEG 帧流原样转发浏览器。无界队列：生成期进速 2.5x，paced 出速 1x，
+        # 一条回复内必然追平（30s 回复峰值不到 1MB）
+        self._avatar_cfg = avatar_cfg or {}
+        self._avatar_ws = None
+        self._avatar_feed: asyncio.Queue[bytes] = asyncio.Queue()
 
     async def _notify_playback_done(self) -> None:
         """等 pacer 里的音频真正播完，再通知前端（vox.playback_done）。
@@ -250,11 +257,24 @@ class Session:
         async with s2s:
             self.s2s = s2s
             await self._apply_persona(self.persona_id)
+            if self._avatar_cfg.get("enabled"):
+                try:
+                    import websockets
+
+                    self._avatar_ws = await websockets.connect(
+                        self._avatar_cfg["url"], max_size=16 * 1024 * 1024)
+                    logger.info("avatar 渲染服务已接: %s", self._avatar_cfg["url"])
+                except Exception as e:
+                    logger.warning("avatar 服务连不上（%r），本轮纯语音", e)
+                    self._avatar_ws = None
             await self._send_status()
             tasks = [
                 asyncio.create_task(self._browser_to_s2s()),
                 asyncio.create_task(self._s2s_to_browser()),
             ]
+            if self._avatar_ws is not None:
+                tasks.append(asyncio.create_task(self._avatar_pacer()))
+                tasks.append(asyncio.create_task(self._avatar_frames()))
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()
@@ -266,6 +286,11 @@ class Session:
         """关闭本会话（新浏览器连接顶掉旧连接时调用）。
         断开 s2s 释放管线槽位；转发协程随连接关闭自行退出。"""
         logger.info("close() 被调用: s2s=%s", self.s2s)
+        if self._avatar_ws is not None:
+            try:
+                await self._avatar_ws.close()
+            except Exception:
+                pass
         if self.s2s is not None:
             try:
                 await self.s2s.close()
@@ -277,6 +302,10 @@ class Session:
             "type": "vox.status",
             "persona": self.persona_id,
             "rtc": {"enabled": self.pacer is not None, "ice_servers": self._rtc_ice_servers},
+            "avatar": {
+                "enabled": self._avatar_ws is not None,
+                "audio_lead_ms": self._avatar_cfg.get("audio_lead_ms", 0),
+            },
         }))
 
     async def _apply_persona(self, persona_id: str) -> None:
@@ -285,6 +314,32 @@ class Session:
         await self.s2s.send(json.dumps(build_session_update(persona_id, persona["text"])))
 
     # ── 两条转发协程 ──
+
+    async def _avatar_pacer(self) -> None:
+        """TTS 音频按【播放时刻】paced 喂渲染服务（32000 B/s 实时节奏）。
+
+        这是音画同步的关键：TTS 生成比实时快（RTF~0.4），直接灌会让数字人
+        的嘴比声音快一整个缓冲。paced 后视频帧滞后喂入时间线 ~1.2s
+        （0.96s 攒 chunk + 0.27s 生成），前端把音频播放压后同量
+        （avatar.audio_lead_ms）即对齐。"""
+        while True:
+            pcm = await self._avatar_feed.get()
+            try:
+                await self._avatar_ws.send(json.dumps(
+                    {"type": "audio", "pcm": base64.b64encode(pcm).decode()}))
+            except Exception as e:
+                logger.info("avatar 喂入失败，退出 pacer: %r", e)
+                return
+            await asyncio.sleep(len(pcm) / 2 / 16000)
+
+    async def _avatar_frames(self) -> None:
+        """渲染服务 JPEG 帧 → 浏览器（二进制帧原样转发）。"""
+        try:
+            async for message in self._avatar_ws:
+                if isinstance(message, (bytes, bytearray)):
+                    await self.browser.send_bytes(bytes(message))
+        except Exception as e:
+            logger.info("avatar 帧流断开: %r", e)
 
     async def _browser_to_s2s(self) -> None:
         async for message in self.browser:
@@ -394,6 +449,17 @@ class Session:
                             "type": "conversation.item.create",
                             "item": {"type": "message", "role": "assistant",
                                      "content": [{"type": "output_text", "text": prefix}]}}))
+                if self._avatar_ws is not None:
+                    # 打断：渲染服务清队 + 喂入队列清空（嘴立刻回到待机）
+                    while not self._avatar_feed.empty():
+                        try:
+                            self._avatar_feed.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    try:
+                        await self._avatar_ws.send(json.dumps({"type": "flush"}))
+                    except Exception:
+                        pass
                 if self.pacer is not None:
                     # 打断：清 RTC 音频队列。response.done 后 was_speaking 已归 False，
                     # 打断回报不触发，但 flush 照样会清掉没播完的尾巴——无日志时
@@ -407,6 +473,8 @@ class Session:
 
             if pcm is not None and self.pacer is not None:
                 self.pacer.feed_audio(pcm)  # RTC 音频轨
+            if pcm is not None and self._avatar_ws is not None:
+                self._avatar_feed.put_nowait(pcm)  # 数字人渲染（paced 协程消费）
             if relay:
                 if pcm is not None:
                     event = dict(event)
@@ -534,7 +602,8 @@ def create_app(config: dict):
             pacer = AudioPacer(audio_lead=lead)
         session = Session(ws, s2s_url, personas, default_persona,
                           rtc_pacer=pacer, rtc_ice_servers=rtc_ice_servers,
-                          hotwords=stt_hotwords, vision=vision)
+                          hotwords=stt_hotwords, vision=vision,
+                          avatar_cfg=config.get("avatar"))
         current_session["session"] = session
         try:
             await session.run()

@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829a";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829b";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -262,10 +262,29 @@ function stopMic() {
 // WebAudio 队列无缝续播；打断（speech_started）本地清队，与服务端 flush 同步。
 // ---------------------------------------------------------------------------
 
+// 数字人视频帧渲染：JPEG 二进制帧 → ImageBitmap → canvas。
+// 逐帧到达即画（~25fps），乱序/丢帧按最新帧覆盖——UDP 式语义，不排队。
+let avatarEnabled = false;  // vox.status 下发：渲染服务在线
+const avatarCanvas = { ctx2d: null, lastBitmap: null };
+
+function drawAvatarFrame(blob) {
+  const canvas = document.getElementById("avatar-canvas");
+  if (!canvas) return;
+  if (!avatarCanvas.ctx2d) avatarCanvas.ctx2d = canvas.getContext("2d");
+  createImageBitmap(blob).then((bmp) => {
+    const prev = avatarCanvas.lastBitmap;
+    avatarCanvas.lastBitmap = bmp;
+    avatarCanvas.ctx2d.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    if (prev) prev.close();
+  }).catch(() => {});
+}
+
 const wsPlayer = {
   ctx: null,
   nextStart: 0,        // AudioContext 时间轴上下一块的起播时刻
   sources: new Set(),  // 已排程未播完的源（打断时批量 stop）
+  leadSec: 0,          // 新回复播放压后（数字人渲染滞后对齐，vox.status 下发）
+  _needLead: true,     // 每条回复的首块才加 lead（句间卡顿不重加）
   ensure() {
     if (!this.ctx) this.ctx = new AudioContext();
     if (this.ctx.state === "suspended") this.ctx.resume().catch(() => {});
@@ -282,7 +301,12 @@ const wsPlayer = {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(ctx.destination);
-    const t = Math.max(ctx.currentTime + 0.03, this.nextStart);  // 30ms  jitter 余量
+    // 新回复首块加 lead（数字人渲染固有滞后 ~1.2s 的对齐量）；
+    // 队列续播/句间小卡只加 30ms jitter 余量
+    const base = this._needLead ? ctx.currentTime + 0.03 + this.leadSec
+                                : ctx.currentTime + 0.03;
+    this._needLead = false;
+    const t = Math.max(base, this.nextStart);
     src.start(t);
     this.nextStart = t + buf.duration;
     this.sources.add(src);
@@ -294,6 +318,7 @@ const wsPlayer = {
     }
     this.sources.clear();
     this.nextStart = 0;
+    this._needLead = true;  // 打断后的新回复重新计 lead
   },
   remainingMs() {
     if (!this.ctx || !this.nextStart) return 0;
@@ -450,6 +475,7 @@ const realtimeHandlers = {
   },
   "response.done"() {
     assistantLine = null;
+    wsPlayer._needLead = true;  // 下条回复首块重新计 lead
     if (avatarState === "thinking") setAvatarState("idle");  // 无音频回复的兜底
     // 「说话中」的收尾：RTC 模式等服务端 vox.playback_done（生成完 ≠ 播完）；
     // WS 音频模式服务端不知道本地队列，按本地剩余时长自行收尾（45s 兜底防挂死）
@@ -488,6 +514,12 @@ function handleTextMessage(data) {
       startRTC().catch((e) =>
         addLine("sys", `⚠ WebRTC 建连异常: ${e.message}`)
       );
+    }
+    // 数字人：渲染服务在线时显示视频画布 + 设音频播放 lead（唇形对齐）
+    avatarEnabled = !!(event.avatar && event.avatar.enabled);
+    if (avatarEnabled) {
+      wsPlayer.leadSec = ((event.avatar && event.avatar.audio_lead_ms) || 0) / 1000;
+      document.getElementById("avatar-stage").hidden = false;
     }
     return;
   }
@@ -728,8 +760,9 @@ function connect() {
   ws.onmessage = (msg) => {
     if (typeof msg.data === "string") {
       handleTextMessage(msg.data);
+    } else if (msg.data instanceof Blob) {
+      drawAvatarFrame(msg.data);  // 数字人 JPEG 帧（SoulX 渲染服务）
     }
-    // 服务端只发文本事件（音频全走 RTC），忽略任何二进制消息
   };
 }
 
