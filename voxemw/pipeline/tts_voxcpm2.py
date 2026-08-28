@@ -19,6 +19,8 @@ import numpy as np
 from speech_to_speech.baseHandler import BaseHandler
 from speech_to_speech.pipeline.messages import AUDIO_RESPONSE_DONE
 
+from voxemw.pipeline.launch import strip_stage_directions
+
 logger = logging.getLogger(__name__)
 
 VCPM_SAMPLE_RATE = 48000
@@ -81,7 +83,9 @@ class VoxCPM2TTSHandler(BaseHandler):
         return int16.tobytes()
 
     def process(self, tts_input):
-        text = (getattr(tts_input, "text", "") or "").strip()
+        # 句子级入口（上游按 sentence batch 下发，括号对完整）：
+        # 剥掉 LLM 偶尔冒出的舞台指示（（乐）（拍大腿）），防照字面念出。
+        text = strip_stage_directions(getattr(tts_input, "text", "") or "").strip()
         if not text:
             yield AUDIO_RESPONSE_DONE
             return
