@@ -22,6 +22,13 @@ class Qwen3ASRArgs:
     qwen3asr_placeholder: str = field(default="", metadata={"help": "内部占位，勿传"})
 
 
+@dataclass
+class VoxCPM2TTSArgs:
+    """TTS 积木的 CLI 参数空壳（同理必须独立于 STT 的参数类）。"""
+
+    voxcpm2_placeholder: str = field(default="", metadata={"help": "内部占位，勿传"})
+
+
 def register_custom_backends(config: dict) -> None:
     """把 qwen3asr（STT）与 voxcpm2（TTS，4090 满血版）注册进上游后端注册表（幂等）。"""
     from speech_to_speech.backend_registry import (
@@ -67,6 +74,6 @@ def register_custom_backends(config: dict) -> None:
 
         TTS_BACKENDS.setdefault("voxcpm2", BackendSpec(
             name="voxcpm2", kind="tts",
-            config_type=Qwen3ASRArgs,  # 参数走 YAML，复用空壳类防重复选项冲突
+            config_type=VoxCPM2TTSArgs,  # 参数走 YAML，独立空壳类防选项串冲突
             create_handler=_create_tts_voxcpm2,
         ))
