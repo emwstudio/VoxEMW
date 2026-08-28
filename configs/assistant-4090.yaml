@@ -7,7 +7,7 @@ vad:
   min_silence_ms: 64
 stt:
   backend: qwen3asr
-  model_name: Qwen/Qwen3-ASR-1.7B
+  model_name: Qwen/Qwen3-ASR-1.7B-hf  # -hf 变体：transformers 原生 key 布局（非 -hf 是 thinker.* 布局，5.x 加载丢权重）
   device: cuda
   language: Chinese
   hotwords:
