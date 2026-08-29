@@ -59,6 +59,67 @@ def test_load_config_resolves_persona(tmp_path, assets):
     assert demo["ref_text"] == "逐字台词内容"
 
 
+def test_load_config_voice_control_without_ref(tmp_path):
+    # 音色设计模式：无 ref_wav/ref_text，只有 voice_control 描述词 → 放行
+    persona = tmp_path / "witch.md"
+    persona.write_text(
+        "---\nname: 女巫\nvoice_control: 优雅阴郁的女巫嗓音\n---\n你是女巫。\n",
+        encoding="utf-8",
+    )
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(
+        f"""
+vad: {{ backend: silero, min_silence_ms: 600 }}
+stt: {{ backend: qwen3asr, model_name: Qwen/Qwen3-ASR-0.6B-hf }}
+llm: {{ backend: chat-completions, model_name: m, base_url: http://x, api_key_env: TEST_LLM_KEY }}
+tts: {{ backend: voxcpm2, model_name: openbmb/VoxCPM2 }}
+personas:
+  default: witch
+  list:
+    witch: {persona}
+server:
+  port: 8000
+""",
+        encoding="utf-8",
+    )
+    config = load_config(cfg)
+    witch = config["personas"]["resolved"]["witch"]
+    assert witch["voice_control"] == "优雅阴郁的女巫嗓音"
+    assert witch["ref_wav"] is None
+
+
+def test_load_config_no_ref_no_voice_control_exits(tmp_path):
+    persona = tmp_path / "bare.md"
+    persona.write_text("---\nname: 裸人设\n---\n正文。\n", encoding="utf-8")
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(
+        f"""
+vad: {{}}
+stt: {{}}
+llm: {{}}
+tts: {{}}
+personas:
+  default: bare
+  list:
+    bare: {persona}
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        load_config(cfg)
+
+
+def test_parse_persona_file_voice_control(tmp_path):
+    p = tmp_path / "witch.md"
+    p.write_text(
+        "---\nname: 女巫\nlabel: 镜\nvoice_control: 沙哑华丽\n---\n正文。\n",
+        encoding="utf-8",
+    )
+    persona = parse_persona_file(p)
+    assert persona["voice_control"] == "沙哑华丽"
+    assert persona["label"] == "镜"
+
+
 def test_load_config_missing_block_exits(tmp_path, assets):
     cfg = tmp_path / "bad.yaml"
     cfg.write_text("vad: {}\nstt: {}\n", encoding="utf-8")

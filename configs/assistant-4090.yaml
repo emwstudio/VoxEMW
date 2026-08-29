@@ -11,10 +11,8 @@ stt:
   device: cuda
   language: Chinese
   hotwords:
-  - 河南妮儿
-  - 恁
-  - 中
-  - 得劲
+  - 魔镜女巫
+  - 魔镜
   corrections: {}
 llm:
   backend: chat-completions
@@ -50,9 +48,9 @@ avatar:
   # （WS 音频模式专用，RTC 模式用 ?alead= 参数）
   audio_lead_ms: 1300
 personas:
-  default: henannier
+  default: mojingnvwu
   list:
-    henannier: personas/henannier.md
+    mojingnvwu: personas/mojingnvwu.md
 server:
   s2s_host: 127.0.0.1
   s2s_port: 8765

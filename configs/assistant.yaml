@@ -29,7 +29,7 @@ stt:
   language: Chinese
   # 热词偏置（概率性，务必克制：词越多模型越容易把没说的话脑补成词表内容——
   # 2026-08-23 实测 10 个词时整段幻觉出词表。只留人设核心词 + corrections 兜底）
-  hotwords: [河南妮儿, 恁, 中, 得劲]
+  hotwords: [魔镜女巫, 魔镜]
   # 确定性后校正（转写后直接替换）：同音误写的兜底修复
   corrections: {}
 
@@ -67,20 +67,21 @@ rtc:
   browser_ice_servers: []
 
 # ---------------------------------------------------------------------------
-# 视觉（妮儿的眼睛）：llama-server 边车跑 MiniCPM-V-4.6（GGUF + mmproj，
-# 见 scripts/start_mac.sh 的 VLM 段）。用户说「看看/这是啥」时抓帧描述注入
+# 视觉（魔镜女巫的眼睛）：llama-server 边车跑 MiniCPM-V-4.6（GGUF + mmproj，
+# 见 scripts/start_mac.sh 的 VLM 段）。DeepSeek 调 look_at_camera 工具时
+# 取最新浏览器帧描述注入
 # ---------------------------------------------------------------------------
 vision:
   enabled: true
   vlm_url: http://127.0.0.1:18099
 
 # ---------------------------------------------------------------------------
-# 人设注册表（河南妮儿唯一）
+# 人设注册表（魔镜女巫唯一）
 # ---------------------------------------------------------------------------
 personas:
-  default: henannier
+  default: mojingnvwu
   list:
-    henannier: personas/henannier.md
+    mojingnvwu: personas/mojingnvwu.md
 
 # ---------------------------------------------------------------------------
 # 服务参数

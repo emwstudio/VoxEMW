@@ -1,4 +1,4 @@
-"""VoxEMW —— 实时语音聊天助手（语音 + VRM 数字人，河南妮儿人设）。
+"""VoxEMW —— 实时语音聊天助手（语音 + VRM 数字人，魔镜女巫人设）。
 
 基于 huggingface/speech-to-speech 的 VAD → STT → LLM → TTS 实时语音管线
 （pip 依赖 + 运行时注册自定义积木），外加浏览器网关

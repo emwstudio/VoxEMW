@@ -2,7 +2,7 @@
 # VoxEMW 4090 满血版一键启动（AutoDL 实例）
 # 用法：bash scripts/start_4090.sh [stop]
 # 四个进程：语音管线(py312) → SoulX 渲染(flashhead) → VLM 边车(py312) → orchestrator(py312)
-set -u
+# 注意：不能 set -u —— flashhead env 的 conda activate.d 脚本引用未定义变量会直接崩
 cd /root/voxemw
 source /root/miniconda3/etc/profile.d/conda.sh
 export HF_HOME=/root/autodl-tmp/hf HF_HUB_DISABLE_XET=1 VOXEMW_CONFIG=configs/assistant-4090.yaml
@@ -22,7 +22,7 @@ echo "  日志 logs/pipeline.log（warmup 约 3-4 分钟）"
 
 echo "[2/3] SoulX 数字人渲染（flashhead）..."
 conda activate flashhead
-PYTHONPATH=/root/voxemw nohup python voxemw/avatar/soulx_server.py > logs/soulx.log 2>&1 &
+PYTHONPATH=/root/voxemw nohup python voxemw/avatar/soulx_server.py --cond-image /root/voxemw/assets/mojingnvwu/face_ref.jpg > logs/soulx.log 2>&1 &
 echo "  日志 logs/soulx.log（引擎加载 ~1 分钟）"
 
 echo "[3/4] MiniCPM-V 视觉边车（vlm env，transformers 5.7.0 钉版，36 切片 OCR 档）..."

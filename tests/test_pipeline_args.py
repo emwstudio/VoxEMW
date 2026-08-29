@@ -134,6 +134,25 @@ def test_stt_setup_kwargs_qwen3asr_defaults():
     assert kwargs["corrections"] == {"鸟儿": "妮儿"}
 
 
+def test_tts_setup_kwargs_voxcpm2_voice_design():
+    from voxemw.pipeline.args import tts_setup_kwargs
+
+    config = _config()
+    config["tts"] = {"backend": "voxcpm2", "model_name": "openbmb/VoxCPM2", "device": "cuda"}
+    persona = config["personas"]["resolved"]["demo"]
+    persona["voice_control"] = "优雅阴郁的女巫嗓音"
+    kwargs = tts_setup_kwargs(config)
+    assert kwargs["model_name"] == "openbmb/VoxCPM2"
+    assert kwargs["voice_control"] == "优雅阴郁的女巫嗓音"
+    # 人设仍带 ref 时照常下发（handler 内部 voice_control 优先）
+    assert kwargs["ref_audio"] == "/abs/demo/ref.wav"
+    # 纯设计模式人设（无 ref_wav）→ 不下发 ref
+    persona["ref_wav"] = None
+    kwargs = tts_setup_kwargs(config)
+    assert "ref_audio" not in kwargs
+    assert kwargs["voice_control"] == "优雅阴郁的女巫嗓音"
+
+
 def test_setup_kwargs_reject_unknown_backend():
     config = _config()
     config["stt"]["backend"] = "whisper"

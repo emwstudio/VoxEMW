@@ -124,12 +124,17 @@ def tts_setup_kwargs(config: dict) -> dict:
     if tts.get("backend") != "voxcpm2":
         raise ValueError(f"不支持的 tts.backend: {tts.get('backend')!r}")
     persona = config["personas"]["resolved"][config["personas"]["default"]]
-    return {
+    kwargs = {
         "model_name": tts.get("model_name", "openbmb/VoxCPM2"),
-        "ref_audio": str(persona["ref_wav"]),
-        "ref_text": persona["ref_text"],
+        "voice_control": str(persona.get("voice_control") or ""),
+        "voice_seed": int(persona.get("voice_seed") or 42),
         "cfg_value": float(tts.get("cfg_value", 2.0)),
         "inference_timesteps": int(tts.get("inference_timesteps", 10)),
         "device": str(tts.get("device", "cuda")),
     }
+    # 克隆素材仅在人设声明了 ref_wav 时下发（voice_control 设计模式不需要）
+    if persona.get("ref_wav"):
+        kwargs["ref_audio"] = str(persona["ref_wav"])
+        kwargs["ref_text"] = persona["ref_text"]
+    return kwargs
 

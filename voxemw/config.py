@@ -47,11 +47,13 @@ def _resolve_path(value: str) -> Path:
 
 
 def parse_persona_file(path: Path) -> dict:
-    """解析 personas/<id>.md：frontmatter（name/ref_wav/ref_text）+ 正文。
+    """解析 personas/<id>.md：frontmatter（name/ref_wav/ref_text/voice_control）+ 正文。
 
-    返回 {name, label, text, ref_wav, ref_text}；无 frontmatter 时 name 用文件名、
-    素材字段为 None（由调用方决定缺素材是否报错）。label 为界面短名（角标用），
-    缺省回退 name。ref_text 此处仍是文件路径，读文件内容替换发生在 load_config 里。
+    返回 {name, label, text, ref_wav, ref_text, voice_control}；无 frontmatter 时
+    name 用文件名、素材字段为 None（由调用方决定缺素材是否报错）。label 为界面
+    短名（角标用），缺省回退 name。voice_control 为 VoxCPM2 音色设计描述词
+    （设计模式不需要 ref 素材）。ref_text 此处仍是文件路径，读文件内容替换
+    发生在 load_config 里。
     """
     raw = path.read_text(encoding="utf-8")
     meta: dict = {}
@@ -72,6 +74,8 @@ def parse_persona_file(path: Path) -> dict:
         "text": body.strip(),
         "ref_wav": meta.get("ref_wav"),
         "ref_text": meta.get("ref_text"),
+        "voice_control": meta.get("voice_control"),
+        "voice_seed": meta.get("voice_seed"),
     }
 
 
@@ -80,7 +84,8 @@ def load_config(path: Path) -> dict:
 
     - vad/stt/llm/tts 积木段原样保留
     - personas.list 每个 id 指向 persona md 文件：解析 frontmatter，
-      ref_wav 必须存在；ref_text 读入文本内容（TTS 克隆要逐字台词文本）
+      ref_wav/ref_text（克隆素材，有则校验存在并读入文本）或
+      voice_control（VoxCPM2 音色设计描述词）二者至少其一
     """
     try:
         import yaml
@@ -111,20 +116,22 @@ def load_config(path: Path) -> dict:
         persona = parse_persona_file(p)
 
         ref_wav = persona.get("ref_wav")
-        if not ref_wav:
-            sys.exit(f"ERROR: personas.{pid}（{p}）frontmatter 缺少 ref_wav")
-        wav_path = _resolve_path(str(ref_wav))
-        if not wav_path.is_file():
-            sys.exit(f"ERROR: personas.{pid}.ref_wav 文件不存在: {wav_path}")
-        persona["ref_wav"] = str(wav_path)
+        if ref_wav:
+            wav_path = _resolve_path(str(ref_wav))
+            if not wav_path.is_file():
+                sys.exit(f"ERROR: personas.{pid}.ref_wav 文件不存在: {wav_path}")
+            persona["ref_wav"] = str(wav_path)
 
-        ref_text = persona.get("ref_text")
-        if not ref_text:
-            sys.exit(f"ERROR: personas.{pid}（{p}）frontmatter 缺少 ref_text（TTS 克隆需要逐字台词）")
-        text_path = _resolve_path(str(ref_text))
-        if not text_path.is_file():
-            sys.exit(f"ERROR: personas.{pid}.ref_text 文件不存在: {text_path}")
-        persona["ref_text"] = text_path.read_text(encoding="utf-8").strip()
+            ref_text = persona.get("ref_text")
+            if not ref_text:
+                sys.exit(f"ERROR: personas.{pid}（{p}）frontmatter 缺少 ref_text（TTS 克隆需要逐字台词）")
+            text_path = _resolve_path(str(ref_text))
+            if not text_path.is_file():
+                sys.exit(f"ERROR: personas.{pid}.ref_text 文件不存在: {text_path}")
+            persona["ref_text"] = text_path.read_text(encoding="utf-8").strip()
+        elif not persona.get("voice_control"):
+            # 无克隆素材时必须有 voice_control 描述词（VoxCPM2 音色设计模式）
+            sys.exit(f"ERROR: personas.{pid}（{p}）frontmatter 需要 ref_wav（克隆）或 voice_control（音色设计）")
 
         resolved[pid] = persona
 
