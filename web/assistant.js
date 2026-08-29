@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829h";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829i";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -328,12 +328,13 @@ function drawAvatarFrame(blob) {
   }).catch(() => {});
 }
 
-// 开头提前放映曲线：模型的张嘴过渡天生要 ~0.4s（运动连续性，从闭嘴续接），
-// 若严格按 aTime 放映，第一个音的前 0.4s 嘴是闭的（「第一个音嘴不动」）。
-// 解法（用户拍板「等一等」）：开头 0.8s 内帧最多提前 0.4s 上屏——
-// 声音还在 lead 期嘴就开始张，出声时嘴已张开，0.8s 后收敛到精确同步。
-const AVATAR_WARP_AHEAD = 0.4;  // 开头最大提前量（秒）
-const AVATAR_WARP_RANGE = 0.8;  // 收敛区间（秒）
+// 开头提前放映曲线：模型的张嘴过渡天生要 ~0.5s（运动连续性，从闭嘴续接），
+// 若严格按 aTime 放映，第一个音的前半段嘴是闭的（「第一个音嘴不动」）。
+// 解法（用户拍板「等一等」）：过渡段（0.6s）的帧整体提前 1.2s 放映——
+// 首帧就绪（~0.65s）嘴就开始动，出声时嘴张到一半，0.6s 收敛到精确同步。
+// 实测锚点：montage 显示嘴在 aTime 0.4~0.6s 张开，warp(0.4)=0 正对出声点。
+const AVATAR_WARP_AHEAD = 1.2;  // 开头最大提前量（秒）——与模型张嘴过渡段等长
+const AVATAR_WARP_RANGE = 0.6;  // 收敛区间（秒）：过渡帧在这段时间内铺完
 function avatarWarp(a) {
   return a < AVATAR_WARP_RANGE
     ? a - AVATAR_WARP_AHEAD * (1 - a / AVATAR_WARP_RANGE)
