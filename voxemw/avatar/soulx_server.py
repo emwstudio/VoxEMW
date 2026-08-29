@@ -214,11 +214,17 @@ class RenderEngine:
                         n_fed, self._fed_samples, self._consumed_samples,
                         was_in_response)
             if n_fed > 0:
-                # 段内含回复音频：逐帧时间戳（回复内相对秒，原点差值）；
-                # 尾巴补静音的帧顺延（收嘴动作紧跟语音尾，不排队）
+                # 段内含回复音频：逐帧时间戳（回复内相对秒，原点差值）。
+                # 但补静音的尾帧【不打顺延时间戳】——否则声音播完后嘴还在
+                # 放「未来的帧」（用户实测：音频播完嘴还在动 ~1s）。
+                # 尾帧标待机帧：声音一停就地按真实节奏收嘴回待机。
                 base = (consumed_before - self._response_fed_origin) / self.sample_rate
-                a_times = [base + (i * self.sample_rate / self.fps) / self.sample_rate
-                           for i in range(self.slice_len)]
+                samples_per_frame = self.sample_rate // self.fps
+                fed_slots = -(-n_fed // samples_per_frame)  # 向上取整
+                a_times = [
+                    base + i / self.fps if i < fed_slots else IDLE_ATIME
+                    for i in range(self.slice_len)
+                ]
             else:
                 a_times = None  # 纯待机段
             self.chunk_q.put((chunk, a_times))  # 满则阻塞（背压）
