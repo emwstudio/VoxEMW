@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829f";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829g";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -357,6 +357,7 @@ function startAvatarLoop() {
         avatarCanvas.lastBitmap = show.bmp;
         avatarCanvas.ctx2d.drawImage(show.bmp, 0, 0, canvas.width, canvas.height);
         if (prev) prev.close();
+        if (show.aTime >= 0) avatarDrawDbg(show.aTime, pos);  // 上屏侧排障
       }
     }
     if (avatarCanvas.queue.length > 0) {
@@ -364,6 +365,20 @@ function startAvatarLoop() {
     }
   };
   avatarCanvas.rafId = requestAnimationFrame(tick);
+}
+
+// 排障：语音帧实际上屏时刻（前 40 帧全报），排完删
+const _drawBuf = [];
+function avatarDrawDbg(aTime, pos) {
+  if (_drawBuf.length >= 40) return;
+  _drawBuf.push([Math.round(aTime * 100) / 100, Math.round(pos * 100) / 100]);
+  if (_drawBuf.length === 40 || _drawBuf.length === 10) {
+    fetch("/rtc/debug", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ drawDbg: true, draws: _drawBuf.slice() }),
+    }).catch(() => {});
+  }
 }
 
 // 排障：帧排程采样上报（每 25 帧取 1），排完删
