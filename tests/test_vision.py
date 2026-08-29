@@ -1,24 +1,10 @@
-"""视觉模块单测：触发词判定 + VisionService 流程（HTTP 全 mock，不碰真相机/服务）。"""
+"""视觉模块单测：VisionService 流程（HTTP 全 mock，不碰真相机/服务）。"""
 
 import asyncio
 import sys
 import types
 
-from voxemw.gateway.vision import VisionService, is_vision_trigger
-
-
-def test_trigger_phrases():
-    # 该触发的
-    assert is_vision_trigger("妮儿，看看这是啥") is True
-    assert is_vision_trigger("你瞅瞅我这碗面中不中") is True
-    assert is_vision_trigger("你瞧瞧我穿这个得劲不") is True
-    assert is_vision_trigger("那是啥东西啊") is True
-    assert is_vision_trigger("帮我看看这个") is True
-    # 不该触发的
-    assert is_vision_trigger("我看着办吧") is False
-    assert is_vision_trigger("你看，我就说吧") is False
-    assert is_vision_trigger("今天吃啥") is False
-    assert is_vision_trigger("看书看得眼睛疼") is False
+from voxemw.gateway.vision import VisionService
 
 
 class _FakeResp:

@@ -36,19 +36,6 @@ def normalize_response_text(text: str) -> str:
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CAPTURE_BIN = REPO_ROOT / "scripts" / "bin" / "camera_capture"
 
-# 「让妮儿看看」触发词（宁缺毋滥，别把「你看/我觉得」误触发）
-TRIGGER_PHRASES = (
-    "看看", "看一下", "看一看", "瞅瞅", "瞧瞧",
-    "你看这", "你瞅这", "你瞧这", "你看我", "你瞅我", "你瞧我",
-    "这是啥", "那是啥", "这是什么", "那是什么",
-    "看得到", "看得见", "看见没", "认识这", "帮我看", "给我看看",
-)
-
-
-def is_vision_trigger(text: str) -> bool:
-    """用户这句话是不是在让助手「看」。"""
-    return any(p in text for p in TRIGGER_PHRASES)
-
 
 class VisionService:
     """llama-server 视觉边车客户端 + 摄像头采集。"""

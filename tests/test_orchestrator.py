@@ -8,6 +8,7 @@ from voxemw.gateway.orchestrator import (
     heard_prefix,
     is_echo,
     is_vocabulary_recitation,
+    parse_function_call_done,
 )
 
 
@@ -33,12 +34,36 @@ def test_heard_prefix_no_punctuation_keeps_raw_cut():
 
 
 def test_build_session_update():
-    event = build_session_update("henannier", "你是河南妮儿。")
+    event = build_session_update("mojingnvwu", "你是魔镜女巫。")
     assert event["type"] == "session.update"
     session = event["session"]
-    assert session["instructions"] == "你是河南妮儿。"
-    assert session["audio"]["output"]["voice"] == "henannier"
+    assert session["instructions"] == "你是魔镜女巫。"
+    assert session["audio"]["output"]["voice"] == "mojingnvwu"
     assert session["audio"]["input"]["turn_detection"]["interrupt_response"] is True
+    assert "tools" not in session  # 默认不声明视觉工具
+
+
+def test_build_session_update_vision_tool():
+    event = build_session_update("mojingnvwu", "你是魔镜女巫。", vision_tool=True)
+    tools = event["session"]["tools"]
+    assert len(tools) == 1
+    tool = tools[0]
+    assert tool["type"] == "function"
+    assert tool["name"] == "look_at_camera"
+    assert tool["description"]
+
+
+def test_parse_function_call_done():
+    # 正常的 tool call 完成事件
+    event = {"type": "response.function_call_arguments.done",
+             "name": "look_at_camera", "call_id": "call_123", "arguments": "{}"}
+    assert parse_function_call_done(event) == ("look_at_camera", "call_123")
+    # 非 tool call 事件 / 缺字段 → None
+    assert parse_function_call_done({"type": "response.done"}) is None
+    assert parse_function_call_done({"type": "response.function_call_arguments.done",
+                                     "name": "x"}) is None
+    assert parse_function_call_done({"type": "response.function_call_arguments.done",
+                                     "call_id": "c"}) is None
 
 
 def test_classify_audio_delta_ga_name():
@@ -103,15 +128,15 @@ def test_is_echo_passes_short_real_answers():
 
 
 def test_is_vocabulary_recitation():
-    hw = ["河南妮儿", "恁", "中"]
+    hw = ["魔镜女巫", "魔镜"]
     # 噪音被词表脑补的整段背诵 → 掐
-    assert is_vocabulary_recitation("河南妮儿，恁，中。", hw) is True
-    assert is_vocabulary_recitation("恁中", hw) is True
+    assert is_vocabulary_recitation("魔镜女巫，魔镜。", hw) is True
+    assert is_vocabulary_recitation("魔镜女巫魔镜", hw) is True
     # 单个热词（真人叫她）→ 放行
-    assert is_vocabulary_recitation("河南妮儿", hw) is False
+    assert is_vocabulary_recitation("魔镜女巫", hw) is False
     # 带残余的真实短句 → 放行
-    assert is_vocabulary_recitation("中啊", hw) is False
-    assert is_vocabulary_recitation("妮儿今晚吃啥", hw) is False
+    assert is_vocabulary_recitation("魔镜告诉我", hw) is False
+    assert is_vocabulary_recitation("魔镜今晚吃啥", hw) is False
     # 空/超短 → 放行
     assert is_vocabulary_recitation("", hw) is False
     assert is_vocabulary_recitation("嗯", hw) is False

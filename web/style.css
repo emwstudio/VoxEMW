@@ -1,20 +1,21 @@
-/* 良子语音助手 —— 星空电台（悬浮气泡 + 主角光环按钮 + 全屏星空） */
+/* 魔镜女巫语音助手 —— 紫金魔镜主题（古堡暗室 + 鎏金镜框 + 紫雾魔尘） */
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #070b1a;
-  --panel: rgba(16, 22, 44, 0.66);
-  --border: rgba(90, 110, 180, 0.35);
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #6aa5ff;
-  --live: #3fb950;
+  --bg: #150a24;
+  --panel: rgba(38, 20, 60, 0.66);
+  --border: rgba(212, 175, 55, 0.30);
+  --text: #f0e9f5;
+  --muted: #a393b8;
+  --accent: #d4af37;   /* 鎏金 */
+  --mist: #9d4edd;     /* 紫雾 */
+  --live: #9d4edd;
   --warn: #d29922;
 }
 
 body {
-  background: radial-gradient(ellipse at 50% 30%, #101736 0%, var(--bg) 70%);
+  background: radial-gradient(ellipse at 50% 30%, #2a1245 0%, var(--bg) 70%);
   color: var(--text);
   font-family: -apple-system, "PingFang SC", "Noto Sans CJK SC", sans-serif;
   min-height: 100vh;
@@ -22,7 +23,7 @@ body {
   justify-content: center;
 }
 
-/* 全屏星空：所有动态在 canvas 里，内容层浮在上面 */
+/* 全屏魔尘：所有动态在 canvas 里，内容层浮在上面 */
 #space {
   position: fixed;
   inset: 0;
@@ -40,7 +41,7 @@ body {
   height: 100dvh;
   padding: 16px;
   /* iOS 壳是全屏 WebView（ignoresSafeArea）：内容让出刘海/状态栏和 Home 条，
-     星空背景照常铺满；桌面浏览器这两个 env 值是 0，无影响 */
+     背景照常铺满；桌面浏览器这两个 env 值是 0，无影响 */
   padding-top: calc(14px + env(safe-area-inset-top));
   padding-bottom: calc(14px + env(safe-area-inset-bottom));
   display: flex;
@@ -55,11 +56,12 @@ body {
   justify-content: space-between;
 }
 .topbar h1 {
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
-  letter-spacing: 2px;
-  color: var(--muted);
-  text-shadow: 0 0 14px rgba(106, 165, 255, 0.35);
+  letter-spacing: 4px;
+  font-family: "Kaiti SC", "STKaiti", "KaiTi", "Songti SC", serif;  /* 古风衬线 */
+  color: var(--accent);
+  text-shadow: 0 0 16px rgba(212, 175, 55, 0.45);
 }
 .status {
   font-size: 12px;
@@ -67,11 +69,11 @@ body {
   padding: 2px 10px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(7, 11, 26, 0.6);
+  background: rgba(21, 10, 36, 0.6);
 }
-.status.live { color: var(--live); }
+.status.live { color: var(--mist); }
 .status.warn { color: var(--warn); }
-.status.state-listening { color: var(--live); animation: state-breathe 1.6s ease-in-out infinite; }
+.status.state-listening { color: var(--mist); animation: state-breathe 1.6s ease-in-out infinite; }
 .status.state-thinking { color: var(--warn); animation: state-breathe 1s ease-in-out infinite; }
 .status.state-speaking { color: var(--accent); animation: state-breathe 1.2s ease-in-out infinite; }
 @keyframes state-breathe {
@@ -101,11 +103,30 @@ body {
 .persona-chip.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: #0d1117;
+  color: #1a0b2e;
   font-weight: 600;
 }
 
-/* ── 字幕区：无框，气泡悬浮在星空上 ── */
+/* ── 字幕区：已隐藏（纯魔镜沉浸布局），DOM 保留作后台日志 ── */
+.transcript[hidden] { display: none; }
+
+/* 镜下提示行：系统消息（摄像头状态/错误/「魔镜正在看你」）的唯一出口 */
+.caption {
+  min-height: 1.4em;
+  text-align: center;
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.4s;
+}
+.caption.flash { opacity: 1; animation: caption-fade 4s ease-out; }
+@keyframes caption-fade {
+  0% { opacity: 0; }
+  8% { opacity: 1; }
+  70% { opacity: 1; }
+  100% { opacity: 0.35; }
+}
 .transcript {
   position: relative;
   flex: 1;
@@ -154,18 +175,18 @@ body {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
 }
-/* 良子：左侧青绿气泡 */
+/* 魔镜女巫：左侧紫雾气泡 */
 .line.assistant { justify-content: flex-start; }
 .line.assistant .bubble {
-  background: rgba(63, 185, 80, 0.10);
-  border: 1px solid rgba(63, 185, 80, 0.28);
+  background: rgba(157, 78, 221, 0.12);
+  border: 1px solid rgba(157, 78, 221, 0.34);
   border-bottom-left-radius: 4px;
 }
-/* 你：右侧蓝气泡 */
+/* 你：右侧鎏金气泡 */
 .line.user { justify-content: flex-end; }
 .line.user .bubble {
-  background: rgba(106, 165, 255, 0.12);
-  border: 1px solid rgba(106, 165, 255, 0.32);
+  background: rgba(212, 175, 55, 0.10);
+  border: 1px solid rgba(212, 175, 55, 0.30);
   border-bottom-right-radius: 4px;
 }
 /* 系统提示：居中淡色小字 */
@@ -175,7 +196,7 @@ body {
   font-size: 12px;
 }
 
-/* ── 主角光环按钮 ── */
+/* ── 主角光环按钮（紫水晶球）── */
 .controls { text-align: center; padding-top: 4px; }
 
 .orb {
@@ -196,46 +217,46 @@ body {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  border: 2px solid rgba(106, 165, 255, 0.4);
+  border: 2px solid rgba(157, 78, 221, 0.4);
   pointer-events: none;
-  box-shadow: 0 0 16px rgba(106, 165, 255, 0.15);
+  box-shadow: 0 0 16px rgba(157, 78, 221, 0.15);
   transition: border-color 0.25s, box-shadow 0.25s;
 }
-/* 聆听中：静态绿环 */
+/* 聆听中：静态紫环 */
 .orb.state-live::before {
-  border-color: rgba(63, 185, 80, 0.55);
-  box-shadow: 0 0 16px rgba(63, 185, 80, 0.2);
+  border-color: rgba(157, 78, 221, 0.55);
+  box-shadow: 0 0 16px rgba(157, 78, 221, 0.2);
 }
-/* 倾听中：静态亮绿环 */
+/* 倾听中：静态亮紫环 */
 .orb.state-listening::before {
-  border-color: rgba(63, 185, 80, 0.85);
-  box-shadow: 0 0 20px rgba(63, 185, 80, 0.3);
+  border-color: rgba(190, 120, 255, 0.85);
+  box-shadow: 0 0 20px rgba(157, 78, 221, 0.35);
 }
-/* 思考中/启动中：等待态专属——缩放波动（克制的光晕，与其余状态同风格） */
+/* 思考中/启动中：等待态专属——缩放波动（鎏金光晕） */
 .orb.state-thinking::before {
-  border-color: rgba(255, 190, 60, 0.85);
-  animation: orb-pulse 1.1s ease-in-out infinite, orb-glow-warn 1.1s ease-in-out infinite;
+  border-color: rgba(212, 175, 55, 0.85);
+  animation: orb-pulse 1.1s ease-in-out infinite, orb-glow-gold 1.1s ease-in-out infinite;
 }
 .orb.state-loading::before {
-  border-color: rgba(140, 190, 255, 0.85);
-  animation: orb-pulse 1.1s ease-in-out infinite, orb-glow-blue 1.1s ease-in-out infinite;
+  border-color: rgba(190, 120, 255, 0.85);
+  animation: orb-pulse 1.1s ease-in-out infinite, orb-glow-mist 1.1s ease-in-out infinite;
 }
 @keyframes orb-pulse {
   0%, 100% { transform: scale(1.0); }
   50% { transform: scale(1.1); }
 }
-@keyframes orb-glow-warn {
-  0%, 100% { box-shadow: 0 0 14px rgba(255, 190, 60, 0.25); }
-  50% { box-shadow: 0 0 26px rgba(255, 190, 60, 0.45); }
+@keyframes orb-glow-gold {
+  0%, 100% { box-shadow: 0 0 14px rgba(212, 175, 55, 0.25); }
+  50% { box-shadow: 0 0 26px rgba(212, 175, 55, 0.5); }
 }
-@keyframes orb-glow-blue {
-  0%, 100% { box-shadow: 0 0 14px rgba(140, 190, 255, 0.25); }
-  50% { box-shadow: 0 0 26px rgba(140, 190, 255, 0.45); }
+@keyframes orb-glow-mist {
+  0%, 100% { box-shadow: 0 0 14px rgba(157, 78, 221, 0.25); }
+  50% { box-shadow: 0 0 26px rgba(157, 78, 221, 0.5); }
 }
-/* 说话中：静态蓝环（用户拍板：只有等待态跳波动，说话态也安静） */
+/* 说话中：鎏金环 */
 .orb.state-speaking::before {
-  border-color: rgba(106, 165, 255, 0.85);
-  box-shadow: 0 0 20px rgba(106, 165, 255, 0.3);
+  border-color: rgba(212, 175, 55, 0.85);
+  box-shadow: 0 0 20px rgba(212, 175, 55, 0.35);
 }
 
 .mic-btn {
@@ -244,19 +265,19 @@ body {
   width: 92px;
   height: 92px;
   border-radius: 50%;
-  border: none;
+  border: 1px solid rgba(212, 175, 55, 0.35);
   font-size: 34px;
-  background: var(--accent);
-  color: #0d1117;
+  background: linear-gradient(145deg, #7b2cbf 0%, #5a189a 60%, #3c096c 100%);  /* 紫水晶 */
+  color: #ffd97a;
   cursor: pointer;
   transition: transform 0.12s, background 0.2s;
-  box-shadow: 0 6px 24px rgba(106, 165, 255, 0.35);
+  box-shadow: 0 6px 24px rgba(123, 44, 191, 0.45), inset 0 1px 6px rgba(255, 255, 255, 0.15);
 }
 .mic-btn:active { transform: scale(0.94); }
 .mic-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .mic-btn.live {
-  background: var(--live);
-  box-shadow: 0 6px 28px rgba(63, 185, 80, 0.4);
+  background: linear-gradient(145deg, #9d4edd 0%, #7b2cbf 60%, #5a189a 100%);
+  box-shadow: 0 6px 28px rgba(157, 78, 221, 0.55), inset 0 1px 6px rgba(255, 255, 255, 0.2);
 }
 .mic-btn.loading { opacity: 1; cursor: wait; }
 
@@ -267,18 +288,109 @@ body {
   opacity: 0.8;
 }
 
-/* 数字人视频画布（SoulX-FlashHead 帧流，首帧到达时才显示） */
+/* ── 魔镜舞台：一面魔镜，女巫在镜中，你映在镜前 ── */
 .avatar-stage {
+  flex: 1;                      /* 吃满顶栏与麦克风之间的空间，镜面垂直居中（整体下移） */
   display: flex;
   justify-content: center;
-  padding: 8px 0 4px;
+  align-items: center;
+  padding: 12px 0 4px;
 }
 .avatar-stage[hidden] { display: none; }
-#avatar-canvas {
-  width: min(62vw, 380px);
-  height: auto;
+
+/* 魔镜本体：圆形镜面 + 鎏金雕花框 + 紫雾缭绕（聊天气泡已移除，镜面居中放大） */
+.magic-mirror {
+  position: relative;
+  width: min(88vw, 62dvh, 560px);
   aspect-ratio: 1;
-  border-radius: 20px;
-  background: #0b1020;
-  box-shadow: 0 8px 40px rgba(80, 120, 255, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
+/* 紫雾：镜框外圈的呼吸雾光 */
+.magic-mirror::before {
+  content: "";
+  position: absolute;
+  inset: -14%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(157, 78, 221, 0.35) 55%, transparent 72%);
+  filter: blur(10px);
+  animation: mist-breathe 4.2s ease-in-out infinite;
+  pointer-events: none;
+}
+/* 玻璃反光：一道斜向的光泽，让镜面像真玻璃 */
+.magic-mirror::after {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  border-radius: 50%;
+  background: linear-gradient(115deg, transparent 42%,
+    rgba(255, 255, 255, 0.05) 46%, rgba(255, 255, 255, 0.11) 50%,
+    rgba(255, 255, 255, 0.05) 54%, transparent 58%);
+  z-index: 2;
+  pointer-events: none;
+}
+@keyframes mist-breathe {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.05); }
+}
+#avatar-canvas {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;                 /* 圆形镜面 */
+  object-fit: cover;
+  background: #1a0b2e;
+  border: 5px solid #d4af37;          /* 鎏金框 */
+  outline: 2px solid rgba(120, 80, 20, 0.8);
+  outline-offset: 2px;
+  box-shadow: 0 0 34px rgba(212, 175, 55, 0.28), 0 8px 40px rgba(0, 0, 0, 0.5);
+}
+/* 魔镜开口：鎏金流光 */
+.magic-mirror.state-speaking #avatar-canvas {
+  animation: mirror-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes mirror-shimmer {
+  0%, 100% { box-shadow: 0 0 34px rgba(212, 175, 55, 0.28), 0 8px 40px rgba(0, 0, 0, 0.5); }
+  50% { box-shadow: 0 0 54px rgba(212, 175, 55, 0.55), 0 8px 40px rgba(0, 0, 0, 0.5); }
+}
+/* 魔镜看你（look_at_camera）：一道紫光扫过镜面 */
+.magic-mirror.scrying #avatar-canvas {
+  animation: mirror-scry 1.2s ease-out;
+}
+@keyframes mirror-scry {
+  0% { box-shadow: 0 0 34px rgba(212, 175, 55, 0.28), 0 8px 40px rgba(0, 0, 0, 0.5); }
+  30% { box-shadow: 0 0 70px rgba(190, 120, 255, 0.9), 0 0 30px rgba(157, 78, 221, 0.6), 0 8px 40px rgba(0, 0, 0, 0.5); }
+  100% { box-shadow: 0 0 34px rgba(212, 175, 55, 0.28), 0 8px 40px rgba(0, 0, 0, 0.5); }
+}
+
+/* 镜前的你：映在魔镜右下角的小倒影（半透明 + 暗角，像站在镜前被映进去） */
+.water-mirror {
+  position: absolute;
+  right: 5%;
+  bottom: 5%;
+  width: 27%;
+  aspect-ratio: 1;
+  z-index: 3;
+}
+.water-mirror::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 24px rgba(21, 10, 36, 0.8);  /* 暗角 */
+  pointer-events: none;
+}
+#cam-preview {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  transform: scaleX(-1);   /* 预览镜像（自拍视角）；上传给 VLM 的帧不镜像 */
+  border: 2px solid rgba(212, 175, 55, 0.6);
+  filter: saturate(0.85) brightness(0.9);
+  opacity: 0.88;
+  background: #1a0b2e;
+}
+#cam-preview[hidden] { display: none; }

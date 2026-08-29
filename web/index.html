@@ -7,35 +7,42 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="theme-color" content="#070b1a" />
-  <title>河南妮儿语音助手 · DeepSeek 驱动</title>
-  <link rel="stylesheet" href="/static/style.css?v=20260829c" />
+  <meta name="theme-color" content="#150a24" />
+  <title>魔镜女巫语音助手 · DeepSeek 驱动</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260830c" />
 </head>
 <body>
   <canvas id="space"></canvas>
   <main class="stage">
     <header class="topbar">
-      <h1>河南妮儿语音助手</h1>
+      <h1>魔镜女巫语音助手</h1>
       <span id="status" class="status">未连接</span>
     </header>
 
     <nav id="persona-bar" class="persona-bar" aria-label="人设切换"></nav>
 
     <section class="avatar-stage" id="avatar-stage" hidden>
-      <canvas id="avatar-canvas" width="512" height="512"></canvas>
+      <div class="magic-mirror" id="magic-mirror">
+        <canvas id="avatar-canvas" width="512" height="512"></canvas>
+        <div class="water-mirror">
+          <video id="cam-preview" muted playsinline hidden></video>
+        </div>
+      </div>
     </section>
 
-    <section class="transcript" id="transcript" aria-live="polite">
+    <section class="transcript" id="transcript" aria-live="polite" hidden>
       <p class="empty-hint" id="empty-hint">说点什么吧…</p>
     </section>
+
+    <p class="caption" id="caption"></p>
 
     <footer class="controls">
       <div class="orb" id="orb">
         <button id="mic-btn" class="mic-btn" disabled aria-label="开始对话">🎙</button>
       </div>
-      <p class="hint">点一下开聊，随时可以打断他 · DeepSeek 驱动</p>
+      <p class="hint">点一下唤醒魔镜，随时可以打断她 · DeepSeek 驱动</p>
     </footer>
   </main>
-  <script src="/static/assistant.js?v=20260829a"></script>
+  <script src="/static/assistant.js?v=20260830c"></script>
 </body>
 </html>

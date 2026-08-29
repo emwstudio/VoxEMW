@@ -127,7 +127,9 @@ class RenderEngine:
                 if self._stop.is_set():
                     return pending, None
                 # 待机只补 0.2s 小片静音（而非整 chunk），真实语音到达
-                # 最坏 0.2s 就能抢占待机动画，不整 chunk 陪绑
+                # 最坏 0.2s 就能抢占待机动画，不整 chunk 陪绑。
+                # 注意：timeout/切片 0.2s 同时是 paced 喂入的抖动吸收器——
+                # 缩到 0.05 会把事件循环的喂入抖动误判成断流垫静音，口型全乱
                 need = min(self.chunk_samples - len(pending),
                            int(0.2 * self.sample_rate))
                 pending = np.concatenate(
@@ -177,25 +179,34 @@ class RenderEngine:
             if self.emit_q.full():
                 try:
                     self.emit_q.get_nowait()  # 播不过来就丢最旧组，嘴跳新词
+                    logger.warning("滴灌积压：丢最旧帧组（口型跳变）")
                 except queue.Empty:
                     pass
             self.emit_q.put(frames)
 
     def _emit_loop(self) -> None:
         """滴灌线程：帧组按 25fps 逐帧推出（旧版 24 帧瞬发+定格，
-        唇形与平滑音频对不上的根因；串行循环版 drip 又恒为 0）。"""
+        唇形与平滑音频对不上的根因；串行循环版 drip 又恒为 0）。
+
+        时钟用累积 deadline（next_t += 帧间隔），不用逐帧 sleep(间隔)：
+        后者每帧都多吃一点调度开销（实测 24.6fps < 25），视频内容轴比
+        实时慢 ~1.6%，长回复末尾口型可见落后。"""
         frame_interval = 1.0 / self.fps
+        next_t = None
         while not self._stop.is_set():
             try:
                 frames = self.emit_q.get(timeout=0.2)
             except queue.Empty:
+                next_t = None  # 断档后重新锚定
                 continue
             for i in range(frames.shape[0]):
-                target = time.perf_counter() + frame_interval
+                now = time.perf_counter()
+                if next_t is None:
+                    next_t = now
+                if now < next_t:
+                    self._stop.wait(next_t - now)
                 self.on_frames(self._to_jpeg(frames[i]))
-                delay = target - time.perf_counter()
-                if delay > 0:
-                    self._stop.wait(delay)
+                next_t += frame_interval  # 落后则下一帧自动追平，误差不累积
 
     def run(self) -> None:
         """三段流水线：攒段/生成/滴灌各吃满自己的节奏互不拖累。
@@ -292,7 +303,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="SoulX-FlashHead 数字人渲染服务")
     parser.add_argument("--cond-image",
-                        default="/root/voxemw/assets/henannier/face_ref.jpg")
+                        default="/root/voxemw/assets/mojingnvwu/face_ref.jpg")
     parser.add_argument("--ckpt", default="/root/autodl-tmp/models/SoulX")
     parser.add_argument("--wav2vec", default="/root/autodl-tmp/models/wav2vec2-base-960h")
     parser.add_argument("--host", default="127.0.0.1")

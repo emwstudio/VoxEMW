@@ -39,7 +39,7 @@ import sys
 import time
 from pathlib import Path
 
-from voxemw.gateway.vision import VisionService, is_vision_trigger
+from voxemw.gateway.vision import VisionService
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
@@ -66,25 +66,50 @@ INTERRUPT_EVENTS = {
 }
 
 
-def build_session_update(persona_id: str, persona_text: str) -> dict:
+def build_session_update(persona_id: str, persona_text: str,
+                         vision_tool: bool = False) -> dict:
     """注入人设的 session.update：instructions = 人设正文，voice = persona id
-    （TTS voices 表 key）。"""
-    return {
-        "type": "session.update",
-        "session": {
-            "type": "realtime",
-            "instructions": persona_text,
-            "audio": {
-                "input": {
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "interrupt_response": True,
-                    }
-                },
-                "output": {"voice": persona_id},
+    （TTS voices 表 key）。vision_tool=True 时声明 look_at_camera 工具——
+    DeepSeek 自主决定「看」，tool call 事件由 orchestrator 执行（VLM 描述）。
+    """
+    session = {
+        "type": "realtime",
+        "instructions": persona_text,
+        "audio": {
+            "input": {
+                "turn_detection": {
+                    "type": "server_vad",
+                    "interrupt_response": True,
+                }
             },
+            "output": {"voice": persona_id},
         },
     }
+    if vision_tool:
+        session["tools"] = [{
+            "type": "function",
+            "name": "look_at_camera",
+            "description": (
+                "透过面前的摄像头亲眼看一看用户和当前画面。用户让你看东西、"
+                "向你展示物品、问你「我美不美/我穿什么」，或你想看着主人说话时"
+                "调用。返回画面的文字描述。"
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        }]
+    return {"type": "session.update", "session": session}
+
+
+def parse_function_call_done(event: dict) -> tuple[str, str] | None:
+    """从 response.function_call_arguments.done 事件取 (工具名, call_id)。
+
+    非 tool call 完成事件返回 None（纯函数，便于单测）。"""
+    if event.get("type") != "response.function_call_arguments.done":
+        return None
+    name = event.get("name")
+    call_id = event.get("call_id")
+    if not name or not call_id:
+        return None
+    return str(name), str(call_id)
 
 
 def classify_s2s_event(event: dict) -> tuple[bool, bool, bytes | None]:
@@ -192,13 +217,16 @@ class Session:
         self.s2s = None
         self._assistant_speaking = False  # 本轮回复有音频在播（打断回报判定用）
         self._resp_had_content = False  # 本轮回复是否有任何文本/音频产出（空回复兜底用）
+        self._resp_had_tool_call = False  # 本轮是否发起过工具调用（空回复兜底豁免用）
+        self._resp_active = False  # 上游是否有 response 在进行（工具回注防冲突用）
         self._empty_nudged = False      # 本轮是否已追问过（防追问死循环）
         self._reply_transcript = ""     # 本轮回复的转写文本（打断回报估算用）
         self._reply_audio_samples = 0   # 本轮回复已生成音频采样数（同上）
         self._assistant_history: list[str] = []  # 近 2 轮完整回复（回声判定用）
         self._suppress_ghost = False    # 回声回合压制中：丢弃该回合全部 response 事件
         self._playback_watch = None     # 播放清空监听任务（response.done ≠ 播完）
-        # 视觉（妮儿的眼睛）：llama-server 边车，用户说「看看」时抓帧描述注入
+        # 视觉（魔镜女巫的眼睛）：VLM 边车，DeepSeek 调 look_at_camera 时
+        # 取最新浏览器帧描述，function_call_output 回注
         self._vision = vision
         self._vision_busy = False
         # 数字人（SoulX-FlashHead 渲染服务）：TTS 音频按播放时刻 paced 喂过去，
@@ -315,32 +343,38 @@ class Session:
     async def _apply_persona(self, persona_id: str) -> None:
         persona = self.personas[persona_id]
         self.persona_id = persona_id
-        await self.s2s.send(json.dumps(build_session_update(persona_id, persona["text"])))
+        await self.s2s.send(json.dumps(build_session_update(
+            persona_id, persona["text"], vision_tool=self._vision is not None)))
 
-    async def _vision_turn(self) -> None:
-        """「妮儿看看」回合：掐掉自动回复 → 取最新浏览器帧 → VLM 描述 → 注入重答。
+    async def _tool_vision_turn(self, call_id: str) -> None:
+        """look_at_camera 工具执行：取最新浏览器帧 → VLM 描述 → function_call_output 回注。
 
-        帧太旧（>10s）等于没看见，放弃；描述失败静默——视觉是增强，
-        不能拖累主链路。"""
+        帧太旧（>10s）等于没看见；描述失败给一个紫雾圆场文案让模型自己兜底——
+        视觉是增强，不能拖累主链路。"""
+        if self._vision_busy:
+            return
         self._vision_busy = True
         try:
-            await self.s2s.send(json.dumps({"type": "response.cancel"}))
             desc = None
             if self._vision is not None and self._last_frame is not None:
                 b64, ts = self._last_frame
                 if time.time() - ts < 10:
                     desc = await self._vision.describe_b64(b64)
-            if not desc:
-                logger.info("视觉：无可用帧或描述失败，放弃视觉回合")
-                return
-            logger.info("视觉：看到 %r", desc[:60])
+            if desc:
+                logger.info("视觉（工具调用）：看到 %r", desc[:60])
+                output = desc
+            else:
+                logger.info("视觉（工具调用）：无可用帧或描述失败，回圆场文案")
+                output = "（镜中紫雾翻涌，这次什么都没看清）"
             await self.s2s.send(json.dumps({
                 "type": "conversation.item.create",
-                "item": {"type": "message", "role": "user", "content": [{
-                    "type": "input_text",
-                    "text": f"（你现在亲眼看到了用户给你看的东西：{desc}。"
-                            "用你人设的口吻自然回应，就像你真的看到了一样，"
-                            "别提到「描述」「图片」这些词）"}]}}))
+                "item": {"type": "function_call_output",
+                         "call_id": call_id, "output": output}}))
+            if self._resp_active:
+                # 等待 VLM 期间用户又开口：新 response 已在进行，
+                # 它的上下文已含上面的工具结果，再发 response.create 会冲突
+                logger.info("视觉（工具调用）：用户已抢话，跳过 response.create")
+                return
             await self.s2s.send(json.dumps({"type": "response.create"}))
         finally:
             self._vision_busy = False
@@ -354,14 +388,38 @@ class Session:
         实时，无需时间戳。TTS 生成比实时快（RTF~0.5），paced 后视频
         滞后喂入 ~1.2s（0.96s 攒 chunk + 0.25s 生成），前端音频压后
         同量（avatar.audio_lead_ms=1300）即对齐。"""
+        idle_start = None  # 观测埋点：paced 时钟断流检测（生成没跟上→渲染垫静音）
+        fed_seconds = 0.0  # 观测埋点：本轮已喂音频时长
+        feed_t0 = None     # 观测埋点：本轮喂入起始时刻（滞后 = 已喂 - 用时）
+        next_t = None      # 虚拟发送时刻表（deadline 调度，sleep 误差不累积）
         while True:
             pcm = await self._avatar_feed.get()
+            now = time.monotonic()
+            if idle_start is not None:
+                gap = now - idle_start
+                # 0.25s 以内是正常调度抖动；>15s 是回复间空闲，不算断流
+                if 0.25 < gap < 15:
+                    logger.info("avatar 喂入断流 %.2fs（句间生成缺口，渲染端垫静音）", gap)
+                if gap >= 15:
+                    fed_seconds, feed_t0, next_t = 0.0, None, None  # 新回复，重新锚定
+                idle_start = None
+            if feed_t0 is None:
+                feed_t0 = next_t = now
+            dur = len(pcm) / 2 / 16000
+            fed_seconds += dur
+            if int(fed_seconds) // 30 > int(fed_seconds - dur) // 30:
+                logger.info("paced 进度：已喂 %.1fs 音频，用时 %.1fs，滞后 %.2fs",
+                            fed_seconds, now - feed_t0, now - feed_t0 - fed_seconds)
+            if now < next_t:
+                await asyncio.sleep(next_t - now)  # 提前取到块（RTF<1 常态）：睡到预定时刻
+            # 落后于时刻表（事件循环抖动/生成断流）：立即发，下一块自动追平
             try:
                 await self._avatar_ws.send(json.dumps(
                     {"type": "audio", "pcm": base64.b64encode(pcm).decode()}))
             except Exception as e:
                 logger.info("avatar 喂入失败（重连窗口，丢帧不丢声）: %r", e)
-            await asyncio.sleep(len(pcm) / 2 / 16000)
+            next_t += dur
+            idle_start = time.monotonic()
 
     async def _avatar_frames(self) -> None:
         """渲染服务 JPEG 帧 → 浏览器（二进制帧原样转发）。
@@ -432,6 +490,15 @@ class Session:
                     self._suppress_ghost = False  # 幽灵回合结束/真人新开口：解除
                 elif etype.startswith("response."):
                     continue  # 幽灵回合事件全丢：不上屏、不出声、不计数
+            # DeepSeek 工具调用「看」：look_at_camera → 取帧 VLM 描述回注。
+            # 事件照常转发浏览器（前端可显示「正在看你」状态）
+            call = parse_function_call_done(event)
+            if call is not None:
+                name, call_id = call
+                self._resp_had_tool_call = True  # tool 回合无文本/音频属正常，豁免空回复兜底
+                if name == "look_at_camera" and self._vision is not None:
+                    logger.info("视觉（工具调用）：模型发起 look_at_camera")
+                    asyncio.create_task(self._tool_vision_turn(call_id))
             if etype == "conversation.item.input_audio_transcription.completed":
                 heard = event.get("transcript", "")
                 if is_vocabulary_recitation(heard, self._hotwords):
@@ -444,16 +511,14 @@ class Session:
                     self._suppress_ghost = True
                     await self.s2s.send(json.dumps({"type": "response.cancel"}))
                     continue  # 转写不上屏
-                # 视觉触发：「妮儿看看」——掐掉自动回复，看到内容后注入重答
-                if (self._vision is not None and not self._vision_busy
-                        and is_vision_trigger(heard)):
-                    asyncio.create_task(self._vision_turn())
             # 空回复兜底追踪：本轮有任何文本/音频产出即视为有内容
             if etype == "response.created":
+                self._resp_active = True
                 if self._reply_transcript:
                     self._assistant_history = (
                         self._assistant_history + [self._reply_transcript])[-2:]
                 self._resp_had_content = False
+                self._resp_had_tool_call = False
                 self._reply_transcript = ""     # 本轮回复转写（打断回报用）
                 self._reply_audio_samples = 0   # 本轮回复已生成音频采样
             if etype == "response.output_audio_transcript.delta":
@@ -469,6 +534,7 @@ class Session:
             ):
                 self._resp_had_content = True
             elif etype == "response.done":
+                self._resp_active = False
                 self._assistant_speaking = False
                 # 生成完毕 ≠ 播放完毕：pacer 队列里还有没播的音频。
                 # 通知前端播放真正清空（或即将清空）的时刻，前端据此收「说话中」
@@ -477,7 +543,8 @@ class Session:
                 elif self._playback_watch is None or self._playback_watch.done():
                     self._playback_watch = asyncio.create_task(self._notify_playback_done())
                 status = (event.get("response") or {}).get("status")
-                if (not self._resp_had_content and not self._empty_nudged
+                if (not self._resp_had_content and not self._resp_had_tool_call
+                        and not self._empty_nudged
                         and status in (None, "completed")):
                     # LLM 偶发只吐 1 个 token → 清理后无声。
                     # 追问一次让模型重答，把抽风变成一句话的事

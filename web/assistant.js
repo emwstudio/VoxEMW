@@ -1,9 +1,9 @@
-/* 河南妮儿语音助手前端（星空 + VRM 数字人）。
+/* 魔镜女巫语音助手前端（魔尘 + 紫金魔镜主题）。
  *
  * 下行音频：WebRTC——POST /rtc/offer 建连，音频（Opus）走 RTP 轨，
  *           挂隐藏 <audio> 播放（Chrome 对 RTC 音轨的解码只在媒体元素上才启动）。
  * WS /ws：上行麦克风/控制事件；下行转写/状态事件（音频体已剥离，走音轨）。
- * 星空：全屏 canvas 跟随对话状态——idle 无序漂移 / listening 向中心收拢的
+ * 魔尘：全屏 canvas 跟随对话状态——idle 无序漂移 / listening 向中心收拢的
  *       专注波动（随麦克风能量）/ speaking 随 RTC 音频能量的径向声波。
  */
 
@@ -263,8 +263,9 @@ function stopMic() {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// 视觉（妮儿的眼睛）：摄像头帧定时上传，服务端在你说「看看」时取最新帧
-// 喂给 MiniCPM-V。640px JPEG q0.7 ≈ 40KB / 1.5s，带宽可忽略。
+// 视觉（魔镜女巫的眼睛）：摄像头帧定时上传，DeepSeek 调 look_at_camera 时
+// 服务端取最新帧喂 MiniCPM-V。640px JPEG q0.7 ≈ 40KB / 1.5s，带宽可忽略。
+// 同一股流同时挂 #cam-preview（女巫旁边并列显示，CSS 镜像）。
 // 权限被拒/无摄像头静默降级（视觉是增强，不能影响对话）。
 // ---------------------------------------------------------------------------
 const visionCam = { stream: null, video: null, canvas: null, timer: null };
@@ -279,10 +280,11 @@ async function startVisionCam() {
     addLine("sys", `⚠ 摄像头不可用（${e.message}），「看看」功能关闭`);
     return;
   }
-  const video = document.createElement("video");
+  const video = document.getElementById("cam-preview") || document.createElement("video");
   video.muted = true;
   video.playsInline = true;
   video.srcObject = visionCam.stream;
+  video.hidden = false;
   await video.play().catch(() => {});
   visionCam.video = video;
   visionCam.canvas = document.createElement("canvas");
@@ -301,7 +303,6 @@ async function startVisionCam() {
       body: JSON.stringify({ frame: b64 }),
     }).catch(() => {});
   }, 1500);
-  addLine("sys", "📷 摄像头已就绪，说「妮儿看看」她就会看");
 }
 
 // 数字人视频帧渲染：JPEG 帧到达即画（V1 架构：渲染端已按 25fps 滴灌，
@@ -379,6 +380,16 @@ const wsPlayer = {
 // ---------------------------------------------------------------------------
 
 function addLine(cls, text) {
+  // 系统消息只上镜下提示行（聊天气泡已隐藏，transcript 仅作后台日志）
+  if (cls === "sys") {
+    const cap = document.getElementById("caption");
+    if (cap) {
+      cap.textContent = text;
+      cap.classList.remove("flash");
+      void cap.offsetWidth;  // 重启动画
+      cap.classList.add("flash");
+    }
+  }
   // 首条消息出现时摘掉空态提示
   document.getElementById("empty-hint")?.remove();
   const div = document.createElement("div");
@@ -389,7 +400,7 @@ function addLine(cls, text) {
     // 结构：div.line > img.avatar + div.bubble > 文本（有头像不带昵称）
     const img = document.createElement("img");
     img.className = "avatar";
-    img.src = cls === "user" ? "/static/avatars/wo.jpeg" : "/static/avatars/henannier.png";
+    img.src = cls === "user" ? "/static/avatars/wo.jpeg" : "/static/avatars/mojingnvwu.png";
     img.alt = "";
     img.onerror = () => { img.style.display = "none"; };  // 克隆仓库无个人照片时不破洞
     const bubble = document.createElement("div");
@@ -432,25 +443,25 @@ function setIndicator() {
   const el = els.status;
   let orbState = "";
   if (!wsConnected) {
-    el.textContent = "已断开";
+    el.textContent = "魔镜沉睡中";
     el.className = "status warn";
   } else if (!mic) {
-    el.textContent = "已连接";
+    el.textContent = "魔镜已苏醒";
     el.className = "status";
   } else if (avatarState === "listening") {
-    el.textContent = "👂 倾听中…";
+    el.textContent = "👂 魔镜聆听中…";
     el.className = "status state-listening";
     orbState = "state-listening";
   } else if (avatarState === "thinking") {
-    el.textContent = "🤔 思考中…";
+    el.textContent = "🔮 紫雾翻涌…";
     el.className = "status state-thinking";
     orbState = "state-thinking";
   } else if (avatarState === "speaking") {
-    el.textContent = "🔊 说话中";
+    el.textContent = "🪞 魔镜开口";
     el.className = "status state-speaking";
     orbState = "state-speaking";
   } else {
-    el.textContent = "🎙 聆听中";
+    el.textContent = "🎙 魔镜待命中";
     el.className = "status live";
     orbState = "state-live";
   }
@@ -462,6 +473,9 @@ function setIndicator() {
 
 function setAvatarState(state) {
   avatarState = state;
+  // 魔镜开口时镜面泛起鎏金流光
+  const mm = document.getElementById("magic-mirror");
+  if (mm) mm.classList.toggle("state-speaking", state === "speaking");
   setIndicator();
 }
 
@@ -543,6 +557,18 @@ const realtimeHandlers = {
     clearTimeout(pbGuard);
     if (avatarState === "speaking") setAvatarState("idle");
   },
+  "response.function_call_arguments.done"(event) {
+    // 魔镜看你：她调用 look_at_camera 时镜面扫过一道紫光
+    if (event.name !== "look_at_camera") return;
+    const mm = document.getElementById("magic-mirror");
+    if (mm) {
+      mm.classList.remove("scrying");
+      void mm.offsetWidth;  // 重启动画
+      mm.classList.add("scrying");
+      setTimeout(() => mm.classList.remove("scrying"), 1300);
+    }
+    addLine("sys", "🔮 魔镜正在看你…");
+  },
   error(event) {
     addLine("sys", `⚠ ${(event.error && event.error.message) || "未知错误"}`);
   },
@@ -579,11 +605,11 @@ function handleTextMessage(data) {
 }
 
 // ---------------------------------------------------------------------------
-// 星空背景：全屏 canvas，跟随对话状态（avatarState）的三种动态
+// 魔尘背景：全屏 canvas，跟随对话状态（avatarState）的三种动态
 //   idle      无人说话：无序漂移 + 闪烁 + 朝本位弱回弹
 //   listening 你在说话：径向声波随你的音量跳动（麦克风 RMS 驱动）+ 有界内流收拢
-//   thinking  良子在想：有界内流随呼吸深浅变化（锚定本位，不会无限缩向中心）
-//   speaking  良子说话：径向声波随她的音量跳动（响度由服务端随音频事件下发，
+//   thinking  女巫在想：有界内流随呼吸深浅变化（锚定本位，不会无限缩向中心）
+//   speaking  女巫说话：径向声波随她的音量跳动（响度由服务端随音频事件下发，
 //             不再用客户端 WebAudio 分析器——RTC 重连/自动播放挂起/WebKit 都会弄哑它）
 // ---------------------------------------------------------------------------
 
@@ -616,11 +642,13 @@ function initSpace() {
         x, y,
         hx: x,                // 本位：收拢以此为中心锚点，保证有界（防越聊越缩成一团）
         hy: y,
-        vx: (Math.random() - 0.5) * 0.18,   // 无序漂移速度
-        vy: (Math.random() - 0.5) * 0.18,
+        vx: (Math.random() - 0.5) * 0.12,   // 魔尘漂移速度（比星空更缓，古堡空气感）
+        vy: (Math.random() - 0.5) * 0.12,
         r: 0.5 + Math.random() * 1.3,       // 基础半径
         p: Math.random() * Math.PI * 2,     // 闪烁相位
         s: 0.4 + Math.random() * 1.2,       // 闪烁速率
+        // 魔尘双色：七成紫雾、三成鎏金
+        c: Math.random() < 0.7 ? "200, 160, 255" : "235, 210, 140",
       };
     });
   };
@@ -700,7 +728,7 @@ function tickSpace(t) {
     const rad = st.r * (1 + boost * 0.9);
     g.beginPath();
     g.arc(rx, ry, rad, 0, Math.PI * 2);
-    g.fillStyle = `rgba(190, 214, 255, ${alpha.toFixed(3)})`;
+    g.fillStyle = `rgba(${st.c}, ${alpha.toFixed(3)})`;
     g.fill();
   }
   requestAnimationFrame(tickSpace);
