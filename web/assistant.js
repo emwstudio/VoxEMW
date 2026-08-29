@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829n";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829p";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -334,18 +334,16 @@ function drawAvatarFrame(blob) {
   }).catch(() => {});
 }
 
-// 开头「原速渐张」策略（用户定稿：要自然慢张嘴，不要定格）：
-// 模型的张嘴过渡 ~0.5s（运动连续性，从闭嘴续接），官方实现同款特性。
-// 过渡帧从【首帧实际到达时刻】起按原速 25fps 播放——lead 1.35s 保证
-// 窗口 ≥ 过渡段（RTF 0.57 时首帧 0.8s 到，窗口 0.55s），渐张动画
-// 恰好在出声瞬间播完：嘴自然张开，不定格不加速。RTF 尖峰时渐张
-// 略晚完成（最差开口略迟），但绝不塌缩跳帧。
+// 开头「准点渐张」策略：模型的张嘴过渡 ~0.5s（运动连续性，从闭嘴续接）。
+// 过渡段提前 0.5s 起跑、原速播放，最后一帧恰好落在出声点（pos=0）；
+// 同步段从 aTime 0.5 起按 aTime 精确对齐——两段【无缝相接】。
+// （上一版过渡段终点和同步段起点之间有 0.5s 无帧空窗，嘴会在
+// ~1s 处定格一顿——用户实测抓到的停顿就是它。）
 const AVATAR_ONSET_S = 0.5;  // 模型张嘴过渡段长度（秒，montage 实测）
 function avatarWarp(a) {
-  const onset = avatarCanvas.onsetPos ?? -0.55;  // 首帧实际到达的 pos
   return a < AVATAR_ONSET_S
-    ? onset + a                                  // 过渡帧：到达起按原速播
-    : Math.max(a, onset + AVATAR_ONSET_S);       // 过后：帧级精确同步
+    ? a - AVATAR_ONSET_S  // 过渡段：pos∈[-0.5,0]，原速渐张，出声点收束
+    : a;                  // 同步段：帧级精确对齐，与过渡段无缝相接
 }
 
 function startAvatarLoop() {
