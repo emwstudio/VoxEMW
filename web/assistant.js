@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829i";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829j";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -328,17 +328,17 @@ function drawAvatarFrame(blob) {
   }).catch(() => {});
 }
 
-// 开头提前放映曲线：模型的张嘴过渡天生要 ~0.5s（运动连续性，从闭嘴续接），
-// 若严格按 aTime 放映，第一个音的前半段嘴是闭的（「第一个音嘴不动」）。
-// 解法（用户拍板「等一等」）：过渡段（0.6s）的帧整体提前 1.2s 放映——
-// 首帧就绪（~0.65s）嘴就开始动，出声时嘴张到一半，0.6s 收敛到精确同步。
-// 实测锚点：montage 显示嘴在 aTime 0.4~0.6s 张开，warp(0.4)=0 正对出声点。
-const AVATAR_WARP_AHEAD = 1.2;  // 开头最大提前量（秒）——与模型张嘴过渡段等长
-const AVATAR_WARP_RANGE = 0.6;  // 收敛区间（秒）：过渡帧在这段时间内铺完
+// 开头提前放映曲线：模型的张嘴过渡天生要 ~0.5s（运动连续性，从闭嘴续接）。
+// 过渡帧【按原速】铺进 lead 窗口（首帧就绪 ~0.65s → 出声 1.2s，窗口 0.55s），
+// 出声瞬间过渡正好播完（嘴是开的）——过渡帧必须按原速播：
+// 上一版把它们拉伸到 1s+（等效 ~8fps），用户看到的就是「前两秒卡顿」。
+// 帧晚到（RTF 尖峰）时自动塌缩成「最新到点帧」，平滑降级不卡死。
+const AVATAR_ONSET_S = 0.5;    // 模型张嘴过渡段长度（秒，montage 实测）
+const AVATAR_ONSET_KEY0 = -0.55; // aTime=0 帧的放映点（= 首帧就绪时刻，pos 轴）
 function avatarWarp(a) {
-  return a < AVATAR_WARP_RANGE
-    ? a - AVATAR_WARP_AHEAD * (1 - a / AVATAR_WARP_RANGE)
-    : a;
+  return a < AVATAR_ONSET_S
+    ? a * (0.55 / AVATAR_ONSET_S) + AVATAR_ONSET_KEY0  // 原速 23fps 铺满窗口
+    : a;                                                // 过渡后帧级精确同步
 }
 
 function startAvatarLoop() {
