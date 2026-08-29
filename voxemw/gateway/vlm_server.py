@@ -17,6 +17,9 @@ import io
 import logging
 import time
 
+from fastapi import FastAPI, Request  # 模块级：__future__ annotations 下局部 import 的类型串解析不到
+from fastapi.responses import JSONResponse
+
 logger = logging.getLogger("vlm_server")
 
 MODEL_ID = "openbmb/MiniCPM-V-4.6"
@@ -70,9 +73,6 @@ def describe_image(pil_image, prompt: str, max_tokens: int = 120) -> str:
 
 
 def create_app():
-    from fastapi import FastAPI, Request
-    from fastapi.responses import JSONResponse
-
     app = FastAPI()
 
     @app.get("/health")
