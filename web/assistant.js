@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829j";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829k";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -309,7 +309,7 @@ async function startVisionCam() {
 // rAF 循环按播放时钟（ctx.currentTime - responseStartCtx）取「到点的
 // 最新帧」上屏——落后自动跳帧追齐，不倒序、不扎堆、不受解码快慢影响。
 let avatarEnabled = false;  // vox.status 下发：渲染服务在线
-const avatarCanvas = { ctx2d: null, lastBitmap: null, queue: [], rafId: 0 };
+const avatarCanvas = { ctx2d: null, lastBitmap: null, queue: [], rafId: 0, onsetPos: null };
 
 function drawAvatarFrame(blob) {
   const canvas = document.getElementById("avatar-canvas");
@@ -324,6 +324,12 @@ function drawAvatarFrame(blob) {
       .then((b) => { item.bmp = b; })
       .catch(() => { item.bmp = "bad"; });
     avatarCanvas.queue.push(item);  // 到达序 = 时间戳序
+    if (aTime >= 0 && avatarCanvas.onsetPos === null
+        && wsPlayer.responseStartCtx > 0 && wsPlayer.ctx) {
+      // 首帧实际到达时的 pos：过渡窗从这里起算（RTF 波动自适应，
+      // 不再用写死锚点——早到多热身，晚到少提前但绝不塌缩跳帧）
+      avatarCanvas.onsetPos = wsPlayer.ctx.currentTime - wsPlayer.responseStartCtx;
+    }
     startAvatarLoop();
   }).catch(() => {});
 }
@@ -333,12 +339,12 @@ function drawAvatarFrame(blob) {
 // 出声瞬间过渡正好播完（嘴是开的）——过渡帧必须按原速播：
 // 上一版把它们拉伸到 1s+（等效 ~8fps），用户看到的就是「前两秒卡顿」。
 // 帧晚到（RTF 尖峰）时自动塌缩成「最新到点帧」，平滑降级不卡死。
-const AVATAR_ONSET_S = 0.5;    // 模型张嘴过渡段长度（秒，montage 实测）
-const AVATAR_ONSET_KEY0 = -0.55; // aTime=0 帧的放映点（= 首帧就绪时刻，pos 轴）
+const AVATAR_ONSET_S = 0.5;  // 模型张嘴过渡段长度（秒，montage 实测）
 function avatarWarp(a) {
+  const onset = avatarCanvas.onsetPos ?? -0.55;  // 未收到首帧前按典型值
   return a < AVATAR_ONSET_S
-    ? a * (0.55 / AVATAR_ONSET_S) + AVATAR_ONSET_KEY0  // 原速 23fps 铺满窗口
-    : a;                                                // 过渡后帧级精确同步
+    ? onset + a                                  // 过渡帧：到达起按原速播
+    : Math.max(a, onset + AVATAR_ONSET_S);       // 过后：帧级精确同步
 }
 
 function startAvatarLoop() {
@@ -417,7 +423,10 @@ const wsPlayer = {
                                  : ctx.currentTime + 0.03;
     this._needLead = false;
     const t = Math.max(base, this.nextStart);
-    if (firstOfResponse) this.responseStartCtx = t;  // 只在回复首块记音频轴原点
+    if (firstOfResponse) {
+      this.responseStartCtx = t;  // 只在回复首块记音频轴原点
+      avatarCanvas.onsetPos = null;  // 等首个语音帧到达时重测
+    }
     src.start(t);
     this.nextStart = t + buf.duration;
     this.sources.add(src);
