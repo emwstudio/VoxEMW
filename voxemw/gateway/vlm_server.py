@@ -45,7 +45,10 @@ def describe_image(pil_image, prompt: str, max_tokens: int = 120) -> str:
 
     _load()
     # 模型卡定式：tokenize+图像处理全在 apply_chat_template 里做，
-    # downsample_mode 生成时还要再传一次（16x 是速度档，4x 细节档）
+    # downsample_mode 生成时还要再传一次（16x 是速度档，4x 细节档）。
+    # max_slice_nums=1 强制整图单切片：transformers 5.16.1 的窗口合并向量化
+    # 在非均匀切片下 reshape 必炸（view [7,N,1152] 差一行），单切片绕过；
+    # 场景描述不需要 36 切片的细节度。
     downsample_mode = "16x"
     messages = [{"role": "user", "content": [
         {"type": "image", "image": pil_image},
@@ -54,7 +57,7 @@ def describe_image(pil_image, prompt: str, max_tokens: int = 120) -> str:
     inputs = _processor.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=True,
         return_dict=True, return_tensors="pt",
-        downsample_mode=downsample_mode, max_slice_nums=36,
+        downsample_mode=downsample_mode, max_slice_nums=1,
     ).to("cuda")
     t0 = time.perf_counter()
     with torch.inference_mode():

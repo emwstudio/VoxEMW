@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829b";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829c";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -261,6 +261,48 @@ function stopMic() {
 // 媒体过不去）。response.output_audio.delta 的 base64 PCM16 16k 直接进
 // WebAudio 队列无缝续播；打断（speech_started）本地清队，与服务端 flush 同步。
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 视觉（妮儿的眼睛）：摄像头帧定时上传，服务端在你说「看看」时取最新帧
+// 喂给 MiniCPM-V。640px JPEG q0.7 ≈ 40KB / 1.5s，带宽可忽略。
+// 权限被拒/无摄像头静默降级（视觉是增强，不能影响对话）。
+// ---------------------------------------------------------------------------
+const visionCam = { stream: null, video: null, canvas: null, timer: null };
+
+async function startVisionCam() {
+  if (visionCam.stream || visionCam.timer) return;
+  try {
+    visionCam.stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 640, facingMode: "user" },
+    });
+  } catch (e) {
+    addLine("sys", `⚠ 摄像头不可用（${e.message}），「看看」功能关闭`);
+    return;
+  }
+  const video = document.createElement("video");
+  video.muted = true;
+  video.playsInline = true;
+  video.srcObject = visionCam.stream;
+  await video.play().catch(() => {});
+  visionCam.video = video;
+  visionCam.canvas = document.createElement("canvas");
+  visionCam.timer = setInterval(() => {
+    if (!visionCam.video || visionCam.video.readyState < 2) return;
+    const v = visionCam.video;
+    const s = Math.min(v.videoWidth, v.videoHeight);
+    visionCam.canvas.width = 640;
+    visionCam.canvas.height = 640;
+    const c = visionCam.canvas.getContext("2d");
+    c.drawImage(v, (v.videoWidth - s) / 2, (v.videoHeight - s) / 2, s, s, 0, 0, 640, 640);
+    const b64 = visionCam.canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+    fetch("/vision/frame", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ frame: b64 }),
+    }).catch(() => {});
+  }, 1500);
+  addLine("sys", "📷 摄像头已就绪，说「妮儿看看」她就会看");
+}
 
 // 数字人视频帧渲染：JPEG 二进制帧 → ImageBitmap → canvas。
 // 逐帧到达即画（~25fps），乱序/丢帧按最新帧覆盖——UDP 式语义，不排队。
@@ -521,6 +563,8 @@ function handleTextMessage(data) {
       wsPlayer.leadSec = ((event.avatar && event.avatar.audio_lead_ms) || 0) / 1000;
       document.getElementById("avatar-stage").hidden = false;
     }
+    // 视觉：服务端开了 VLM 边车就启动摄像头帧上传
+    if (event.vision && event.vision.enabled) startVisionCam();
     return;
   }
   const handler = realtimeHandlers[event.type];

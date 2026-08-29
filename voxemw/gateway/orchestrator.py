@@ -36,6 +36,7 @@ import logging
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 from voxemw.gateway.vision import VisionService, is_vision_trigger
@@ -206,6 +207,8 @@ class Session:
         self._avatar_cfg = avatar_cfg or {}
         self._avatar_ws = None
         self._avatar_feed: asyncio.Queue[bytes] = asyncio.Queue()
+        # 浏览器定时上传的最新摄像头帧（b64, 时间戳）——4090 版视觉帧源
+        self._last_frame: tuple[str, float] | None = None
 
     async def _notify_playback_done(self) -> None:
         """等 pacer 里的音频真正播完，再通知前端（vox.playback_done）。
@@ -306,12 +309,41 @@ class Session:
                 "enabled": self._avatar_ws is not None,
                 "audio_lead_ms": self._avatar_cfg.get("audio_lead_ms", 0),
             },
+            "vision": {"enabled": self._vision is not None},
         }))
 
     async def _apply_persona(self, persona_id: str) -> None:
         persona = self.personas[persona_id]
         self.persona_id = persona_id
         await self.s2s.send(json.dumps(build_session_update(persona_id, persona["text"])))
+
+    async def _vision_turn(self) -> None:
+        """「妮儿看看」回合：掐掉自动回复 → 取最新浏览器帧 → VLM 描述 → 注入重答。
+
+        帧太旧（>10s）等于没看见，放弃；描述失败静默——视觉是增强，
+        不能拖累主链路。"""
+        self._vision_busy = True
+        try:
+            await self.s2s.send(json.dumps({"type": "response.cancel"}))
+            desc = None
+            if self._vision is not None and self._last_frame is not None:
+                b64, ts = self._last_frame
+                if time.time() - ts < 10:
+                    desc = await self._vision.describe_b64(b64)
+            if not desc:
+                logger.info("视觉：无可用帧或描述失败，放弃视觉回合")
+                return
+            logger.info("视觉：看到 %r", desc[:60])
+            await self.s2s.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {"type": "message", "role": "user", "content": [{
+                    "type": "input_text",
+                    "text": f"（你现在亲眼看到了用户给你看的东西：{desc}。"
+                            "用你人设的口吻自然回应，就像你真的看到了一样，"
+                            "别提到「描述」「图片」这些词）"}]}}))
+            await self.s2s.send(json.dumps({"type": "response.create"}))
+        finally:
+            self._vision_busy = False
 
     # ── 两条转发协程 ──
 
@@ -584,6 +616,17 @@ def create_app(config: dict):
             "samples_played": p._audio_samples_played,
         })
 
+    async def api_vision_frame(request):
+        """浏览器定时上传的摄像头帧（4090 版视觉帧源，4090 没有本地摄像头）。"""
+        session = current_session["session"]
+        if session is None:
+            return web.json_response({"ok": False}, status=409)
+        body = await request.json()
+        b64 = body.get("frame", "")
+        if b64:
+            session._last_frame = (b64, time.time())
+        return web.json_response({"ok": True})
+
     async def ws_handler(request):
         ws = web.WebSocketResponse(max_msg_size=16 * 1024 * 1024)
         await ws.prepare(request)
@@ -629,6 +672,7 @@ def create_app(config: dict):
     app.router.add_get("/rtc/ice", api_rtc_ice)
     app.router.add_post("/rtc/debug", api_rtc_debug)
     app.router.add_get("/rtc/pacer", api_pacer_debug)
+    app.router.add_post("/vision/frame", api_vision_frame)
     app.router.add_get("/ws", ws_handler)
     app.router.add_static("/static", REPO_ROOT / "web")
     return app

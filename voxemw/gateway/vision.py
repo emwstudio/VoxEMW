@@ -1,8 +1,9 @@
-"""视觉模块：摄像头抓帧 → MiniCPM-V-4.6（llama-server）→ 场景描述。
+"""视觉模块：抓帧 → MiniCPM-V-4.6（OpenAI 兼容边车）→ 场景描述。
 
-形态：llama-server 作为视觉边车（OpenAI 兼容接口），本模块负责
-抓帧（Swift 采集器，零依赖）和描述调用。失败一律静默返回 None——
-视觉是增强，挂了不能拖累对话主链路。
+形态：VLM 边车（4090 版 = vLLM serve；Mac 存档版 = llama-server），
+本模块负责抓帧和描述调用。帧来源两路：服务器本地摄像头（Mac 的 Swift
+采集器）或浏览器定时上传（4090 版，见 orchestrator /vision/frame）。
+失败一律静默返回 None——视觉是增强，挂了不能拖累对话主链路。
 """
 
 from __future__ import annotations
@@ -77,10 +78,9 @@ class VisionService:
             logger.warning("视觉：拍照异常 %r", e)
             return False
 
-    async def describe(self, image_path: str) -> str | None:
-        """一张图片 → 中文场景描述。失败返回 None。"""
+    async def describe_b64(self, b64: str) -> str | None:
+        """base64 JPEG → 中文场景描述。失败返回 None。"""
         try:
-            b64 = base64.b64encode(Path(image_path).read_bytes()).decode()
             r = await self._http().post("/v1/chat/completions", json={
                 "model": "MiniCPM-V-4.6",
                 "messages": [{"role": "user", "content": [
@@ -95,6 +95,15 @@ class VisionService:
         except Exception as e:
             logger.warning("视觉：描述失败 %r", e)
             return None
+
+    async def describe(self, image_path: str) -> str | None:
+        """一张图片 → 中文场景描述。失败返回 None。"""
+        try:
+            b64 = base64.b64encode(Path(image_path).read_bytes()).decode()
+        except Exception as e:
+            logger.warning("视觉：读图失败 %r", e)
+            return None
+        return await self.describe_b64(b64)
 
     async def look(self) -> str | None:
         """抓一帧 + 描述，一条龙。失败返回 None。"""
