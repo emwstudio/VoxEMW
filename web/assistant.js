@@ -331,7 +331,6 @@ const wsPlayer = {
   sources: new Set(),  // 已排程未播完的源（打断时批量 stop）
   leadSec: 0,          // 新回复播放压后（数字人渲染滞后对齐，vox.status 下发）
   _needLead: true,     // 每条回复的首块才加 lead（句间卡顿不重加）
-  responseStartCtx: 0, // 本回复音频轴原点（ctx 时钟）：首块的排程起播时刻
   ensure() {
     if (!this.ctx) this.ctx = new AudioContext();
     if (this.ctx.state === "suspended") this.ctx.resume().catch(() => {});
@@ -355,11 +354,7 @@ const wsPlayer = {
                                  : ctx.currentTime + 0.03;
     this._needLead = false;
     const t = Math.max(base, this.nextStart);
-    if (firstOfResponse) {
-      this.responseStartCtx = t;  // 只在回复首块记音频轴原点
-      avatarCanvas.onsetPos = null;  // 等首个语音帧到达时重测
-      avatarCanvas.vc = null;        // 游标同步重置
-    }
+    // V1：渲染端 paced 滴灌已对齐，前端无需记录音频轴原点
     src.start(t);
     this.nextStart = t + buf.duration;
     this.sources.add(src);
