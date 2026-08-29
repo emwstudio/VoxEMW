@@ -12,10 +12,26 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import subprocess
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# 官方模型卡给的工具：模型偶发把换行输出成字面量 \n，渲染前归一化
+# （保护代码块/数学公式里的合法反斜杠序列）
+_LIT_NL_PATTERN = re.compile(
+    r"(```[\s\S]*?```|`[^`]+`|\$\$[\s\S]*?\$\$|\$[^$]+\$"
+    r"|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\])"
+    r"|(?<!\\)(?:\\r\\n|\\[nr])"
+)
+
+
+def normalize_response_text(text: str) -> str:
+    """字面量 \\n → 真换行（MiniCPM-V 官方建议的输出后处理）。"""
+    if not isinstance(text, str) or "\\" not in text:
+        return text
+    return _LIT_NL_PATTERN.sub(lambda m: m.group(1) or "\n", text)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CAPTURE_BIN = REPO_ROOT / "scripts" / "bin" / "camera_capture"
@@ -91,7 +107,7 @@ class VisionService:
             })
             r.raise_for_status()
             text = r.json()["choices"][0]["message"]["content"].strip()
-            return text or None
+            return normalize_response_text(text) or None
         except Exception as e:
             logger.warning("视觉：描述失败 %r", e)
             return None
