@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829k";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829m";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -334,17 +334,17 @@ function drawAvatarFrame(blob) {
   }).catch(() => {});
 }
 
-// 开头提前放映曲线：模型的张嘴过渡天生要 ~0.5s（运动连续性，从闭嘴续接）。
-// 过渡帧【按原速】铺进 lead 窗口（首帧就绪 ~0.65s → 出声 1.2s，窗口 0.55s），
-// 出声瞬间过渡正好播完（嘴是开的）——过渡帧必须按原速播：
-// 上一版把它们拉伸到 1s+（等效 ~8fps），用户看到的就是「前两秒卡顿」。
-// 帧晚到（RTF 尖峰）时自动塌缩成「最新到点帧」，平滑降级不卡死。
+// 开头「定格开口」策略：模型的张嘴过渡天生要 ~0.5s（运动连续性，从闭嘴
+// 续接）——过渡段帧的内容本身就是闭嘴/微张，任何排程都放不出不存在的
+// 内容（用户实测：开头怎么排都「开口慢」）。终局方案：过渡段只定格
+// 显示最后一帧（aTime≈0.5，嘴已张开）——首帧一到达嘴就是开的，
+// 0.5s 后接实时流，唇形细节从那里开始精确同步。
 const AVATAR_ONSET_S = 0.5;  // 模型张嘴过渡段长度（秒，montage 实测）
 function avatarWarp(a) {
-  const onset = avatarCanvas.onsetPos ?? -0.55;  // 未收到首帧前按典型值
+  const onset = avatarCanvas.onsetPos ?? -0.55;  // 首帧实际到达的 pos
   return a < AVATAR_ONSET_S
-    ? onset + a                                  // 过渡帧：到达起按原速播
-    : Math.max(a, onset + AVATAR_ONSET_S);       // 过后：帧级精确同步
+    ? onset   // 过渡帧全部「立即到期」→ 最新帧（开口帧）定格
+    : a;      // 过渡后：帧级精确同步
 }
 
 function startAvatarLoop() {
