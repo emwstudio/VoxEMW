@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829p";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829q";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -309,7 +309,8 @@ async function startVisionCam() {
 // rAF 循环按播放时钟（ctx.currentTime - responseStartCtx）取「到点的
 // 最新帧」上屏——落后自动跳帧追齐，不倒序、不扎堆、不受解码快慢影响。
 let avatarEnabled = false;  // vox.status 下发：渲染服务在线
-const avatarCanvas = { ctx2d: null, lastBitmap: null, queue: [], rafId: 0, onsetPos: null };
+const avatarCanvas = { ctx2d: null, lastBitmap: null, queue: [], rafId: 0,
+                       onsetPos: null, vc: null, prevPos: 0 };
 
 function drawAvatarFrame(blob) {
   const canvas = document.getElementById("avatar-canvas");
@@ -334,17 +335,11 @@ function drawAvatarFrame(blob) {
   }).catch(() => {});
 }
 
-// 开头「准点渐张」策略：模型的张嘴过渡 ~0.5s（运动连续性，从闭嘴续接）。
-// 过渡段提前 0.5s 起跑、原速播放，最后一帧恰好落在出声点（pos=0）；
-// 同步段从 aTime 0.5 起按 aTime 精确对齐——两段【无缝相接】。
-// （上一版过渡段终点和同步段起点之间有 0.5s 无帧空窗，嘴会在
-// ~1s 处定格一顿——用户实测抓到的停顿就是它。）
-const AVATAR_ONSET_S = 0.5;  // 模型张嘴过渡段长度（秒，montage 实测）
-function avatarWarp(a) {
-  return a < AVATAR_ONSET_S
-    ? a - AVATAR_ONSET_S  // 过渡段：pos∈[-0.5,0]，原速渐张，出声点收束
-    : a;                  // 同步段：帧级精确对齐，与过渡段无缝相接
-}
+// 视频游标：首帧到达（onsetPos）即开播（开头无冻结），vc 以 0.9 倍速
+// 前进让声音以 0.1s/s 追上（收敛过程 ~3-4s，肉眼不可辨），最终锁定
+// 领先声音 0.2s——天然兼容张嘴过渡（过渡帧随 vc 自然流过），
+// 无接缝无定格（此前各版的「过渡段/同步段」拼接方案全部死在接缝上）。
+const AVATAR_VIDEO_AHEAD = 0.2;  // 视频稳态领先量（秒）
 
 function startAvatarLoop() {
   if (avatarCanvas.rafId) return;
@@ -356,12 +351,26 @@ function startAvatarLoop() {
     const pos = (wsPlayer.responseStartCtx > 0 && wsPlayer.ctx)
       ? wsPlayer.ctx.currentTime - wsPlayer.responseStartCtx
       : Infinity;
-    // 取「到点的最新帧」：语音帧到点才播（pos >= aTime），待机帧随时可播
+    // 推进视频游标（本回复首个语音帧到达后启用）
+    if (avatarCanvas.vc === null && avatarCanvas.onsetPos !== null) {
+      avatarCanvas.vc = 0;
+      avatarCanvas.prevPos = avatarCanvas.onsetPos;
+    }
+    if (avatarCanvas.vc !== null) {
+      const step = Math.max(0, pos - avatarCanvas.prevPos);
+      const target = pos - AVATAR_VIDEO_AHEAD;
+      // 0.9x 慢放让声音追上；追上后锁定领先 0.2s
+      avatarCanvas.vc = Math.max(avatarCanvas.vc,
+                                 Math.min(avatarCanvas.vc + step * 0.9, target));
+      avatarCanvas.prevPos = pos;
+    }
+    const cursor = avatarCanvas.vc;
+    // 取「到点的最新帧」：语音帧 aTime <= 游标才播，待机帧随时可播
     // 但让位给语音帧；一路弹到「未到点语音帧」为止
     let show = null;
     while (q.length > 0) {
       const head = q[0];
-      if (head.aTime >= 0 && avatarWarp(head.aTime) > pos) break;  // 还没到点的语音帧（开头按 warp 提前）
+      if (head.aTime >= 0 && (cursor === null || head.aTime > cursor)) break;
       q.shift();
       if (head.aTime >= 0) show = head;       // 到点语音帧：继续找更新的
       else if (!show) show = head;            // 待机帧：暂存，被语音帧覆盖
@@ -425,6 +434,7 @@ const wsPlayer = {
     if (firstOfResponse) {
       this.responseStartCtx = t;  // 只在回复首块记音频轴原点
       avatarCanvas.onsetPos = null;  // 等首个语音帧到达时重测
+      avatarCanvas.vc = null;        // 游标同步重置
     }
     src.start(t);
     this.nextStart = t + buf.duration;
