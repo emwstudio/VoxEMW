@@ -215,15 +215,16 @@ class RenderEngine:
                         was_in_response)
             if n_fed > 0:
                 # 段内含回复音频：逐帧时间戳（回复内相对秒，原点差值）。
-                # 但补静音的尾帧【不打顺延时间戳】——否则声音播完后嘴还在
-                # 放「未来的帧」（用户实测：音频播完嘴还在动 ~1s）。
-                # 尾帧标待机帧：声音一停就地按真实节奏收嘴回待机。
+                # 收尾规则：补静音的尾帧标待机帧，且只留 6 帧（0.24s）收嘴——
+                # 整段 24 帧补垫会让嘴在声音停后再演 ~1s（用户实测）。
                 base = (consumed_before - self._response_fed_origin) / self.sample_rate
                 samples_per_frame = self.sample_rate // self.fps
                 fed_slots = -(-n_fed // samples_per_frame)  # 向上取整
+                is_tail = n_fed < self.chunk_samples
+                keep = fed_slots + (6 if is_tail else self.slice_len)
                 a_times = [
                     base + i / self.fps if i < fed_slots else IDLE_ATIME
-                    for i in range(self.slice_len)
+                    for i in range(min(keep, self.slice_len))
                 ]
             else:
                 a_times = None  # 纯待机段
@@ -289,7 +290,8 @@ class RenderEngine:
             except queue.Empty:
                 continue
             is_idle = a_times is None
-            for i in range(frames.shape[0]):
+            n_emit = frames.shape[0] if is_idle else min(frames.shape[0], len(a_times))
+            for i in range(n_emit):
                 a = IDLE_ATIME if is_idle else a_times[i]
                 payload = struct.pack("<f", a) + self._to_jpeg(frames[i])
                 self.on_frames(payload)
