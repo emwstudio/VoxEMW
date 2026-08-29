@@ -347,13 +347,40 @@ class Session:
     # ── 两条转发协程 ──
 
     async def _avatar_frames(self) -> None:
-        """渲染服务 JPEG 帧 → 浏览器（二进制帧原样转发）。"""
-        try:
-            async for message in self._avatar_ws:
-                if isinstance(message, (bytes, bytearray)):
-                    await self.browser.send_bytes(bytes(message))
-        except Exception as e:
-            logger.info("avatar 帧流断开: %r", e)
+        """渲染服务 JPEG 帧 → 浏览器（二进制帧原样转发）。
+
+        断线自动重连：渲染服务重启/抖动后 2s 重接，重接后帧流自愈——
+        旧版断线后会话拿着死连接，画面定格在最后一帧（闭嘴待机帧），
+        用户看到的就是「她说什么都不张口」。"""
+        while True:
+            try:
+                async for message in self._avatar_ws:
+                    if isinstance(message, (bytes, bytearray)):
+                        await self.browser.send_bytes(bytes(message))
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.info("avatar 帧流断开: %r，2s 后重连", e)
+            if self.s2s is None:
+                return  # 会话已结束
+            await asyncio.sleep(2)
+            try:
+                import websockets
+
+                old_ws = self._avatar_ws
+                self._avatar_ws = await websockets.connect(
+                    self._avatar_cfg["url"], max_size=16 * 1024 * 1024)
+                if old_ws is not None and old_ws is not self._avatar_ws:
+                    try:
+                        await old_ws.close()
+                    except Exception:
+                        pass
+                logger.info("avatar 重连成功")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.info("avatar 重连失败: %r，继续重试", e)
+                await asyncio.sleep(3)
 
     async def _browser_to_s2s(self) -> None:
         async for message in self.browser:
@@ -491,12 +518,17 @@ class Session:
                 self.pacer.feed_audio(pcm)  # RTC 音频轨
             if pcm is not None and self._avatar_ws is not None:
                 # 数字人渲染：按【生成速度】即时转发（不 paced——帧带音频
-                # 时间戳，浏览器按播放时钟定点放映，同步真理在播放端）
-                if not self._avatar_in_resp:
-                    await self._avatar_ws.send(json.dumps({"type": "response_start"}))
-                    self._avatar_in_resp = True
-                await self._avatar_ws.send(json.dumps(
-                    {"type": "audio", "pcm": base64.b64encode(pcm).decode()}))
+                # 时间戳，浏览器按播放时钟定点放映，同步真理在播放端）。
+                # 连接可能正在断线重连窗口：发送失败只丢这几帧画面，
+                # 绝不能把音频主链路（本协程）一起带走
+                try:
+                    if not self._avatar_in_resp:
+                        await self._avatar_ws.send(json.dumps({"type": "response_start"}))
+                        self._avatar_in_resp = True
+                    await self._avatar_ws.send(json.dumps(
+                        {"type": "audio", "pcm": base64.b64encode(pcm).decode()}))
+                except Exception as e:
+                    logger.info("avatar 转发失败（重连窗口，丢帧不丢声）: %r", e)
             if relay:
                 if pcm is not None:
                     event = dict(event)
@@ -641,6 +673,13 @@ def create_app(config: dict):
         try:
             await session.run()
         finally:
+            # 无论怎么结束（客户端断开/被顶/异常），avatar 连接都必须收尸——
+            # 否则渲染服务客户端列表堆僵尸连接，帧推进虚空
+            if session._avatar_ws is not None:
+                try:
+                    await session._avatar_ws.close()
+                except Exception:
+                    pass
             if current_session["session"] is session:
                 current_session["session"] = None
         return ws
