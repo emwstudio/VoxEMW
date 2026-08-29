@@ -73,8 +73,12 @@ class RenderEngine:
         self.on_frames = on_frames  # callback(jpeg_bytes)
         self.jpeg_quality = jpeg_quality
         self.audio_q: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=AUDIO_Q_MAX)
+        # 三段流水线：攒段（实时边界）→ 生成（0.25s 富余 3.8x）→ 滴灌（25fps）
+        self.chunk_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=2)
+        self.emit_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=2)
         self._stop = threading.Event()
         self._flushed = threading.Event()
+        self._flush_seq = 0  # 打断代际：生成完才发现代际变了就丢帧
         logger.info("引擎加载完成 %.1fs：slice=%d 帧(%.2fs) fps=%d 上下文=%ds",
                     time.perf_counter() - t0, self.slice_len, self.chunk_seconds,
                     self.fps, self.cached_audio_duration)
@@ -93,16 +97,19 @@ class RenderEngine:
             self.audio_q.put_nowait(x)
 
     def flush(self) -> None:
-        """打断：清空待渲染音频。正在生成中的 chunk 帧照出（0.27s 尾巴，可接受）。"""
+        """打断：三段全清——待渲染音频、待生成段、待播帧组。
+        正在生成中的段靠代际戳丢弃（嘴唇立刻回待机，不播打断前的尾巴）。"""
+        self._flush_seq += 1
         dropped = 0
-        while True:
-            try:
-                self.audio_q.get_nowait()
-                dropped += 1
-            except queue.Empty:
-                break
-        self._flushed.set()  # run 循环顺带丢弃 pending 半块
-        logger.info("flush：丢弃 %d 个待渲染块", dropped)
+        for q in (self.audio_q, self.chunk_q, self.emit_q):
+            while True:
+                try:
+                    q.get_nowait()
+                    dropped += 1
+                except queue.Empty:
+                    break
+        self._flushed.set()  # 攒段线程顺带丢弃 pending 半块
+        logger.info("flush：丢弃 %d 个排队项", dropped)
 
     def _next_chunk(self, pending: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """从队列攒够一个 chunk 的样本；队列空则补静音（待机动画）。"""
@@ -121,43 +128,81 @@ class RenderEngine:
                     [pending, np.zeros(need, dtype=np.float32)])
         return pending[self.chunk_samples:], pending[:self.chunk_samples]
 
-    def run(self) -> None:
-        from flash_head.inference import get_audio_embedding, run_pipeline
-
-        ctx_len = self.cached_audio_duration * self.sample_rate
-        audio_ctx = deque([0.0] * ctx_len, maxlen=ctx_len)
+    def _accumulate_loop(self) -> None:
+        """攒段线程：audio_q → 整 chunk（实时边界：队列空补静音/ paced 到达）。"""
         pending = np.zeros(0, dtype=np.float32)
         while not self._stop.is_set():
             if self._flushed.is_set():
                 pending = np.zeros(0, dtype=np.float32)
                 self._flushed.clear()
-            cycle0 = time.perf_counter()
             pending, chunk = self._next_chunk(pending)
             if len(chunk) < self.chunk_samples:
                 continue  # stop 中
+            self.chunk_q.put(chunk)  # 满则阻塞（背压：音频暂存 audio_q）
+
+    def _generate_loop(self) -> None:
+        """生成线程：chunk → 帧组。0.25s/段 vs 0.96s/段到达，等 chunk_q 为主。"""
+        from flash_head.inference import get_audio_embedding, run_pipeline
+
+        ctx_len = self.cached_audio_duration * self.sample_rate
+        audio_ctx = deque([0.0] * ctx_len, maxlen=ctx_len)
+        while not self._stop.is_set():
+            try:
+                chunk = self.chunk_q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            seq = self._flush_seq  # 段起点记代际：生成中途被打断则成品丢弃
             audio_ctx.extend(chunk.tolist())
             audio_array = np.array(audio_ctx)
+            t0 = time.perf_counter()
             embedding = get_audio_embedding(
                 self.pipeline, audio_array, self.audio_start_idx, self.audio_end_idx)
             video = run_pipeline(self.pipeline, embedding)
             video = video[self.motion_frames_num:]
             frames = video.cpu().numpy().astype(np.uint8)
-            gen_s = time.perf_counter() - cycle0
             logger.debug("chunk 生成 %.2fs（%.0fx 实时）",
-                         gen_s, self.chunk_seconds / max(gen_s, 1e-3))
-            # 帧按 25fps 节奏滴灌，摊进本 chunk 剩余时间窗：
-            # 旧版是「24 帧瞬间全推 + 睡到边界」，浏览器把 0.96s 的口型
-            # 零点几秒内播完再定格 0.7s——唇形当然对不上平滑的声音。
-            # 滴灌窗 = chunk 时长 - 生成耗时（生成变慢窗自动收窄，慢到
-            # 超时则退化为连发，自适应不积压）。
-            n = frames.shape[0]
-            drip = max(self.chunk_seconds - gen_s, 0.0) / max(n, 1)
-            for i in range(n):
-                target = cycle0 + gen_s + (i + 1) * drip
+                         time.perf_counter() - t0,
+                         self.chunk_seconds / max(time.perf_counter() - t0, 1e-3))
+            if seq != self._flush_seq:
+                continue  # 打断代际：这段是打断前的语音，丢
+            if self.emit_q.full():
+                try:
+                    self.emit_q.get_nowait()  # 播不过来就丢最旧组，嘴跳新词
+                except queue.Empty:
+                    pass
+            self.emit_q.put(frames)
+
+    def _emit_loop(self) -> None:
+        """滴灌线程：帧组按 25fps 逐帧推出（旧版 24 帧瞬发+定格，
+        唇形与平滑音频对不上的根因；串行循环版 drip 又恒为 0）。"""
+        frame_interval = 1.0 / self.fps
+        while not self._stop.is_set():
+            try:
+                frames = self.emit_q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            for i in range(frames.shape[0]):
+                target = time.perf_counter() + frame_interval
+                self.on_frames(self._to_jpeg(frames[i]))
                 delay = target - time.perf_counter()
                 if delay > 0:
                     self._stop.wait(delay)
-                self.on_frames(self._to_jpeg(frames[i]))
+
+    def run(self) -> None:
+        """三段流水线：攒段/生成/滴灌各吃满自己的节奏互不拖累。
+
+        为什么必须拆：攒段天然 0.96s/段（实时），生成 0.25s/段，
+        滴灌 0.96s/段（25fps）——串行循环里三者相加 = 2.2s/段，
+        消耗速率只有实时的 44%，连续说话必然积压丢段。"""
+        threads = [
+            threading.Thread(target=self._accumulate_loop, daemon=True),
+            threading.Thread(target=self._generate_loop, daemon=True),
+            threading.Thread(target=self._emit_loop, daemon=True),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
     @staticmethod
     def _to_jpeg(frame: np.ndarray) -> bytes:
