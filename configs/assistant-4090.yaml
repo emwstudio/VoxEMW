@@ -45,12 +45,10 @@ avatar:
   # SoulX-FlashHead 数字人渲染服务（voxemw/avatar/soulx_server.py，flashhead env 起）
   enabled: true
   url: ws://127.0.0.1:8791
-  # 前端音频播放压后量：首帧就绪 ≈ 0.65-0.8s（攒段÷RTF + 生成 0.25s）。
-  # 取 1350ms：张嘴过渡（~0.5s 原速播放）必须完整装进 lead 窗口，
-  # RTF 0.57 时首帧 0.8s 到 → 窗口 0.55s，渐张恰好播完正对出声点；
-  # 同时覆盖 RTF 尖峰与 VLM 视觉抢 GPU 的抖动余量。
+  # 前端音频播放压后量（V1 架构）：渲染链路固有滞后 = 0.96s 攒 chunk
+  # + ~0.25s 生成 ≈ 1.21s，声音压后同量即唇形对齐。
   # （WS 音频模式专用，RTC 模式用 ?alead= 参数）
-  audio_lead_ms: 1350
+  audio_lead_ms: 1300
 personas:
   default: henannier
   list:
