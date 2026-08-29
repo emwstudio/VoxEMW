@@ -29,11 +29,11 @@ def _load():
     if _model is not None:
         return
     import torch
-    from transformers import AutoModelForMultimodalLM, AutoProcessor
+    from transformers import AutoModelForImageTextToText, AutoProcessor
 
     t0 = time.perf_counter()
     _processor = AutoProcessor.from_pretrained(MODEL_ID)
-    _model = AutoModelForMultimodalLM.from_pretrained(
+    _model = AutoModelForImageTextToText.from_pretrained(
         MODEL_ID, dtype=torch.bfloat16, device_map="cuda")
     _model.eval()
     logger.info("MiniCPM-V-4.6 加载完成 %.1fs", time.perf_counter() - t0)
@@ -44,18 +44,22 @@ def describe_image(pil_image, prompt: str, max_tokens: int = 120) -> str:
     import torch
 
     _load()
-    conv = [[{"role": "user", "content": [
+    # 模型卡定式：tokenize+图像处理全在 apply_chat_template 里做，
+    # downsample_mode 生成时还要再传一次（16x 是速度档，4x 细节档）
+    downsample_mode = "16x"
+    messages = [{"role": "user", "content": [
         {"type": "image", "image": pil_image},
         {"type": "text", "text": prompt},
-    ]}]]
-    text = _processor.apply_chat_template(
-        conv, tokenize=False, add_generation_prompt=True)[0]
-    inputs = _processor(text=text, images=[pil_image], return_tensors="pt")
-    inputs = {k: v.to("cuda", torch.bfloat16) if v.is_floating_point() else v.to("cuda")
-              for k, v in inputs.items()}
+    ]}]
+    inputs = _processor.apply_chat_template(
+        messages, tokenize=True, add_generation_prompt=True,
+        return_dict=True, return_tensors="pt",
+        downsample_mode=downsample_mode, max_slice_nums=36,
+    ).to("cuda")
     t0 = time.perf_counter()
     with torch.inference_mode():
-        out = _model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
+        out = _model.generate(**inputs, downsample_mode=downsample_mode,
+                              max_new_tokens=max_tokens, do_sample=False)
     gen = out[:, inputs["input_ids"].shape[1]:]
     result = _processor.batch_decode(gen, skip_special_tokens=True)[0].strip()
     logger.info("描述耗时 %.2fs: %r", time.perf_counter() - t0, result[:60])
