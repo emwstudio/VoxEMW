@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829g";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829h";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -324,9 +324,20 @@ function drawAvatarFrame(blob) {
       .then((b) => { item.bmp = b; })
       .catch(() => { item.bmp = "bad"; });
     avatarCanvas.queue.push(item);  // 到达序 = 时间戳序
-    avatarDbg(aTime, 0);
     startAvatarLoop();
   }).catch(() => {});
+}
+
+// 开头提前放映曲线：模型的张嘴过渡天生要 ~0.4s（运动连续性，从闭嘴续接），
+// 若严格按 aTime 放映，第一个音的前 0.4s 嘴是闭的（「第一个音嘴不动」）。
+// 解法（用户拍板「等一等」）：开头 0.8s 内帧最多提前 0.4s 上屏——
+// 声音还在 lead 期嘴就开始张，出声时嘴已张开，0.8s 后收敛到精确同步。
+const AVATAR_WARP_AHEAD = 0.4;  // 开头最大提前量（秒）
+const AVATAR_WARP_RANGE = 0.8;  // 收敛区间（秒）
+function avatarWarp(a) {
+  return a < AVATAR_WARP_RANGE
+    ? a - AVATAR_WARP_AHEAD * (1 - a / AVATAR_WARP_RANGE)
+    : a;
 }
 
 function startAvatarLoop() {
@@ -344,7 +355,7 @@ function startAvatarLoop() {
     let show = null;
     while (q.length > 0) {
       const head = q[0];
-      if (head.aTime >= 0 && head.aTime > pos) break;  // 还没到点的语音帧
+      if (head.aTime >= 0 && avatarWarp(head.aTime) > pos) break;  // 还没到点的语音帧（开头按 warp 提前）
       q.shift();
       if (head.aTime >= 0) show = head;       // 到点语音帧：继续找更新的
       else if (!show) show = head;            // 待机帧：暂存，被语音帧覆盖
@@ -357,7 +368,6 @@ function startAvatarLoop() {
         avatarCanvas.lastBitmap = show.bmp;
         avatarCanvas.ctx2d.drawImage(show.bmp, 0, 0, canvas.width, canvas.height);
         if (prev) prev.close();
-        if (show.aTime >= 0) avatarDrawDbg(show.aTime, pos);  // 上屏侧排障
       }
     }
     if (avatarCanvas.queue.length > 0) {
@@ -367,40 +377,6 @@ function startAvatarLoop() {
   avatarCanvas.rafId = requestAnimationFrame(tick);
 }
 
-// 排障：语音帧实际上屏时刻（前 40 帧全报），排完删
-const _drawBuf = [];
-function avatarDrawDbg(aTime, pos) {
-  if (_drawBuf.length >= 40) return;
-  _drawBuf.push([Math.round(aTime * 100) / 100, Math.round(pos * 100) / 100]);
-  if (_drawBuf.length === 40 || _drawBuf.length === 10) {
-    fetch("/rtc/debug", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ drawDbg: true, draws: _drawBuf.slice() }),
-    }).catch(() => {});
-  }
-}
-
-// 排障：帧排程采样上报（每 25 帧取 1），排完删
-const _dbgBuf = [];
-function avatarDbg(aTime, delay) {
-  _dbgBuf.push([Math.round(aTime * 100) / 100, Math.round(delay)]);
-  if (_dbgBuf.length % 25 === 1) {
-    fetch("/rtc/debug", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        avatarDbg: true,
-        samples: _dbgBuf.slice(-3),
-        responseStartCtx: Math.round(wsPlayer.responseStartCtx * 100) / 100,
-        ctxNow: wsPlayer.ctx ? Math.round(wsPlayer.ctx.currentTime * 100) / 100 : -1,
-        leadSec: wsPlayer.leadSec,
-        needLead: wsPlayer._needLead,
-        pending: avatarCanvas.queue.length,
-      }),
-    }).catch(() => {});
-  }
-}
 
 function clearAvatarPending() {
   // 打断：未上屏的帧全部作废（嘴立刻回待机）
