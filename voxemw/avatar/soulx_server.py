@@ -98,6 +98,7 @@ class RenderEngine:
 
     def response_start(self) -> None:
         """新回复：音频轴归零，攒段线程对齐 chunk 边界（丢待机半段）。"""
+        logger.info("response_start 收到")
         self._in_response = True
         self._fed_samples = 0
         self._consumed_samples = 0
@@ -116,6 +117,7 @@ class RenderEngine:
 
     def feed(self, pcm: bytes) -> None:
         """喂 16k PCM16（任意长度；生成速度，不 paced）。"""
+        logger.info("feed 收到 %d 字节", len(pcm))
         x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         try:
             self.audio_q.put_nowait(x)
@@ -179,6 +181,9 @@ class RenderEngine:
                 continue  # stop 中
             n_fed = min(len(chunk), max(0, self._fed_samples - consumed_before))
             self._consumed_samples = consumed_before + n_fed
+            logger.info("成段: n_fed=%d fed=%d consumed=%d in_resp=%s",
+                        n_fed, self._fed_samples, self._consumed_samples,
+                        was_in_response)
             if n_fed > 0:
                 # 段内含回复音频：逐帧时间戳（回复内相对秒）；
                 # 尾巴补静音的帧顺延（收嘴动作紧跟语音尾，不排队）
