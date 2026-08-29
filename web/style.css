@@ -267,22 +267,18 @@ body {
   opacity: 0.8;
 }
 
-/* 数字人视频画布（SoulX-FlashHead 帧流，首帧到达时才显示）。
-   全屏怼脸模式：方形画布 object-fit:cover 铺满视口（裁上下/左右边），
-   层级夹在星空(z0)与 UI(z2) 之间，不拦截任何交互。 */
+/* 数字人视频画布（SoulX-FlashHead 帧流，首帧到达时才显示） */
 .avatar-stage {
-  position: fixed;
-  inset: 0;
-  z-index: 1;
   display: flex;
   justify-content: center;
-  align-items: center;
-  pointer-events: none;
+  padding: 8px 0 4px;
 }
 .avatar-stage[hidden] { display: none; }
 #avatar-canvas {
-  width: 100vw;
-  height: 100vh;
-  object-fit: cover;
+  width: min(62vw, 380px);
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: 20px;
   background: #0b1020;
+  box-shadow: 0 8px 40px rgba(80, 120, 255, 0.25);
 }
