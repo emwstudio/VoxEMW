@@ -70,27 +70,23 @@ def describe_image(pil_image, prompt: str, max_tokens: int = 120) -> str:
 
 
 def create_app():
-    from fastapi import FastAPI
-    from pydantic import BaseModel
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
 
     app = FastAPI()
-
-    class ChatReq(BaseModel):
-        messages: list
-        max_tokens: int = 120
-        model: str = ""
 
     @app.get("/health")
     def health():
         return {"ok": True}
 
     @app.post("/v1/chat/completions")
-    def chat(req: ChatReq):
+    async def chat(request: Request):
         from PIL import Image
 
+        body = await request.json()
         image = None
         prompt = ""
-        for msg in req.messages:
+        for msg in body.get("messages", []):
             for part in msg.get("content", []):
                 if part.get("type") == "image_url":
                     url = part["image_url"]["url"]
@@ -99,9 +95,9 @@ def create_app():
                 elif part.get("type") == "text":
                     prompt = part["text"]
         if image is None:
-            return {"error": "no image"}, 400
+            return JSONResponse({"error": "no image"}, status_code=400)
         t0 = time.perf_counter()
-        text = describe_image(image, prompt, req.max_tokens)
+        text = describe_image(image, prompt, int(body.get("max_tokens", 120)))
         return {
             "id": f"vlm-{int(t0)}",
             "object": "chat.completion",
