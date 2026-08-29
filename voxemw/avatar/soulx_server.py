@@ -145,12 +145,19 @@ class RenderEngine:
             gen_s = time.perf_counter() - cycle0
             logger.debug("chunk 生成 %.2fs（%.0fx 实时）",
                          gen_s, self.chunk_seconds / max(gen_s, 1e-3))
-            for i in range(frames.shape[0]):
+            # 帧按 25fps 节奏滴灌，摊进本 chunk 剩余时间窗：
+            # 旧版是「24 帧瞬间全推 + 睡到边界」，浏览器把 0.96s 的口型
+            # 零点几秒内播完再定格 0.7s——唇形当然对不上平滑的声音。
+            # 滴灌窗 = chunk 时长 - 生成耗时（生成变慢窗自动收窄，慢到
+            # 超时则退化为连发，自适应不积压）。
+            n = frames.shape[0]
+            drip = max(self.chunk_seconds - gen_s, 0.0) / max(n, 1)
+            for i in range(n):
+                target = cycle0 + gen_s + (i + 1) * drip
+                delay = target - time.perf_counter()
+                if delay > 0:
+                    self._stop.wait(delay)
                 self.on_frames(self._to_jpeg(frames[i]))
-            # 对齐实时节奏：生成快于 chunk 时长就睡到边界（防 3.8x 速灌帧+吃满 GPU）
-            lag = self.chunk_seconds - (time.perf_counter() - cycle0)
-            if lag > 0:
-                self._stop.wait(lag)
 
     @staticmethod
     def _to_jpeg(frame: np.ndarray) -> bytes:
