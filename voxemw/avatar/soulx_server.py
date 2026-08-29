@@ -147,6 +147,10 @@ class RenderEngine:
                     dropped += 1
                 except queue.Empty:
                     break
+        # 被丢弃的【已喂未消费】样本必须记成已消费：否则 fed>consumed 的差额
+        # 永远挂在账上，后续 chunk 的 base=(consumed-origin) 算成负数——
+        # 语音帧被打上负时间戳，浏览器全当待机帧即来即播（幻灯片+不动根因）
+        self._consumed_samples = self._fed_samples
         self._flushed.set()
         logger.info("flush：丢弃 %d 个排队项", dropped)
 
@@ -194,7 +198,7 @@ class RenderEngine:
                 continue  # stop 中
             n_fed = min(len(chunk), max(0, self._fed_samples - consumed_before))
             self._consumed_samples = consumed_before + n_fed
-            logger.debug("成段: n_fed=%d fed=%d consumed=%d in_resp=%s",
+            logger.info("成段: n_fed=%d fed=%d consumed=%d in_resp=%s",
                         n_fed, self._fed_samples, self._consumed_samples,
                         was_in_response)
             if n_fed > 0:
