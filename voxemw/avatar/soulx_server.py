@@ -93,7 +93,8 @@ class RenderEngine:
         self._in_response = False
         self._fed_samples = 0        # 累计已喂样本数（含语音的）
         self._consumed_samples = 0   # 累计已进 chunk 的喂入样本数
-        self._response_fed_origin = 0  # 本回复音频轴原点（= response_start 时的 fed）
+        self._response_fed_origin = 0  # 本回复音频轴原点（= response_start 时的 consumed）
+        self._warm_trim = False      # 下一 chunk 前裁剪上下文尾部静音
         logger.info("引擎加载完成 %.1fs：slice=%d 帧(%.2fs) fps=%d 上下文=%ds",
                     time.perf_counter() - t0, self.slice_len, self.chunk_seconds,
                     self.fps, self.cached_audio_duration)
@@ -117,6 +118,7 @@ class RenderEngine:
                 break
         self._consumed_samples = self._fed_samples
         self._response_fed_origin = self._consumed_samples
+        self._warm_trim = True  # 生成线程：裁掉上下文尾部的待机静音（热启动）
         self._flushed.set()  # 攒段线程丢 pending 半块，从回复起点重开
 
     def response_end(self) -> None:
@@ -229,6 +231,17 @@ class RenderEngine:
             except queue.Empty:
                 continue
             seq = self._flush_seq  # 段起点记代际：生成中途被打断则成品丢弃
+            if self._warm_trim:
+                # 热启动：8s 上下文尾部若全是待机静音，模型会把开头
+                # ~0.3s 生成成闭嘴过渡（「第一个音嘴不动」的用户观感）。
+                # 裁到【最后一个非静音点 + 0.2s】，让新语音接上最近的
+                # 旧语音——首轮嘴就是张的。全静音（冷启动）则原样。
+                self._warm_trim = False
+                arr = np.array(audio_ctx)
+                nz = np.nonzero(np.abs(arr) > 1e-3)[0]
+                if len(nz) > 0:
+                    keep = min(len(arr), int(nz[-1]) + int(0.2 * self.sample_rate))
+                    audio_ctx = deque(arr[:keep].tolist(), maxlen=ctx_len)
             audio_ctx.extend(chunk.tolist())
             audio_array = np.array(audio_ctx)
             t0 = time.perf_counter()
