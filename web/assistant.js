@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829d";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829e";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -330,6 +330,7 @@ function drawAvatarFrame(blob) {
     if (aTime >= 0 && wsPlayer.responseStartCtx > 0 && wsPlayer.ctx) {
       // 语音帧：排到它该被听到的瞬间上屏
       const delay = (wsPlayer.responseStartCtx + aTime - wsPlayer.ctx.currentTime) * 1000;
+      avatarDbg(aTime, delay);  // 排障采样上报
       if (delay > 4000) { bmp.close(); return; }  // 明显过期，丢
       if (delay <= 0) { show(); return; }
       avatarCanvas.pending.push(setTimeout(show, delay));
@@ -339,6 +340,27 @@ function drawAvatarFrame(blob) {
       show();  // 待机帧：即来即播
     }
   }).catch(() => {});
+}
+
+// 排障：帧排程采样上报（每 25 帧取 1），排完删
+const _dbgBuf = [];
+function avatarDbg(aTime, delay) {
+  _dbgBuf.push([Math.round(aTime * 100) / 100, Math.round(delay)]);
+  if (_dbgBuf.length % 25 === 1) {
+    fetch("/rtc/debug", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        avatarDbg: true,
+        samples: _dbgBuf.slice(-3),
+        responseStartCtx: Math.round(wsPlayer.responseStartCtx * 100) / 100,
+        ctxNow: wsPlayer.ctx ? Math.round(wsPlayer.ctx.currentTime * 100) / 100 : -1,
+        leadSec: wsPlayer.leadSec,
+        needLead: wsPlayer._needLead,
+        pending: avatarCanvas.pending.length,
+      }),
+    }).catch(() => {});
+  }
 }
 
 function clearAvatarPending() {
