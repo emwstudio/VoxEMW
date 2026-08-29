@@ -1,9 +1,12 @@
 """MiniCPM-V-4.6 视觉边车：transformers 原生 + FastAPI，OpenAI 兼容 /v1/chat/completions。
 
-为什么不用 vLLM：vllm 0.28 的 MiniCPM-V-4.6 权重映射有 bug
-（checkpoint 的分体 k_proj 对不上实现的 qkv_proj 融合体，加载即 ValueError）。
-模型只有 1.3B（bf16 ~2.7GB），视觉触发是低频场景（说「看看」才调），
-transformers 直跑足够，还省得为一个边车动主环境的 vllm/torch 版本。
+运行环境：独立 conda env `vlm`（transformers==5.7.0）——
+1) 不用 vLLM：vllm 0.28 的 MiniCPM-V-4.6 权重映射有 bug（分体 k_proj
+   对不上融合 qkv_proj，加载即 ValueError）；
+2) 不用 py312 的 transformers 5.16.1：其窗口合并向量化在非均匀切片下
+   reshape 必炸（5.16 回归），36 切片细节档（OCR）只有 5.7.0 能跑。
+模型 1.3B（bf16 ~2.7GB），视觉触发低频（说「看看」才调），transformers
+直跑足够，还省得为一个边车动主环境的 vllm/torch 版本。
 
 自测：python -m voxemw.gateway.vlm_server --selftest /path/to.jpg
 服务：python -m voxemw.gateway.vlm_server --port 18099
@@ -49,9 +52,9 @@ def describe_image(pil_image, prompt: str, max_tokens: int = 120) -> str:
     _load()
     # 模型卡定式：tokenize+图像处理全在 apply_chat_template 里做，
     # downsample_mode 生成时还要再传一次（16x 是速度档，4x 细节档）。
-    # max_slice_nums=1 强制整图单切片：transformers 5.16.1 的窗口合并向量化
-    # 在非均匀切片下 reshape 必炸（view [7,N,1152] 差一行），单切片绕过；
-    # 场景描述不需要 36 切片的细节度。
+    # max_slice_nums=36 细节档（OCR 需要）：transformers 5.16.1 的窗口合并
+    # 向量化在非均匀切片下 reshape 必炸（5.16 回归，5.7.0 正常）——
+    # 所以本服务跑在独立 vlm env（transformers 5.7.0），不用 py312。
     downsample_mode = "16x"
     messages = [{"role": "user", "content": [
         {"type": "image", "image": pil_image},
@@ -60,7 +63,7 @@ def describe_image(pil_image, prompt: str, max_tokens: int = 120) -> str:
     inputs = _processor.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=True,
         return_dict=True, return_tensors="pt",
-        downsample_mode=downsample_mode, max_slice_nums=1,
+        downsample_mode=downsample_mode, max_slice_nums=36,
     ).to("cuda")
     t0 = time.perf_counter()
     with torch.inference_mode():

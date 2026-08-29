@@ -25,9 +25,9 @@ conda activate flashhead
 PYTHONPATH=/root/voxemw nohup python voxemw/avatar/soulx_server.py > logs/soulx.log 2>&1 &
 echo "  日志 logs/soulx.log（引擎加载 ~1 分钟）"
 
-echo "[3/4] MiniCPM-V 视觉边车（py312，1.3B bf16 ~2.7G）..."
-conda activate py312
-PYTHONPATH=/root/voxemw nohup python voxemw/gateway/vlm_server.py --port 18099 > logs/vlm.log 2>&1 &
+echo "[3/4] MiniCPM-V 视觉边车（vlm env，transformers 5.7.0 钉版，36 切片 OCR 档）..."
+conda activate vlm
+PYTHONPATH=/root/voxemw PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   nohup python voxemw/gateway/vlm_server.py --port 18099 > logs/vlm.log 2>&1 &
 echo "  日志 logs/vlm.log（加载 ~30s）"
 
 echo "[4/4] orchestrator（py312）..."
