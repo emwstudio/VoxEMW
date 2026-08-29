@@ -206,7 +206,7 @@ class Session:
         # 一条回复内必然追平（30s 回复峰值不到 1MB）
         self._avatar_cfg = avatar_cfg or {}
         self._avatar_ws = None
-        self._avatar_feed: asyncio.Queue[bytes] = asyncio.Queue()
+        self._avatar_in_resp = False  # 回复音频流进行中（response_start 已发）
         # 浏览器定时上传的最新摄像头帧（b64, 时间戳）——4090 版视觉帧源
         self._last_frame: tuple[str, float] | None = None
 
@@ -276,7 +276,6 @@ class Session:
                 asyncio.create_task(self._s2s_to_browser()),
             ]
             if self._avatar_ws is not None:
-                tasks.append(asyncio.create_task(self._avatar_pacer()))
                 tasks.append(asyncio.create_task(self._avatar_frames()))
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
@@ -346,23 +345,6 @@ class Session:
             self._vision_busy = False
 
     # ── 两条转发协程 ──
-
-    async def _avatar_pacer(self) -> None:
-        """TTS 音频按【播放时刻】paced 喂渲染服务（32000 B/s 实时节奏）。
-
-        这是音画同步的关键：TTS 生成比实时快（RTF~0.4），直接灌会让数字人
-        的嘴比声音快一整个缓冲。paced 后视频帧滞后喂入时间线 ~1.2s
-        （0.96s 攒 chunk + 0.27s 生成），前端把音频播放压后同量
-        （avatar.audio_lead_ms）即对齐。"""
-        while True:
-            pcm = await self._avatar_feed.get()
-            try:
-                await self._avatar_ws.send(json.dumps(
-                    {"type": "audio", "pcm": base64.b64encode(pcm).decode()}))
-            except Exception as e:
-                logger.info("avatar 喂入失败，退出 pacer: %r", e)
-                return
-            await asyncio.sleep(len(pcm) / 2 / 16000)
 
     async def _avatar_frames(self) -> None:
         """渲染服务 JPEG 帧 → 浏览器（二进制帧原样转发）。"""
@@ -444,6 +426,12 @@ class Session:
                 self._resp_had_content = True
             elif etype == "response.done":
                 self._assistant_speaking = False
+                if self._avatar_in_resp and self._avatar_ws is not None:
+                    try:
+                        await self._avatar_ws.send(json.dumps({"type": "response_end"}))
+                    except Exception:
+                        pass
+                    self._avatar_in_resp = False
                 # 生成完毕 ≠ 播放完毕：pacer 队列里还有没播的音频。
                 # 通知前端播放真正清空（或即将清空）的时刻，前端据此收「说话中」
                 if self.pacer is None:
@@ -482,12 +470,8 @@ class Session:
                             "item": {"type": "message", "role": "assistant",
                                      "content": [{"type": "output_text", "text": prefix}]}}))
                 if self._avatar_ws is not None:
-                    # 打断：渲染服务清队 + 喂入队列清空（嘴立刻回到待机）
-                    while not self._avatar_feed.empty():
-                        try:
-                            self._avatar_feed.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
+                    # 打断：渲染服务三段全清（嘴立刻回到待机）
+                    self._avatar_in_resp = False
                     try:
                         await self._avatar_ws.send(json.dumps({"type": "flush"}))
                     except Exception:
@@ -506,7 +490,13 @@ class Session:
             if pcm is not None and self.pacer is not None:
                 self.pacer.feed_audio(pcm)  # RTC 音频轨
             if pcm is not None and self._avatar_ws is not None:
-                self._avatar_feed.put_nowait(pcm)  # 数字人渲染（paced 协程消费）
+                # 数字人渲染：按【生成速度】即时转发（不 paced——帧带音频
+                # 时间戳，浏览器按播放时钟定点放映，同步真理在播放端）
+                if not self._avatar_in_resp:
+                    await self._avatar_ws.send(json.dumps({"type": "response_start"}))
+                    self._avatar_in_resp = True
+                await self._avatar_ws.send(json.dumps(
+                    {"type": "audio", "pcm": base64.b64encode(pcm).decode()}))
             if relay:
                 if pcm is not None:
                     event = dict(event)

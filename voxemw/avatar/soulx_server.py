@@ -1,20 +1,26 @@
-"""SoulX-FlashHead 数字人渲染服务：实时音频流 → JPEG 视频帧流（WebSocket）。
+"""SoulX-FlashHead 数字人渲染服务：实时音频流 → 带时间戳的 JPEG 帧流（WebSocket）。
 
 运行环境：flashhead conda env（python 3.10 + torch 2.7.1 + flash_attn），
 与语音管线（py312 env）隔离。cwd 必须是 SoulX-FlashHead 仓库根
 （inference.py 用相对路径读 flash_head/configs/infer_params.yaml）。
 
-协议（客户端 ↔ 本服务）：
-  → 文本 {"type":"audio","pcm":<base64>}  16kHz PCM16 单声道；
-    由编排层按【播放时刻】paced 喂入（不是生成时刻），本服务天然按实时节奏渲染
-  → 文本 {"type":"flush"}                 打断：丢弃待渲染音频，回待机
-  → 文本 {"type":"ping"}
-  ← 二进制帧：JPEG（512x512，生成即推，~25fps）
-  ← 文本 {"type":"ready"|"flushed"|"pong"|"error", ...}
+同步架构（显式对齐，2026-08-29 定稿）：
+- 编排层按【生成速度】喂音频（不 paced），首段 0.96s 音频 ~0.4s 攒齐，
+  比 paced 喂法快 ~0.6s 出首帧
+- 回复开始时对齐 chunk 边界（丢弃待机半段），每个 chunk 精确对应
+  回复音频时间轴 [k*0.96, (k+1)*0.96]
+- 每帧带 4 字节 float32 音频时间戳（秒，回复内相对时间；-1 = 待机帧即来即播），
+  【浏览器】按自己的播放时钟定点放映——同步真理在播放端，不猜网络时钟
+- 回复进行中音频暂时断供时【不补静音】（保持音频轴精确），嘴停在上帧
 
-渲染节奏：每 chunk = slice_len 帧（0.96s 音频 @25fps），Lite 生成 ~0.27s/chunk，
-渲染循环按 chunk 时长对齐实时（生成完睡到 chunk 边界），GPU 占用 ~28%，
-音频到达滞后/打断由队列深度自适应。无音频时喂静音 → 待机呼吸/眨眼。
+协议（客户端 ↔ 本服务）：
+  → 文本 {"type":"response_start"}   新回复音频流开始（对齐 chunk 边界）
+  → 文本 {"type":"audio","pcm":<base64>}  16kHz PCM16 单声道（生成速度喂入）
+  → 文本 {"type":"response_end"}     回复音频流结束（尾巴补静音收嘴，回待机）
+  → 文本 {"type":"flush"}            打断：三段全清，立刻回待机
+  → 文本 {"type":"ping"}
+  ← 二进制帧：4B float32 音频时间戳 + JPEG（512x512）
+  ← 文本 {"type":"ready"|"flushed"|"pong"|"error", ...}
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ import json
 import logging
 import os
 import queue
+import struct
 import sys
 import threading
 import time
@@ -41,11 +48,12 @@ logger = logging.getLogger("soulx_server")
 
 PIPELINE_SR = 16000
 JPEG_QUALITY = 80
-AUDIO_Q_MAX = 8  # 待渲染 chunk 上限（≈8s），溢出说明上游没 paced，丢最旧
+AUDIO_Q_MAX = 64  # 快速喂法下整句可能瞬到，给足缓冲（64 chunk ≈ 2MB 音频）
+IDLE_ATIME = -1.0  # 待机帧时间戳：浏览器即来即播
 
 
 class RenderEngine:
-    """同步渲染引擎（独立线程跑）：音频 chunk 队列 → JPEG 帧回调。"""
+    """渲染引擎：攒段/生成/输出三段流水线，帧带音频时间戳。"""
 
     def __init__(self, cond_image: str, ckpt: str, wav2vec: str,
                  on_frames, jpeg_quality: int = JPEG_QUALITY):
@@ -70,36 +78,62 @@ class RenderEngine:
         self.motion_frames_num = params["motion_frames_num"]
         self.audio_start_idx = self.cached_audio_duration * self.fps - params["frame_num"]
         self.audio_end_idx = self.cached_audio_duration * self.fps
-        self.on_frames = on_frames  # callback(jpeg_bytes)
+        self.on_frames = on_frames  # callback(bytes: 4B时间戳头 + JPEG)
         self.jpeg_quality = jpeg_quality
-        self.audio_q: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=AUDIO_Q_MAX)
-        # 三段流水线：攒段（实时边界）→ 生成（0.25s 富余 3.8x）→ 滴灌（25fps）
-        self.chunk_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=2)
-        self.emit_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=2)
+        self.audio_q: queue.Queue[np.ndarray] = queue.Queue(maxsize=AUDIO_Q_MAX)
+        self.chunk_q: queue.Queue[tuple] = queue.Queue(maxsize=2)
+        self.emit_q: queue.Queue[tuple] = queue.Queue(maxsize=8)
         self._stop = threading.Event()
         self._flushed = threading.Event()
         self._flush_seq = 0  # 打断代际：生成完才发现代际变了就丢帧
+        # 回复状态（显式对齐的核心账本）
+        self._in_response = False
+        self._fed_samples = 0       # 本回复已喂样本数（音频轴原点）
+        self._consumed_samples = 0  # 本回复已进 chunk 的样本数
         logger.info("引擎加载完成 %.1fs：slice=%d 帧(%.2fs) fps=%d 上下文=%ds",
                     time.perf_counter() - t0, self.slice_len, self.chunk_seconds,
                     self.fps, self.cached_audio_duration)
 
+    # ── 客户端消息入口 ──
+
+    def response_start(self) -> None:
+        """新回复：音频轴归零，攒段线程对齐 chunk 边界（丢待机半段）。"""
+        self._in_response = True
+        self._fed_samples = 0
+        self._consumed_samples = 0
+        # 丢弃待机积压（静音段），让回复音频立即成段
+        while True:
+            try:
+                self.audio_q.get_nowait()
+            except queue.Empty:
+                break
+        self._flushed.set()  # 攒段线程丢 pending 半块，从回复起点重开
+
+    def response_end(self) -> None:
+        """回复结束：_in_response 翻False，攒段线程自然给尾巴补静音收嘴
+        （时间戳顺延，播完自然定格），随后回待机。"""
+        self._in_response = False
+
     def feed(self, pcm: bytes) -> None:
-        """喂 16k PCM16（任意长度，内部按 chunk 切）。"""
+        """喂 16k PCM16（任意长度；生成速度，不 paced）。"""
         x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         try:
             self.audio_q.put_nowait(x)
+            self._fed_samples += len(x)
         except queue.Full:
-            logger.warning("渲染队列溢出，丢最旧 chunk（上游喂太快？）")
+            logger.warning("渲染队列溢出，丢最旧（%d 段积压）", AUDIO_Q_MAX)
             try:
                 self.audio_q.get_nowait()
             except queue.Empty:
                 pass
             self.audio_q.put_nowait(x)
+            self._fed_samples += len(x)
 
     def flush(self) -> None:
         """打断：三段全清——待渲染音频、待生成段、待播帧组。
         正在生成中的段靠代际戳丢弃（嘴唇立刻回待机，不播打断前的尾巴）。"""
         self._flush_seq += 1
+        self._in_response = False
         dropped = 0
         for q in (self.audio_q, self.chunk_q, self.emit_q):
             while True:
@@ -108,11 +142,14 @@ class RenderEngine:
                     dropped += 1
                 except queue.Empty:
                     break
-        self._flushed.set()  # 攒段线程顺带丢弃 pending 半块
+        self._flushed.set()
         logger.info("flush：丢弃 %d 个排队项", dropped)
 
+    # ── 三段流水线 ──
+
     def _next_chunk(self, pending: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """从队列攒够一个 chunk 的样本；队列空则补静音（待机动画）。"""
+        """攒够一个 chunk。待机：队列空补静音（呼吸/眨眼）；
+        回复中：队列空【等】不补（保音频轴精确），response_end 后尾巴补静音收嘴。"""
         while len(pending) < self.chunk_samples:
             try:
                 x = self.audio_q.get(timeout=0.2)
@@ -120,8 +157,8 @@ class RenderEngine:
             except queue.Empty:
                 if self._stop.is_set():
                     return pending, np.zeros(0, dtype=np.float32)
-                # 待机只补 0.2s 小片静音（而非整 chunk），真实语音到达
-                # 最坏 0.2s 就能抢占待机动画，不整 chunk 陪绑
+                if self._in_response:
+                    continue  # 回复中宁等勿补：补了音频轴就漂了
                 need = min(self.chunk_samples - len(pending),
                            int(0.2 * self.sample_rate))
                 pending = np.concatenate(
@@ -129,16 +166,28 @@ class RenderEngine:
         return pending[self.chunk_samples:], pending[:self.chunk_samples]
 
     def _accumulate_loop(self) -> None:
-        """攒段线程：audio_q → 整 chunk（实时边界：队列空补静音/ paced 到达）。"""
+        """攒段线程：audio_q → 整 chunk + 每帧音频时间戳（或 None=待机）。"""
         pending = np.zeros(0, dtype=np.float32)
         while not self._stop.is_set():
             if self._flushed.is_set():
                 pending = np.zeros(0, dtype=np.float32)
                 self._flushed.clear()
+            was_in_response = self._in_response
+            consumed_before = self._consumed_samples
             pending, chunk = self._next_chunk(pending)
             if len(chunk) < self.chunk_samples:
                 continue  # stop 中
-            self.chunk_q.put(chunk)  # 满则阻塞（背压：音频暂存 audio_q）
+            n_fed = min(len(chunk), max(0, self._fed_samples - consumed_before))
+            self._consumed_samples = consumed_before + n_fed
+            if n_fed > 0:
+                # 段内含回复音频：逐帧时间戳（回复内相对秒）；
+                # 尾巴补静音的帧顺延（收嘴动作紧跟语音尾，不排队）
+                base = consumed_before / self.sample_rate
+                a_times = [base + (i * self.sample_rate / self.fps) / self.sample_rate
+                           for i in range(self.slice_len)]
+            else:
+                a_times = None  # 纯待机段
+            self.chunk_q.put((chunk, a_times))  # 满则阻塞（背压）
 
     def _generate_loop(self) -> None:
         """生成线程：chunk → 帧组。0.25s/段 vs 0.96s/段到达，等 chunk_q 为主。"""
@@ -148,7 +197,7 @@ class RenderEngine:
         audio_ctx = deque([0.0] * ctx_len, maxlen=ctx_len)
         while not self._stop.is_set():
             try:
-                chunk = self.chunk_q.get(timeout=0.2)
+                chunk, a_times = self.chunk_q.get(timeout=0.2)
             except queue.Empty:
                 continue
             seq = self._flush_seq  # 段起点记代际：生成中途被打断则成品丢弃
@@ -170,30 +219,31 @@ class RenderEngine:
                     self.emit_q.get_nowait()  # 播不过来就丢最旧组，嘴跳新词
                 except queue.Empty:
                     pass
-            self.emit_q.put(frames)
+            self.emit_q.put((frames, a_times))
 
     def _emit_loop(self) -> None:
-        """滴灌线程：帧组按 25fps 逐帧推出（旧版 24 帧瞬发+定格，
-        唇形与平滑音频对不上的根因；串行循环版 drip 又恒为 0）。"""
+        """输出线程：帧 → 4B 时间戳头 + JPEG。
+        语音帧立即发（浏览器按时间戳定点放映，不需要这边匀速）；
+        待机帧按 25fps 滴灌（浏览器即来即播，动画要匀）。"""
         frame_interval = 1.0 / self.fps
         while not self._stop.is_set():
             try:
-                frames = self.emit_q.get(timeout=0.2)
+                frames, a_times = self.emit_q.get(timeout=0.2)
             except queue.Empty:
                 continue
+            is_idle = a_times is None
             for i in range(frames.shape[0]):
-                target = time.perf_counter() + frame_interval
-                self.on_frames(self._to_jpeg(frames[i]))
-                delay = target - time.perf_counter()
-                if delay > 0:
-                    self._stop.wait(delay)
+                a = IDLE_ATIME if is_idle else a_times[i]
+                payload = struct.pack("<f", a) + self._to_jpeg(frames[i])
+                self.on_frames(payload)
+                if is_idle:
+                    target = time.perf_counter() + frame_interval
+                    delay = target - time.perf_counter()
+                    if delay > 0:
+                        self._stop.wait(delay)
 
     def run(self) -> None:
-        """三段流水线：攒段/生成/滴灌各吃满自己的节奏互不拖累。
-
-        为什么必须拆：攒段天然 0.96s/段（实时），生成 0.25s/段，
-        滴灌 0.96s/段（25fps）——串行循环里三者相加 = 2.2s/段，
-        消耗速率只有实时的 44%，连续说话必然积压丢段。"""
+        """三段流水线：攒段/生成/输出各吃满自己的节奏互不拖累。"""
         threads = [
             threading.Thread(target=self._accumulate_loop, daemon=True),
             threading.Thread(target=self._generate_loop, daemon=True),
@@ -222,19 +272,15 @@ class AvatarServer:
         self.clients: set = set()
         self.loop: asyncio.AbstractEventLoop | None = None
 
-    def emit_frames_threadsafe(self, jpeg: bytes) -> None:
-        """渲染线程回调：帧 → asyncio 广播队列。"""
+    def emit_frames_threadsafe(self, payload: bytes) -> None:
+        """渲染线程回调：帧 → asyncio 广播。"""
         if self.loop is None or not self.clients:
             return
-        dead = []
         for ws in list(self.clients):
             try:
-                # 帧率 25，逐帧 send  futures 不管完成（UDP 式丢得起）
-                asyncio.run_coroutine_threadsafe(self._send(ws, jpeg), self.loop)
+                asyncio.run_coroutine_threadsafe(self._send(ws, payload), self.loop)
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.clients.discard(ws)
+                self.clients.discard(ws)
 
     @staticmethod
     async def _send(ws, data: bytes) -> None:
@@ -260,6 +306,10 @@ class AvatarServer:
                     etype = event.get("type")
                     if etype == "audio":
                         self.engine.feed(base64.b64decode(event["pcm"]))
+                    elif etype == "response_start":
+                        self.engine.response_start()
+                    elif etype == "response_end":
+                        self.engine.response_end()
                     elif etype == "flush":
                         self.engine.flush()
                         await ws.send(json.dumps({"type": "flushed"}))
@@ -295,9 +345,9 @@ def main() -> None:
 
     server: AvatarServer | None = None
 
-    def on_frames(jpeg: bytes) -> None:
+    def on_frames(payload: bytes) -> None:
         if server is not None:
-            server.emit_frames_threadsafe(jpeg)
+            server.emit_frames_threadsafe(payload)
 
     engine = RenderEngine(args.cond_image, args.ckpt, args.wav2vec, on_frames)
     server = AvatarServer(engine)

@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829c";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829d";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -304,21 +304,47 @@ async function startVisionCam() {
   addLine("sys", "📷 摄像头已就绪，说「妮儿看看」她就会看");
 }
 
-// 数字人视频帧渲染：JPEG 二进制帧 → ImageBitmap → canvas。
-// 逐帧到达即画（~25fps），乱序/丢帧按最新帧覆盖——UDP 式语义，不排队。
+// 数字人视频帧渲染：4B float32 音频时间戳 + JPEG → canvas。
+// 语音帧（t>=0）按播放时钟定点放映（responseStartCtx + t 时刻上屏），
+// 待机帧（t=-1）即来即播。同步真理在播放端：哪帧对应哪毫秒声音，
+// 只有拿着 AudioContext 时钟的浏览器知道。
 let avatarEnabled = false;  // vox.status 下发：渲染服务在线
-const avatarCanvas = { ctx2d: null, lastBitmap: null };
+const avatarCanvas = { ctx2d: null, lastBitmap: null, pending: [] };
 
 function drawAvatarFrame(blob) {
   const canvas = document.getElementById("avatar-canvas");
   if (!canvas) return;
   if (!avatarCanvas.ctx2d) avatarCanvas.ctx2d = canvas.getContext("2d");
-  createImageBitmap(blob).then((bmp) => {
-    const prev = avatarCanvas.lastBitmap;
-    avatarCanvas.lastBitmap = bmp;
-    avatarCanvas.ctx2d.drawImage(bmp, 0, 0, canvas.width, canvas.height);
-    if (prev) prev.close();
+  blob.arrayBuffer().then((buf) => {
+    const aTime = new DataView(buf).getFloat32(0, true);
+    const jpeg = buf.slice(4);
+    return createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }))
+      .then((bmp) => ({ bmp, aTime }));
+  }).then(({ bmp, aTime }) => {
+    const show = () => {
+      const prev = avatarCanvas.lastBitmap;
+      avatarCanvas.lastBitmap = bmp;
+      avatarCanvas.ctx2d.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+      if (prev) prev.close();
+    };
+    if (aTime >= 0 && wsPlayer.responseStartCtx > 0 && wsPlayer.ctx) {
+      // 语音帧：排到它该被听到的瞬间上屏
+      const delay = (wsPlayer.responseStartCtx + aTime - wsPlayer.ctx.currentTime) * 1000;
+      if (delay > 4000) { bmp.close(); return; }  // 明显过期，丢
+      if (delay <= 0) { show(); return; }
+      avatarCanvas.pending.push(setTimeout(show, delay));
+      // 顺手清已触发的 id，防数组无界长
+      if (avatarCanvas.pending.length > 200) avatarCanvas.pending.splice(0, 100);
+    } else {
+      show();  // 待机帧：即来即播
+    }
   }).catch(() => {});
+}
+
+function clearAvatarPending() {
+  // 打断：已排程未上屏的语音帧全部作废（嘴立刻回待机）
+  for (const id of avatarCanvas.pending) clearTimeout(id);
+  avatarCanvas.pending = [];
 }
 
 const wsPlayer = {
@@ -327,6 +353,7 @@ const wsPlayer = {
   sources: new Set(),  // 已排程未播完的源（打断时批量 stop）
   leadSec: 0,          // 新回复播放压后（数字人渲染滞后对齐，vox.status 下发）
   _needLead: true,     // 每条回复的首块才加 lead（句间卡顿不重加）
+  responseStartCtx: 0, // 本回复音频轴原点（ctx 时钟）：首块的排程起播时刻
   ensure() {
     if (!this.ctx) this.ctx = new AudioContext();
     if (this.ctx.state === "suspended") this.ctx.resume().catch(() => {});
@@ -345,10 +372,12 @@ const wsPlayer = {
     src.connect(ctx.destination);
     // 新回复首块加 lead（数字人渲染固有滞后 ~1.2s 的对齐量）；
     // 队列续播/句间小卡只加 30ms jitter 余量
-    const base = this._needLead ? ctx.currentTime + 0.03 + this.leadSec
-                                : ctx.currentTime + 0.03;
+    const firstOfResponse = this._needLead;
+    const base = firstOfResponse ? ctx.currentTime + 0.03 + this.leadSec
+                                 : ctx.currentTime + 0.03;
     this._needLead = false;
     const t = Math.max(base, this.nextStart);
+    if (firstOfResponse) this.responseStartCtx = t;  // 只在回复首块记音频轴原点
     src.start(t);
     this.nextStart = t + buf.duration;
     this.sources.add(src);
@@ -465,8 +494,9 @@ function setAvatarState(state) {
 
 const realtimeHandlers = {
   "input_audio_buffer.speech_started"() {
-    // 用户开口（打断）：服务端 flush 音频队列，本地同步清 WS 播放队列
+    // 用户开口（打断）：服务端 flush 音频队列，本地同步清 WS 播放队列+帧排程
     wsPlayer.flush();
+    clearAvatarPending();
     assistantLine = null;
     setAvatarState("listening");
   },
