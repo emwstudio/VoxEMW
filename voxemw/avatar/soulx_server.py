@@ -101,16 +101,22 @@ class RenderEngine:
     # ── 客户端消息入口 ──
 
     def response_start(self) -> None:
-        """新回复：记音频轴原点（计数器不归零），攒段线程对齐 chunk 边界。"""
+        """新回复：对齐音频轴原点，攒段线程对齐 chunk 边界。
+
+        原点必须取【消费计数】而不是喂入计数：上一回复的尾巴样本
+        （已喂未消费）若计入原点，base=(consumed-origin) 变负，
+        首 chunk 时间戳为负 → 浏览器把开头帧当待机帧，「第一个音嘴不动」。
+        drain 丢掉的已喂样本同样记为已消费（同 flush 的账平逻辑）。"""
         logger.info("response_start 收到")
         self._in_response = True
-        self._response_fed_origin = self._fed_samples
         # 丢弃待机积压（静音段），让回复音频立即成段
         while True:
             try:
                 self.audio_q.get_nowait()
             except queue.Empty:
                 break
+        self._consumed_samples = self._fed_samples
+        self._response_fed_origin = self._consumed_samples
         self._flushed.set()  # 攒段线程丢 pending 半块，从回复起点重开
 
     def response_end(self) -> None:
