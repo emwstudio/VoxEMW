@@ -1,18 +1,18 @@
-# VoxEMW · 河南妮儿数字人
+# VoxEMW · 魔镜女巫数字人
 
-> 对着浏览器说话，一个说河南话的写实数字人秒回你——**说完 ~3s 开口，声画齐出**。
-> 判停 / 转写 / 克隆合成 / 数字人渲染 / 视觉，全部跑在一张 4090 上，只有大脑上云（DeepSeek API）。
+> 对着浏览器说话，一面紫金魔镜里的女巫秒回你——**说完 ~3s 开口，声画齐出**。
+> 判停 / 转写 / 音色设计 / 数字人渲染 / 视觉，全部跑在一张 4090 上，只有大脑上云（DeepSeek API）。
 
-[![version](https://img.shields.io/badge/version-v1.9.1-blue)](https://github.com/emwstudio/VoxEMW/tags)
+[![version](https://img.shields.io/badge/version-v1.10.0-blue)](https://github.com/emwstudio/VoxEMW/tags)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![B站](https://img.shields.io/badge/B站-电磁波Studio-00a1d6?logo=bilibili&logoColor=white)](https://space.bilibili.com/492428186)
 [![YouTube](https://img.shields.io/badge/YouTube-@emw__studio-ff0000?logo=youtube&logoColor=white)](https://www.youtube.com/@emw_studio)
 [![X](https://img.shields.io/badge/X-@emwstudio-000000?logo=x&logoColor=white)](https://x.com/emwstudio)
 
-**一张 4090（24GB）全搞定。** AutoDL 单卡同时驻留四个模型：Qwen3-ASR-1.7B（耳朵）+ VoxCPM2（克隆嗓音）+ SoulX-FlashHead（写实数字人）+ MiniCPM-V-4.6（眼睛），显存 21.7G/24G。Mac + VRM 二次元轻量档存档于 **git tag v1.9.0**。
+**一张 4090（24GB）全搞定。** AutoDL 单卡同时驻留四个模型：Qwen3-ASR-1.7B（耳朵）+ VoxCPM2（音色设计）+ SoulX-FlashHead（写实数字人）+ MiniCPM-V-4.6（眼睛），显存 21.7G/24G。Mac + VRM 二次元轻量档存档于 **git tag v1.9.0**。
 
 > 形态说明：早期版本（云端 AVTR-1 + 本地 27B 全离线）见 git tag v1.7.x；纯语音星空版见 v1.8.x；
-> Mac 本地 + VRM 二次元版见 v1.9.0。当前主线：**4090 满血写实数字人版**。
+> Mac 本地 + VRM 二次元版见 v1.9.0。当前主线：**4090 满血写实数字人版（魔镜女巫）**。
 
 ## 开发日记（视频）
 
@@ -32,7 +32,7 @@
   │  ws/http（TCP 隧道友好；LAN 可切 WebRTC Opus 轨）
   ▼
 4090 服务器（AutoDL，24GB）
-  orchestrator（:8000）——会话调度 / persona 注入 / 打断编排
+  orchestrator（:8000）——会话调度 / persona 注入 / 工具执行 / 打断编排
     ├─ s2s 语音管线（:8765）  ①VAD → ②STT → ③LLM → ④TTS
     │                                    │
     │                                    └─ DeepSeek API（deepseek-v4-flash）
@@ -44,11 +44,11 @@
 |---|---|---|
 | ① VAD 判停 | Silero + SmartTurn v3.2（CPU ONNX） | 语义复核，停顿不抢答 |
 | ② STT 语音转写 | Qwen3-ASR-1.7B-hf（transformers，CUDA bf16） | 人设热词注入 + 专名后校正 |
-| ③ LLM 大脑 | DeepSeek v4-flash（API） | 关思考模式保时延 |
-| ④ TTS 语音合成 | VoxCPM2（官方 PyTorch bf16） | **零样本河南话克隆**，TTFA 0.2s，RTF ~0.5 |
+| ③ LLM 大脑 | DeepSeek v4-flash（API） | 关思考模式保时延；function calling 自主决定「看」 |
+| ④ TTS 语音合成 | VoxCPM2（官方 PyTorch bf16） | **音色设计**：voice_control 描述词 + voice_seed 钉定（也支持零样本克隆），TTFA 0.2s，RTF ~0.5 |
 | ⑤ 数字人 | Soul-AILab/SoulX-FlashHead-1_3B（Lite） | 音频驱动写实 talking-head，96 FPS 级，待机呼吸常活 |
-| ⑥ 眼睛 | MiniCPM-V-4.6（1.3B bf16） | 「妮儿看看」触发：抓帧 → 描述 → 人设口吻重答，36 切片 OCR |
-| ⑤+ Persona 人设 | 女娲 · Skill 造人术 | `personas/*.md`（含克隆参考音 + 逐字台词） |
+| ⑥ 眼睛 | MiniCPM-V-4.6（1.3B bf16） | DeepSeek 调 `look_at_camera` 工具 → orchestrator 取帧描述回注，36 切片 OCR |
+| ⑤+ Persona 人设 | 女娲 · Skill 造人术 | `personas/*.md`（人设正文 + 音色描述词/种子或克隆参考音） |
 
 ## 部署（AutoDL 4090）
 
@@ -66,16 +66,25 @@ open http://localhost:8000
 
 ## 特性
 
+- **紫金魔镜 UI**：镜中镜构图——女巫居鎏金圆镜正中，你映在镜右下角的倒影里；紫雾魔尘背景、开口时鎏金流光、她「看」你时一道紫光扫过镜面
+- **音色设计 + 种子钉定**：VoxCPM2 voice_control 描述词凭空造嗓音（不克隆真人素材），voice_seed 固定随机种子——音色逐句一致不漂移；描述词即改即换（「再妖一点」是一行字的事）
+- **工具调用视觉**：不需要触发词——DeepSeek 自主决定「看」（问穿搭、展示物品、问「我美不美」），orchestrator 执行 VLM 描述回注，她夸你夸到衣服颜色上
 - **写实数字人**：SoulX-FlashHead 音频驱动——唇形跟音频、眨眼、微表情、呼吸常活；待机↔说话状态机，收嘴自然
-- **单时钟唇形同步（V1 架构）**：TTS 音频按播放时刻 paced 喂入渲染端，服务端 25fps 滴灌出帧，声音压后 1.3s 对齐渲染滞后——零时间戳零排程，简单才稳
-- **河南话克隆**：VoxCPM2 零样本克隆，河南妮儿人设（中/得劲儿/大信球/俺不中嘞 剧本全对）
-- **眼睛**：说「妮儿看看」，她看你的摄像头画面并用人设口吻描述；OCR 逐字全对
+- **单时钟唇形同步（V1.1）**：喂入/滴灌双 deadline 时刻表调度，长回复零累积漂移（实测 108s 回复滞后恒定）；声音压后 1.3s 对齐渲染滞后
 - **语义判停 + 打断**：SmartTurn 复核不抢话；插嘴即停（音频/帧队列毫秒级双清）
-- **热词注入**：STT 人设热词（河南妮儿/恁/中/得劲）+ 转写后专名确定性校正
+- **热词注入**：STT 人设热词（魔镜女巫/魔镜）+ 转写后专名确定性校正
 - **断线自愈**：avatar 断线 2s 自动重连；会话槽位秒拒自动重试；回声/热词背诵压制
 - **四模型同卡**：12.3G 管线 + 6.2G SoulX + 3.2G VLM = 21.7G/24G 稳定共存
 
 ## 更新日志
+
+### v1.10.0（魔镜女巫版）
+
+- **人设换皮：河南妮儿 → 魔镜女巫**（`personas/mojingnvwu.md`）：迪士尼童话腔奉承发动机，招牌段子照本念（「魔镜魔镜告诉我，谁是全世界最美的女人」），SoulX 参考脸同步换镜中女巫
+- **TTS 换玩法：克隆 → 音色设计**：VoxCPM2 voice_control 描述词直连出声；发现并解决设计模式逐句随机采样导致音色漂移的问题——handler 钉死 `voice_seed`，音色确定且逐句一致（配置校验同步改为 ref_wav / voice_control 二选一）
+- **眼睛升级：关键词触发 → DeepSeek function calling**：session 声明 `look_at_camera` 工具，模型自主决定「看」，orchestrator 拦截 tool call 执行 VLM 描述、`function_call_output` 回注；修复 tool 回合被空回复兜底误判、用户抢话与工具回注撞 `response.create` 两个竞态
+- **音画同步双修复**：paced 喂入与帧滴灌各自的 per-chunk sleep 误差累积（实测 1.2%/1.6% 每分钟，长回复末尾口型可见落后）→ 双双改 deadline 时刻表调度，滞后恒定不累积；orchestrator 留断流/进度观测日志
+- **前端「紫金魔镜」主题 + 纯魔镜沉浸布局**：去掉聊天气泡，镜面居中放大；镜中镜构图（摄像头画面映在魔镜右下角）；紫雾魔尘背景、鎏金镜框、镜面玻璃反光、开口鎏金流光、`look_at_camera` 紫光扫镜、系统消息浓缩为镜下一行小字
 
 ### v1.9.1（4090 满血版）
 
