@@ -152,16 +152,23 @@ class RenderEngine:
 
     # ── 三段流水线 ──
 
-    def _next_chunk(self, pending: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _next_chunk(self, pending: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
         """攒够一个 chunk。待机：队列空补静音（呼吸/眨眼）；
-        回复中：队列空【等】不补（保音频轴精确），response_end 后尾巴补静音收嘴。"""
+        回复中：队列空【等】不补（保音频轴精确），response_end 后尾巴补静音收嘴。
+
+        flush 必须在【循环内】响应：response_start/打断到来时本函数可能正
+        攥着半块【静音】pending 阻塞等音频——若不即丢，静音半块会和回复
+        音频混进同一 chunk，喂入记账被污染（多记 8000 个根本没喂的样本），
+        后续语音段全被误标待机帧（实测复现：块状喂入第二轮 0 语音帧）。"""
         while len(pending) < self.chunk_samples:
+            if self._flushed.is_set():
+                return np.zeros(0, dtype=np.float32), None  # 丢 pending 重开
             try:
                 x = self.audio_q.get(timeout=0.2)
                 pending = np.concatenate([pending, x])
             except queue.Empty:
                 if self._stop.is_set():
-                    return pending, np.zeros(0, dtype=np.float32)
+                    return pending, None
                 if self._in_response:
                     continue  # 回复中宁等勿补：补了音频轴就漂了
                 need = min(self.chunk_samples - len(pending),
@@ -180,6 +187,9 @@ class RenderEngine:
             was_in_response = self._in_response
             consumed_before = self._consumed_samples
             pending, chunk = self._next_chunk(pending)
+            if chunk is None:
+                pending = np.zeros(0, dtype=np.float32)  # flush 丢半块，重开
+                continue
             if len(chunk) < self.chunk_samples:
                 continue  # stop 中
             n_fed = min(len(chunk), max(0, self._fed_samples - consumed_before))
