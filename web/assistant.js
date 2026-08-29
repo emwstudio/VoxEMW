@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829e";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829f";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -305,11 +305,11 @@ async function startVisionCam() {
 }
 
 // 数字人视频帧渲染：4B float32 音频时间戳 + JPEG → canvas。
-// 语音帧（t>=0）按播放时钟定点放映（responseStartCtx + t 时刻上屏），
-// 待机帧（t=-1）即来即播。同步真理在播放端：哪帧对应哪毫秒声音，
-// 只有拿着 AudioContext 时钟的浏览器知道。
+// 单循环队列放映（不用 setTimeout 定时器风暴）：帧按到达序进队，
+// rAF 循环按播放时钟（ctx.currentTime - responseStartCtx）取「到点的
+// 最新帧」上屏——落后自动跳帧追齐，不倒序、不扎堆、不受解码快慢影响。
 let avatarEnabled = false;  // vox.status 下发：渲染服务在线
-const avatarCanvas = { ctx2d: null, lastBitmap: null, pending: [] };
+const avatarCanvas = { ctx2d: null, lastBitmap: null, queue: [], rafId: 0 };
 
 function drawAvatarFrame(blob) {
   const canvas = document.getElementById("avatar-canvas");
@@ -318,28 +318,52 @@ function drawAvatarFrame(blob) {
   blob.arrayBuffer().then((buf) => {
     const aTime = new DataView(buf).getFloat32(0, true);
     const jpeg = buf.slice(4);
-    return createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }))
-      .then((bmp) => ({ bmp, aTime }));
-  }).then(({ bmp, aTime }) => {
-    const show = () => {
-      const prev = avatarCanvas.lastBitmap;
-      avatarCanvas.lastBitmap = bmp;
-      avatarCanvas.ctx2d.drawImage(bmp, 0, 0, canvas.width, canvas.height);
-      if (prev) prev.close();
-    };
-    if (aTime >= 0 && wsPlayer.responseStartCtx > 0 && wsPlayer.ctx) {
-      // 语音帧：排到它该被听到的瞬间上屏
-      const delay = (wsPlayer.responseStartCtx + aTime - wsPlayer.ctx.currentTime) * 1000;
-      avatarDbg(aTime, delay);  // 排障采样上报
-      if (delay > 4000) { bmp.close(); return; }  // 明显过期，丢
-      if (delay <= 0) { show(); return; }
-      avatarCanvas.pending.push(setTimeout(show, delay));
-      // 顺手清已触发的 id，防数组无界长
-      if (avatarCanvas.pending.length > 200) avatarCanvas.pending.splice(0, 100);
-    } else {
-      show();  // 待机帧：即来即播
-    }
+    const item = { aTime, bmp: null };
+    // 解码在后台进行；放映循环只画解码完成的
+    item.bmp = createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }))
+      .then((b) => { item.bmp = b; })
+      .catch(() => { item.bmp = "bad"; });
+    avatarCanvas.queue.push(item);  // 到达序 = 时间戳序
+    avatarDbg(aTime, 0);
+    startAvatarLoop();
   }).catch(() => {});
+}
+
+function startAvatarLoop() {
+  if (avatarCanvas.rafId) return;
+  const canvas = document.getElementById("avatar-canvas");
+  const tick = () => {
+    avatarCanvas.rafId = 0;
+    const q = avatarCanvas.queue;
+    // 播放位置（秒）：本回复音频轴上声音走到哪了
+    const pos = (wsPlayer.responseStartCtx > 0 && wsPlayer.ctx)
+      ? wsPlayer.ctx.currentTime - wsPlayer.responseStartCtx
+      : Infinity;
+    // 取「到点的最新帧」：语音帧到点才播（pos >= aTime），待机帧随时可播
+    // 但让位给语音帧；一路弹到「未到点语音帧」为止
+    let show = null;
+    while (q.length > 0) {
+      const head = q[0];
+      if (head.aTime >= 0 && head.aTime > pos) break;  // 还没到点的语音帧
+      q.shift();
+      if (head.aTime >= 0) show = head;       // 到点语音帧：继续找更新的
+      else if (!show) show = head;            // 待机帧：暂存，被语音帧覆盖
+    }
+    if (show) {
+      if (show.bmp instanceof Promise || show.bmp === null) {
+        q.unshift(show);  // 没解码完，放回去等下一帧（保序）
+      } else if (show.bmp !== "bad") {
+        const prev = avatarCanvas.lastBitmap;
+        avatarCanvas.lastBitmap = show.bmp;
+        avatarCanvas.ctx2d.drawImage(show.bmp, 0, 0, canvas.width, canvas.height);
+        if (prev) prev.close();
+      }
+    }
+    if (avatarCanvas.queue.length > 0) {
+      avatarCanvas.rafId = requestAnimationFrame(tick);
+    }
+  };
+  avatarCanvas.rafId = requestAnimationFrame(tick);
 }
 
 // 排障：帧排程采样上报（每 25 帧取 1），排完删
@@ -357,16 +381,18 @@ function avatarDbg(aTime, delay) {
         ctxNow: wsPlayer.ctx ? Math.round(wsPlayer.ctx.currentTime * 100) / 100 : -1,
         leadSec: wsPlayer.leadSec,
         needLead: wsPlayer._needLead,
-        pending: avatarCanvas.pending.length,
+        pending: avatarCanvas.queue.length,
       }),
     }).catch(() => {});
   }
 }
 
 function clearAvatarPending() {
-  // 打断：已排程未上屏的语音帧全部作废（嘴立刻回待机）
-  for (const id of avatarCanvas.pending) clearTimeout(id);
-  avatarCanvas.pending = [];
+  // 打断：未上屏的帧全部作废（嘴立刻回待机）
+  for (const item of avatarCanvas.queue) {
+    if (item.bmp && !(item.bmp instanceof Promise) && item.bmp !== "bad") item.bmp.close();
+  }
+  avatarCanvas.queue = [];
 }
 
 const wsPlayer = {
