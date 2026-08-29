@@ -237,16 +237,17 @@ class RenderEngine:
             seq = self._flush_seq  # 段起点记代际：生成中途被打断则成品丢弃
             if self._warm_trim:
                 # 热启动：8s 上下文尾部若全是待机静音，模型会把开头
-                # ~0.3s 生成成闭嘴过渡（「第一个音嘴不动」的用户观感）。
+                # ~0.4s 生成成闭嘴过渡（「第一个音嘴不动」的用户观感）。
                 # 用【只装真实语音】的历史重建上下文：上段语音尾巴 +
-                # 0.2s 静音过渡 + 左补零到 8s（长度不能变，否则嵌入窗错位——
-                # 首版直接裁短数组，窗口落空反而更糟）。
+                # 1 帧静音间隔 + 左补零到 8s（长度不能变，否则嵌入窗错位）。
+                # 语境连续 → 首轮帧嘴就是动的；留 0.2s 静音过渡实测
+                # 模型仍要 ~0.5s 才把嘴张开，等于白热。
                 self._warm_trim = False
                 hist = np.array(self._speech_hist, dtype=np.float32)
                 if hist.size > 0:
                     tail = hist[-int(7.8 * self.sample_rate):]
                     ctx_arr = np.concatenate(
-                        [tail, np.zeros(int(0.2 * self.sample_rate), dtype=np.float32)])
+                        [tail, np.zeros(int(0.04 * self.sample_rate), dtype=np.float32)])
                     if len(ctx_arr) < ctx_len:
                         ctx_arr = np.concatenate(
                             [np.zeros(ctx_len - len(ctx_arr), dtype=np.float32), ctx_arr])
