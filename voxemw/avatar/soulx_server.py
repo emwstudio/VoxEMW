@@ -94,7 +94,10 @@ class RenderEngine:
         self._fed_samples = 0        # 累计已喂样本数（含语音的）
         self._consumed_samples = 0   # 累计已进 chunk 的喂入样本数
         self._response_fed_origin = 0  # 本回复音频轴原点（= response_start 时的 consumed）
-        self._warm_trim = False      # 下一 chunk 前裁剪上下文尾部静音
+        self._warm_trim = False      # 下一 chunk 前用语音史重建暖上下文
+        # 只装真实喂入语音的滚动历史（不含待机静音）——response_start 时
+        # 用它重建 8s 上下文，让模型看到「上段语音 → 新语音」的连续语境
+        self._speech_hist: deque = deque(maxlen=self.cached_audio_duration * self.sample_rate)
         logger.info("引擎加载完成 %.1fs：slice=%d 帧(%.2fs) fps=%d 上下文=%ds",
                     time.perf_counter() - t0, self.slice_len, self.chunk_seconds,
                     self.fps, self.cached_audio_duration)
@@ -178,6 +181,7 @@ class RenderEngine:
             try:
                 x = self.audio_q.get(timeout=0.2)
                 pending = np.concatenate([pending, x])
+                self._speech_hist.extend(x.tolist())
             except queue.Empty:
                 if self._stop.is_set():
                     return pending, None
@@ -234,14 +238,19 @@ class RenderEngine:
             if self._warm_trim:
                 # 热启动：8s 上下文尾部若全是待机静音，模型会把开头
                 # ~0.3s 生成成闭嘴过渡（「第一个音嘴不动」的用户观感）。
-                # 裁到【最后一个非静音点 + 0.2s】，让新语音接上最近的
-                # 旧语音——首轮嘴就是张的。全静音（冷启动）则原样。
+                # 用【只装真实语音】的历史重建上下文：上段语音尾巴 +
+                # 0.2s 静音过渡 + 左补零到 8s（长度不能变，否则嵌入窗错位——
+                # 首版直接裁短数组，窗口落空反而更糟）。
                 self._warm_trim = False
-                arr = np.array(audio_ctx)
-                nz = np.nonzero(np.abs(arr) > 1e-3)[0]
-                if len(nz) > 0:
-                    keep = min(len(arr), int(nz[-1]) + int(0.2 * self.sample_rate))
-                    audio_ctx = deque(arr[:keep].tolist(), maxlen=ctx_len)
+                hist = np.array(self._speech_hist, dtype=np.float32)
+                if hist.size > 0:
+                    tail = hist[-int(7.8 * self.sample_rate):]
+                    ctx_arr = np.concatenate(
+                        [tail, np.zeros(int(0.2 * self.sample_rate), dtype=np.float32)])
+                    if len(ctx_arr) < ctx_len:
+                        ctx_arr = np.concatenate(
+                            [np.zeros(ctx_len - len(ctx_arr), dtype=np.float32), ctx_arr])
+                    audio_ctx = deque(ctx_arr.tolist(), maxlen=ctx_len)
             audio_ctx.extend(chunk.tolist())
             audio_array = np.array(audio_ctx)
             t0 = time.perf_counter()
