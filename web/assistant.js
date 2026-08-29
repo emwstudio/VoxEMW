@@ -9,7 +9,7 @@
 
 "use strict";
 
-const VOX_JS_VERSION = "20260829q";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
+const VOX_JS_VERSION = "20260829r";  // 排障用：Console 里 VOX_JS_VERSION 可验版本
 console.log("VOXEMW JS", VOX_JS_VERSION);
 
 const SAMPLE_RATE = 16000;
@@ -337,8 +337,9 @@ function drawAvatarFrame(blob) {
 
 // 视频游标：首帧到达（onsetPos）即开播（开头无冻结），vc 以 0.9 倍速
 // 前进让声音以 0.1s/s 追上（收敛过程 ~3-4s，肉眼不可辨），最终锁定
-// 领先声音 0.2s——天然兼容张嘴过渡（过渡帧随 vc 自然流过），
-// 无接缝无定格（此前各版的「过渡段/同步段」拼接方案全部死在接缝上）。
+// 领先声音 0.2s——天然兼容张嘴过渡（过渡帧随 vc 自然流过）。
+// ⚠️ target 必须是 pos+AHEAD：target=pos-0.2 时 vc 恒落后 pos 0.2s，
+// 嘴比声音慢（曾因此返工；符号写反的教训，别再改回去）。
 const AVATAR_VIDEO_AHEAD = 0.2;  // 视频稳态领先量（秒）
 
 function startAvatarLoop() {
@@ -358,7 +359,7 @@ function startAvatarLoop() {
     }
     if (avatarCanvas.vc !== null) {
       const step = Math.max(0, pos - avatarCanvas.prevPos);
-      const target = pos - AVATAR_VIDEO_AHEAD;
+      const target = pos + AVATAR_VIDEO_AHEAD;
       // 0.9x 慢放让声音追上；追上后锁定领先 0.2s
       avatarCanvas.vc = Math.max(avatarCanvas.vc,
                                  Math.min(avatarCanvas.vc + step * 0.9, target));
