@@ -86,10 +86,14 @@ class RenderEngine:
         self._stop = threading.Event()
         self._flushed = threading.Event()
         self._flush_seq = 0  # 打断代际：生成完才发现代际变了就丢帧
-        # 回复状态（显式对齐的核心账本）
+        # 回复状态（显式对齐的核心账本）。计数器单调递增【永不归零】：
+        # response_start 只记音频轴原点 _response_fed_origin——归零会和
+        # 攒段线程里已读出的旧 consumed_before 打架（读出旧值→归零→
+        # n_fed 算成 0→语音段被误标待机帧，实测复现过）
         self._in_response = False
-        self._fed_samples = 0       # 本回复已喂样本数（音频轴原点）
-        self._consumed_samples = 0  # 本回复已进 chunk 的样本数
+        self._fed_samples = 0        # 累计已喂样本数（含语音的）
+        self._consumed_samples = 0   # 累计已进 chunk 的喂入样本数
+        self._response_fed_origin = 0  # 本回复音频轴原点（= response_start 时的 fed）
         logger.info("引擎加载完成 %.1fs：slice=%d 帧(%.2fs) fps=%d 上下文=%ds",
                     time.perf_counter() - t0, self.slice_len, self.chunk_seconds,
                     self.fps, self.cached_audio_duration)
@@ -97,11 +101,10 @@ class RenderEngine:
     # ── 客户端消息入口 ──
 
     def response_start(self) -> None:
-        """新回复：音频轴归零，攒段线程对齐 chunk 边界（丢待机半段）。"""
+        """新回复：记音频轴原点（计数器不归零），攒段线程对齐 chunk 边界。"""
         logger.info("response_start 收到")
         self._in_response = True
-        self._fed_samples = 0
-        self._consumed_samples = 0
+        self._response_fed_origin = self._fed_samples
         # 丢弃待机积压（静音段），让回复音频立即成段
         while True:
             try:
@@ -117,7 +120,7 @@ class RenderEngine:
 
     def feed(self, pcm: bytes) -> None:
         """喂 16k PCM16（任意长度；生成速度，不 paced）。"""
-        logger.info("feed 收到 %d 字节", len(pcm))
+        logger.debug("feed 收到 %d 字节", len(pcm))
         x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         try:
             self.audio_q.put_nowait(x)
@@ -181,13 +184,13 @@ class RenderEngine:
                 continue  # stop 中
             n_fed = min(len(chunk), max(0, self._fed_samples - consumed_before))
             self._consumed_samples = consumed_before + n_fed
-            logger.info("成段: n_fed=%d fed=%d consumed=%d in_resp=%s",
+            logger.debug("成段: n_fed=%d fed=%d consumed=%d in_resp=%s",
                         n_fed, self._fed_samples, self._consumed_samples,
                         was_in_response)
             if n_fed > 0:
-                # 段内含回复音频：逐帧时间戳（回复内相对秒）；
+                # 段内含回复音频：逐帧时间戳（回复内相对秒，原点差值）；
                 # 尾巴补静音的帧顺延（收嘴动作紧跟语音尾，不排队）
-                base = consumed_before / self.sample_rate
+                base = (consumed_before - self._response_fed_origin) / self.sample_rate
                 a_times = [base + (i * self.sample_rate / self.fps) / self.sample_rate
                            for i in range(self.slice_len)]
             else:
