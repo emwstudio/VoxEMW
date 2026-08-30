@@ -397,14 +397,22 @@ class Session:
             now = time.monotonic()
             if idle_start is not None:
                 gap = now - idle_start
-                # 0.25s 以内是正常调度抖动；>15s 是回复间空闲，不算断流
-                if 0.25 < gap < 15:
+                # 0.25s 以内是正常调度抖动；>15s 是回复间空闲，不算断流；
+                # 回复边界间隙（_resp_active=False）是正常轮流说话，也不算
+                if 0.25 < gap < 15 and self._resp_active:
                     logger.info("avatar 喂入断流 %.2fs（句间生成缺口，渲染端垫静音）", gap)
                 if gap >= 15:
-                    fed_seconds, feed_t0, next_t = 0.0, None, None  # 新回复，重新锚定
+                    fed_seconds, feed_t0 = 0.0, None  # 进度归零
+                if gap > 0.1:
+                    # 任何真间隙后时刻表都已过期（渲染端队列排干在播待机），
+                    # 必须重新锚定——否则新回复音频按旧表「补发」成洪峰，
+                    # 冲爆渲染端有界队列丢块跳嘴（2026-08-30 多轮对话口型崩实测）
+                    next_t = now
                 idle_start = None
             if feed_t0 is None:
-                feed_t0 = next_t = now
+                feed_t0 = now
+                if next_t is None:
+                    next_t = now
             dur = len(pcm) / 2 / 16000
             fed_seconds += dur
             if int(fed_seconds) // 30 > int(fed_seconds - dur) // 30:
