@@ -544,6 +544,8 @@ class Session:
             elif etype == "response.done":
                 self._resp_active = False
                 self._assistant_speaking = False
+                if self._reply_transcript:
+                    logger.info("助手回复：%s", self._reply_transcript)
                 # 生成完毕 ≠ 播放完毕：pacer 队列里还有没播的音频。
                 # 通知前端播放真正清空（或即将清空）的时刻，前端据此收「说话中」
                 if self.pacer is None:
